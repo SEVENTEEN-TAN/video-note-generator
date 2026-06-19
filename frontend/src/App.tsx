@@ -5,7 +5,6 @@ import {
   Download,
   FileArchive,
   FileText,
-  History,
   Image,
   KeyRound,
   Loader2,
@@ -213,7 +212,6 @@ export function App() {
   const [versionError, setVersionError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isRegenerating, setIsRegenerating] = useState(false);
-  const [isSavingVersions, setIsSavingVersions] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState("");
   const [modelDownload, setModelDownload] = useState<ModelDownloadState | null>(null);
@@ -669,62 +667,6 @@ export function App() {
     }
   }
 
-  async function saveNoteVersionSelection(selectedVersionIds: string[], activeVersionId?: string | null) {
-    if (!job) {
-      return;
-    }
-    setIsSavingVersions(true);
-    setVersionError("");
-    try {
-      const response = await fetch(`/api/jobs/${job.job_id}/note-versions`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          active_version_id: activeVersionId ?? noteVersions?.active_version_id ?? null,
-          selected_version_ids: selectedVersionIds
-        })
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "版本设置保存失败。");
-      }
-      setNoteVersions(payload);
-      if (activeVersionId) {
-        setPreviewVersionId(activeVersionId);
-      }
-      try {
-        setJob(await fetchJob(job.job_id));
-      } catch {
-        // Version settings are disk-backed; a missing in-memory job should not hide the saved choice.
-      }
-    } catch (error) {
-      setVersionError(error instanceof Error ? error.message : "版本设置保存失败。");
-    } finally {
-      setIsSavingVersions(false);
-    }
-  }
-
-  function handleToggleVersionSelected(versionId: string, selected: boolean) {
-    if (!noteVersions) {
-      return;
-    }
-    const current = noteVersions.selected_version_ids;
-    const next = selected
-      ? [...current.filter((id) => id !== versionId), versionId]
-      : current.filter((id) => id !== versionId);
-    void saveNoteVersionSelection(next, noteVersions.active_version_id ?? null);
-  }
-
-  function handleActivateVersion(versionId: string) {
-    if (!noteVersions) {
-      return;
-    }
-    const selectedVersionIds = noteVersions.selected_version_ids.includes(versionId)
-      ? noteVersions.selected_version_ids
-      : [...noteVersions.selected_version_ids, versionId];
-    void saveNoteVersionSelection(selectedVersionIds, versionId);
-  }
-
   async function handleRegenerateNote() {
     if (!job) {
       return;
@@ -790,13 +732,6 @@ export function App() {
       <form className="workspace-grid" onSubmit={handleSubmit}>
         <section className="panel progress-panel" aria-label="处理进度">
           <PanelTitle icon={<Server size={18} />} title="处理进度" />
-          <div className="progress-header">
-            <span>{job ? job.step : "等待任务"}</span>
-            <strong>{job ? `${job.progress}%` : "0%"}</strong>
-          </div>
-          <div className="progress-track">
-            <div style={{ width: `${job?.progress ?? 0}%` }} />
-          </div>
           {job?.error && (
             <div className="error-box">
               <AlertTriangle size={18} />
@@ -821,14 +756,6 @@ export function App() {
               <span>{video ? video.name : "选择视频文件"}</span>
               <small>支持 mp4、mov、mkv、webm、avi</small>
             </label>
-
-            <ModelUsageList
-              localWhisperComputeType={localWhisperComputeType}
-              localWhisperDevice={localWhisperDevice}
-              transcriptionMode={transcriptionMode}
-              transcriptionModel={transcriptionModel}
-              noteModel={noteModel}
-            />
 
             <section className="note-requirements">
               <div className="section-title">
@@ -896,31 +823,28 @@ export function App() {
           <section className="panel result-panel" aria-label="结果预览">
             <PanelTitle icon={<FileText size={18} />} title="结果预览" />
             <div className="download-row">
-              <DownloadLink job={job} artifactPath="note.md" label="Markdown" />
-              <DownloadLink job={job} artifactPath="subtitles.srt" label="SRT" />
-              <DownloadLink job={job} artifactPath="audio.mp3" label="MP3" />
-              {job?.artifacts.some((artifact) => artifact.path === "download.zip") && (
-                <a className="small-button strong" href={`/api/jobs/${job.job_id}/download.zip`}>
-                  <FileArchive size={15} />
-                  ZIP
-                </a>
-              )}
+              <div className="download-actions">
+                <DownloadLink job={job} artifactPath="note.md" label="Markdown" />
+                <DownloadLink job={job} artifactPath="subtitles.srt" label="SRT" />
+                <DownloadLink job={job} artifactPath="audio.mp3" label="MP3" />
+                {job?.artifacts.some((artifact) => artifact.path === "download.zip") && (
+                  <a className="small-button strong" href={`/api/jobs/${job.job_id}/download.zip`}>
+                    <FileArchive size={15} />
+                    ZIP
+                  </a>
+                )}
+              </div>
+              <button className="small-button strong" disabled={!job || isBusy} onClick={handleRegenerateNote} type="button">
+                {isRegenerating ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+                重新生成笔记
+              </button>
             </div>
-
-            <NoteVersionPanel
-              activeVersionId={noteVersions?.active_version_id ?? ""}
-              disabled={!job || isBusy}
-              error={versionError}
-              isRegenerating={isRegenerating}
-              isSaving={isSavingVersions}
-              jobId={job?.job_id}
-              onActivate={handleActivateVersion}
-              onPreview={setPreviewVersionId}
-              onRegenerate={handleRegenerateNote}
-              onToggleSelected={handleToggleVersionSelected}
-              previewVersionId={previewVersionId}
-              versions={noteVersions?.versions ?? []}
-            />
+            {versionError && (
+              <p className="inline-error">
+                <AlertTriangle size={15} />
+                {versionError}
+              </p>
+            )}
 
             <div className="preview-stack">
               <PreviewBlock
@@ -1282,188 +1206,6 @@ async function fetchNoteVersions(jobId: string): Promise<NoteVersionIndex> {
   return response.json();
 }
 
-function NoteVersionPanel({
-  activeVersionId,
-  disabled,
-  error,
-  isRegenerating,
-  isSaving,
-  jobId,
-  onActivate,
-  onPreview,
-  onRegenerate,
-  onToggleSelected,
-  previewVersionId,
-  versions
-}: {
-  activeVersionId: string;
-  disabled: boolean;
-  error: string;
-  isRegenerating: boolean;
-  isSaving: boolean;
-  jobId?: string;
-  onActivate: (versionId: string) => void;
-  onPreview: (versionId: string) => void;
-  onRegenerate: () => void;
-  onToggleSelected: (versionId: string, selected: boolean) => void;
-  previewVersionId: string;
-  versions: NoteVersion[];
-}) {
-  return (
-    <section className="version-panel" aria-label="笔记版本">
-      <div className="version-panel-header">
-        <div>
-          <div className="section-title">
-            <History size={16} />
-            <span>笔记版本</span>
-          </div>
-          <p className="field-help">重生成只复用已有字幕与源视频，旧版本会保留，可选择多个版本进入 ZIP。</p>
-        </div>
-        <button className="small-button strong" disabled={disabled} onClick={onRegenerate} type="button">
-          {isRegenerating ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-          重新生成笔记
-        </button>
-      </div>
-
-      {error && (
-        <p className="inline-error">
-          <AlertTriangle size={15} />
-          {error}
-        </p>
-      )}
-
-      {versions.length === 0 ? (
-        <p className="empty-state">完成第一次全流程后，这里会显示 note_001。</p>
-      ) : (
-        <div className="version-list">
-          {versions.map((version) => {
-            const isActive = version.id === activeVersionId;
-            const isPreviewing = version.id === previewVersionId;
-            return (
-              <article className={`version-card ${isActive ? "active" : ""} ${isPreviewing ? "previewing" : ""}`} key={version.id}>
-                <div className="version-card-main">
-                  <button
-                    className="version-title-button"
-                    disabled={isSaving}
-                    onClick={() => onPreview(version.id)}
-                    type="button"
-                  >
-                    <FileText size={15} />
-                    <strong>{version.id}</strong>
-                    <span>{formatNoteStyle(version.note_style)}</span>
-                  </button>
-                  <div className="version-badges">
-                    {isActive && <span className="mini-badge ok">主版本</span>}
-                    {isPreviewing && <span className="mini-badge">预览中</span>}
-                  </div>
-                </div>
-
-                <div className="version-meta">
-                  <span>{version.note_model}</span>
-                  <span>{formatVersionTime(version.created_at)}</span>
-                  <span>{version.frame_limit} 帧</span>
-                </div>
-
-                <div className="version-actions">
-                  <label className={`version-check ${isActive ? "locked" : ""}`}>
-                    <input
-                      checked={version.selected}
-                      disabled={isSaving || isActive}
-                      onChange={(event) => onToggleSelected(version.id, event.target.checked)}
-                      type="checkbox"
-                    />
-                    <span>保存到 ZIP</span>
-                  </label>
-                  <button className="small-button" disabled={isSaving} onClick={() => onPreview(version.id)} type="button">
-                    预览
-                  </button>
-                  <button
-                    className="small-button"
-                    disabled={isSaving || isActive}
-                    onClick={() => onActivate(version.id)}
-                    type="button"
-                  >
-                    设为主版本
-                  </button>
-                  {jobId && (
-                    <a className="small-button" href={`/api/jobs/${jobId}/assets/${version.note_path}`}>
-                      <Download size={15} />
-                      下载
-                    </a>
-                  )}
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      )}
-    </section>
-  );
-}
-
-function formatNoteStyle(style: NoteStyle) {
-  return noteStyleOptions.find((option) => option.value === style)?.label ?? style;
-}
-
-function formatVersionTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-  return date.toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  });
-}
-
-function ModelUsageList({
-  localWhisperComputeType,
-  localWhisperDevice,
-  transcriptionMode,
-  transcriptionModel,
-  noteModel
-}: {
-  localWhisperComputeType: LocalWhisperComputeType;
-  localWhisperDevice: LocalWhisperDevice;
-  transcriptionMode: TranscriptionMode;
-  transcriptionModel: string;
-  noteModel: string;
-}) {
-  return (
-    <div className="model-usage">
-      <div>
-        <Captions size={16} />
-        <span>字幕转写</span>
-        <strong>
-          {transcriptionModel || "未设置"} /{" "}
-          {transcriptionMode === "local_faster_whisper"
-            ? `本地 Faster Whisper · ${localWhisperDevice.toUpperCase()} · ${localWhisperComputeType}`
-            : transcriptionMode === "chat_audio"
-              ? "Chat audio"
-              : "Audio endpoint"}
-        </strong>
-      </div>
-      <div>
-        <FileText size={16} />
-        <span>笔记生成</span>
-        <strong>{noteModel || "未设置"}</strong>
-      </div>
-      <div>
-        <Music size={16} />
-        <span>音频分离</span>
-        <strong>FFmpeg</strong>
-      </div>
-      <div>
-        <Image size={16} />
-        <span>关键帧抽取</span>
-        <strong>FFmpeg + 笔记时间点</strong>
-      </div>
-    </div>
-  );
-}
-
 function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
   if (!runtime) {
     return (
@@ -1605,7 +1347,7 @@ function StepList({ job }: { job: JobState | null }) {
 function ArtifactList({ job }: { job: JobState | null }) {
   const artifacts = job?.artifacts ?? [];
   if (artifacts.length === 0) {
-    return <p className="empty-state">生成产物会按音频、字幕、笔记和图片逐步出现。</p>;
+    return null;
   }
   return (
     <div className="artifact-list">
