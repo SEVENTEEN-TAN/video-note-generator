@@ -19,6 +19,12 @@ from .cuda_dependencies import (
     run_cuda_dependency_install,
     start_cuda_dependency_install,
 )
+from .local_dependencies import (
+    LocalTranscriptionDependencyInstallState,
+    get_local_dependency_install_state,
+    run_local_dependency_install,
+    start_local_dependency_install,
+)
 from .model_downloads import (
     ModelDownloadRequest,
     ModelDownloadState,
@@ -83,6 +89,19 @@ def install_cuda_dependencies(background_tasks: BackgroundTasks) -> CudaDependen
 @app.get("/api/runtime/cuda-dependencies/install", response_model=CudaDependencyInstallState)
 def get_cuda_dependency_install() -> CudaDependencyInstallState:
     return get_cuda_dependency_install_state()
+
+
+@app.post("/api/runtime/local-dependencies/install", response_model=LocalTranscriptionDependencyInstallState)
+def install_local_dependencies(background_tasks: BackgroundTasks) -> LocalTranscriptionDependencyInstallState:
+    state = start_local_dependency_install()
+    if state.status == "pending":
+        background_tasks.add_task(run_local_dependency_install)
+    return state
+
+
+@app.get("/api/runtime/local-dependencies/install", response_model=LocalTranscriptionDependencyInstallState)
+def get_local_dependency_install() -> LocalTranscriptionDependencyInstallState:
+    return get_local_dependency_install_state()
 
 
 @app.get("/api/settings", response_model=UserSettings)
