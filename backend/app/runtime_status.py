@@ -27,12 +27,18 @@ def get_internal_cuda_status() -> dict:
     return status
 
 
-def get_external_cuda_status(python_path: str | None, worker_path: str) -> dict:
+def get_external_runtime_status(python_path: str | None, worker_path: str) -> dict:
     status = {
-        "source": "external",
+        "python_path": python_path or "",
+        "faster_whisper_available": False,
+        "faster_whisper_error": "",
+        "ctranslate2_available": False,
+        "ctranslate2_version": "",
         "cuda_device_count": None,
         "cuda_runtime_available": False,
         "cuda_error": "",
+        "cuda_dll_dirs": [],
+        "source": "external",
     }
     if not python_path:
         status["cuda_error"] = "External Python was not found."
@@ -51,12 +57,19 @@ def get_external_cuda_status(python_path: str | None, worker_path: str) -> dict:
             status["cuda_error"] = completed.stderr.strip() or completed.stdout.strip() or "External CUDA status check failed."
             return status
         payload = json.loads(completed.stdout)
-        status["cuda_device_count"] = payload.get("cuda_device_count")
-        status["cuda_runtime_available"] = bool(payload.get("cuda_runtime_available"))
-        status["cuda_error"] = str(payload.get("cuda_error") or payload.get("faster_whisper_error") or "")
-        status["python_path"] = payload.get("python_path")
-        status["ctranslate2_version"] = payload.get("ctranslate2_version")
-        status["cuda_dll_dirs"] = payload.get("cuda_dll_dirs") or []
+        status.update(
+            {
+                "python_path": str(payload.get("python_path") or python_path),
+                "faster_whisper_available": bool(payload.get("faster_whisper_available")),
+                "faster_whisper_error": str(payload.get("faster_whisper_error") or ""),
+                "ctranslate2_available": bool(payload.get("ctranslate2_available")),
+                "ctranslate2_version": str(payload.get("ctranslate2_version") or ""),
+                "cuda_device_count": payload.get("cuda_device_count"),
+                "cuda_runtime_available": bool(payload.get("cuda_runtime_available")),
+                "cuda_error": str(payload.get("cuda_error") or ""),
+                "cuda_dll_dirs": payload.get("cuda_dll_dirs") or [],
+            }
+        )
     except Exception as exc:
         status["cuda_error"] = str(exc)
     return status
@@ -70,20 +83,52 @@ def choose_cuda_status(internal_status: dict, external_status: dict | None) -> d
     return external_status
 
 
+def build_faster_whisper_install_hint(
+    *,
+    internal_available: bool,
+    python_available: bool,
+    worker_ready: bool,
+    worker_error: str,
+) -> str:
+    if internal_available or worker_ready:
+        return ""
+    if not python_available:
+        return "Install Python 3.10+, then run python -m pip install -r backend/requirements.txt. Restart the app or set VIDEO_NOTE_PYTHON_PATH if Python is not on PATH."
+    if worker_error:
+        return (
+            "Install the local transcription packages into the external Python environment with "
+            "python -m pip install -r backend/requirements.txt. "
+            f"Current worker error: {worker_error}"
+        )
+    return "Install the local transcription packages into the external Python environment with python -m pip install -r backend/requirements.txt."
+
+
 def get_runtime_status() -> dict:
     ffmpeg_path = get_ffmpeg_path()
     internal_faster_whisper_available = transcription.WhisperModel is not None
     external_python_path = transcription.find_external_python()
     external_worker_path = transcription.get_local_whisper_worker_path()
     external_worker_available = bool(external_python_path) and external_worker_path.exists()
-    faster_whisper_available = internal_faster_whisper_available or external_worker_available
-    internal_cuda_status = get_internal_cuda_status()
-    external_cuda_status = (
-        get_external_cuda_status(external_python_path, str(external_worker_path)) if external_worker_available else None
+    external_runtime = (
+        get_external_runtime_status(external_python_path, str(external_worker_path)) if external_worker_available else None
     )
-    cuda_status = choose_cuda_status(internal_cuda_status, external_cuda_status)
+    python_available = bool(external_python_path)
+    worker_ready = bool(external_runtime and external_runtime.get("faster_whisper_available"))
+    worker_error = str(external_runtime.get("faster_whisper_error") or "") if external_runtime else ""
+    faster_whisper_available = internal_faster_whisper_available or worker_ready
+    internal_cuda_status = get_internal_cuda_status()
+    cuda_status = choose_cuda_status(internal_cuda_status, external_runtime)
     model_root = get_model_root()
     local_models = transcription.discover_local_faster_whisper_models(model_root)
+    model_available = len(local_models) > 0
+    ready_for_cpu = faster_whisper_available and model_available
+    ready_for_cuda = ready_for_cpu and bool(cuda_status["cuda_runtime_available"])
+    install_hint = build_faster_whisper_install_hint(
+        internal_available=internal_faster_whisper_available,
+        python_available=python_available,
+        worker_ready=worker_ready,
+        worker_error=worker_error,
+    )
 
     return {
         "ok": bool(ffmpeg_path) and faster_whisper_available,
@@ -96,17 +141,26 @@ def get_runtime_status() -> dict:
             "available": faster_whisper_available,
             "internal_available": internal_faster_whisper_available,
             "internal_import_error": "" if internal_faster_whisper_available else transcription.FASTER_WHISPER_IMPORT_ERROR,
+            "python_available": python_available,
+            "external_python_path": external_python_path,
+            "external_worker_path": str(external_worker_path),
+            "external_worker_available": external_worker_available,
+            "worker_ready": worker_ready,
+            "worker_error": worker_error,
+            "ctranslate2_available": bool(external_runtime and external_runtime.get("ctranslate2_available")),
+            "ctranslate2_version": str(external_runtime.get("ctranslate2_version") or "") if external_runtime else "",
             "cuda_available": bool(cuda_status["cuda_runtime_available"]),
             "cuda_device_count": cuda_status["cuda_device_count"],
             "cuda_runtime_available": bool(cuda_status["cuda_runtime_available"]),
             "cuda_error": cuda_status["cuda_error"],
             "cuda_source": cuda_status["source"],
             "cuda_runtime_hint": "" if cuda_status["cuda_runtime_available"] else "For CUDA Faster Whisper, install CUDA 12 cuBLAS/cuDNN runtime libraries, for example: python -m pip install nvidia-cublas-cu12 nvidia-cudnn-cu12.",
-            "external_python_path": external_python_path,
-            "external_worker_path": str(external_worker_path),
-            "external_worker_available": external_worker_available,
+            "cuda_dll_dirs": external_runtime.get("cuda_dll_dirs") if external_runtime else [],
             "import_error": "" if faster_whisper_available else transcription.FASTER_WHISPER_IMPORT_ERROR,
-            "install_hint": "" if faster_whisper_available else "Install Python 3.10+, then run python -m pip install -r backend/requirements.txt. Restart the app or set VIDEO_NOTE_PYTHON_PATH if Python is not on PATH.",
+            "install_hint": install_hint,
+            "model_available": model_available,
+            "ready_for_cpu": ready_for_cpu,
+            "ready_for_cuda": ready_for_cuda,
         },
         "local_models": {
             "root": str(model_root),

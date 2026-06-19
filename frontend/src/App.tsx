@@ -84,17 +84,26 @@ type RuntimeState = {
     available: boolean;
     internal_available: boolean;
     internal_import_error: string;
+    python_available: boolean;
+    external_python_path?: string | null;
+    external_worker_path: string;
+    external_worker_available: boolean;
+    worker_ready: boolean;
+    worker_error: string;
+    ctranslate2_available: boolean;
+    ctranslate2_version: string;
     cuda_available: boolean;
     cuda_device_count?: number | null;
     cuda_runtime_available?: boolean;
     cuda_error?: string;
     cuda_source?: string;
     cuda_runtime_hint?: string;
-    external_python_path?: string | null;
-    external_worker_path: string;
-    external_worker_available: boolean;
+    cuda_dll_dirs: string[];
     import_error: string;
     install_hint: string;
+    model_available: boolean;
+    ready_for_cpu: boolean;
+    ready_for_cuda: boolean;
   };
   local_models: {
     root: string;
@@ -121,6 +130,13 @@ type UserSettings = {
   note_style: NoteStyle;
   extras: string;
   frame_limit: number;
+};
+
+type LocalDependencyInstallState = {
+  status: "idle" | "pending" | "running" | "succeeded" | "failed";
+  progress: number;
+  error: string;
+  python_path: string;
 };
 
 type ModelDownloadState = {
@@ -197,6 +213,8 @@ export function App() {
   const [settingsMessage, setSettingsMessage] = useState("");
   const [modelDownload, setModelDownload] = useState<ModelDownloadState | null>(null);
   const [modelDownloadError, setModelDownloadError] = useState("");
+  const [localDependencyInstall, setLocalDependencyInstall] = useState<LocalDependencyInstallState | null>(null);
+  const [localDependencyInstallError, setLocalDependencyInstallError] = useState("");
   const [cudaInstall, setCudaInstall] = useState<CudaDependencyInstallState | null>(null);
   const [cudaInstallError, setCudaInstallError] = useState("");
   const [noteVersions, setNoteVersions] = useState<NoteVersionIndex | null>(null);
@@ -205,12 +223,15 @@ export function App() {
 
   const isBusy = job?.status === "pending" || job?.status === "running" || isSubmitting || isRegenerating;
   const isLocalTranscription = transcriptionMode === "local_faster_whisper";
+  const runtimeLocalStatus = health?.runtime?.faster_whisper;
   const selectedLocalModelAvailable =
     !isLocalTranscription || !health?.runtime || health.runtime.local_models.models.includes(transcriptionModel);
+  const localTranscriptionReady = !isLocalTranscription || !runtimeLocalStatus || runtimeLocalStatus.ready_for_cpu;
   const canOfferCudaInstall =
     isLocalTranscription &&
-    Boolean(health?.runtime?.faster_whisper.cuda_device_count) &&
-    !health?.runtime?.faster_whisper.cuda_available;
+    Boolean(runtimeLocalStatus?.cuda_device_count) &&
+    !runtimeLocalStatus?.cuda_available &&
+    !!runtimeLocalStatus?.worker_ready;
   const images = useMemo(() => job?.artifacts.filter((artifact) => artifact.kind === "image") ?? [], [job]);
   const previewVersion = useMemo(
     () => noteVersions?.versions.find((version) => version.id === previewVersionId) ?? null,
@@ -253,6 +274,28 @@ export function App() {
     }, 1400);
     return () => window.clearInterval(timer);
   }, [modelDownload]);
+
+  useEffect(() => {
+    if (!localDependencyInstall || (localDependencyInstall.status !== "pending" && localDependencyInstall.status !== "running")) {
+      return;
+    }
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch("/api/runtime/local-dependencies/install");
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.detail || "本地转写依赖安装状态读取失败。");
+        }
+        setLocalDependencyInstall(payload);
+        if (payload.status === "succeeded") {
+          await refreshHealth();
+        }
+      } catch (error) {
+        setLocalDependencyInstallError(error instanceof Error ? error.message : "本地转写依赖安装状态读取失败。");
+      }
+    }, 1600);
+    return () => window.clearInterval(timer);
+  }, [localDependencyInstall]);
 
   useEffect(() => {
     if (!cudaInstall || (cudaInstall.status !== "pending" && cudaInstall.status !== "running")) {
@@ -392,6 +435,10 @@ export function App() {
       }
       return;
     }
+    if (!localTranscriptionReady) {
+      setSubmitError(runtimeLocalStatus?.install_hint || runtimeLocalStatus?.worker_error || "本地转写环境未就绪，请先补齐依赖。");
+      return;
+    }
 
     const formData = new FormData();
     formData.append("video", video);
@@ -468,6 +515,41 @@ export function App() {
               ...current,
               status: "failed",
               error: error instanceof Error ? error.message : "模型下载启动失败。"
+            }
+          : null
+      );
+    }
+  }
+
+  async function handleInstallLocalDependencies() {
+    setLocalDependencyInstallError("");
+    setSubmitError("");
+    setLocalDependencyInstall({
+      status: "pending",
+      progress: 0,
+      error: "",
+      python_path: runtimeLocalStatus?.external_python_path ?? ""
+    });
+    try {
+      const response = await fetch("/api/runtime/local-dependencies/install", {
+        method: "POST"
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "本地转写依赖安装启动失败。");
+      }
+      setLocalDependencyInstall(payload);
+      if (payload.status === "succeeded") {
+        await refreshHealth();
+      }
+    } catch (error) {
+      setLocalDependencyInstallError(error instanceof Error ? error.message : "本地转写依赖安装启动失败。");
+      setLocalDependencyInstall((current) =>
+        current
+          ? {
+              ...current,
+              status: "failed",
+              error: error instanceof Error ? error.message : "本地转写依赖安装启动失败。"
             }
           : null
       );
@@ -989,12 +1071,46 @@ export function App() {
                       </label>
                     </div>
                     <p className={localWhisperDevice === "cuda" && !health?.runtime?.faster_whisper.cuda_available ? "inline-warning" : "field-help"}>
-                      {health?.runtime?.faster_whisper.cuda_available
-                        ? `检测到 ${health.runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备；CUDA 建议使用 float16。`
-                        : health?.runtime?.faster_whisper.cuda_error
-                          ? `CUDA 不可用：${health.runtime.faster_whisper.cuda_error}`
-                          : "当前后端未检测到 CTranslate2 CUDA 设备；如需 GPU 加速，请确认 NVIDIA 驱动和 CUDA 版依赖可用。"}
+                      {localWhisperDevice === "cuda"
+                        ? health?.runtime?.faster_whisper.ready_for_cuda
+                          ? `检测到 ${health.runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备；当前可直接使用 CUDA + ${localWhisperComputeType}。`
+                          : health?.runtime?.faster_whisper.cuda_error
+                            ? `CUDA 不可用：${health.runtime.faster_whisper.cuda_error}`
+                            : "当前后端未检测到可用 CUDA 推理环境；可先切换到 CPU 模式继续使用本地转写。"
+                        : health?.runtime?.faster_whisper.ready_for_cpu
+                          ? "当前本地转写 CPU 环境已就绪，可直接使用。"
+                          : health?.runtime?.faster_whisper.install_hint || "当前本地转写依赖未就绪，请先补齐外部 Python 环境。"}
                     </p>
+                    {!health?.runtime?.faster_whisper.worker_ready && (
+                      <div className="model-download-box">
+                        <p className="inline-warning">
+                          <AlertTriangle size={15} />
+                          {health?.runtime?.faster_whisper.install_hint || "外部 Python 缺少本地转写依赖。"}
+                        </p>
+                        <button
+                          className="small-button strong"
+                          disabled={localDependencyInstall?.status === "pending" || localDependencyInstall?.status === "running"}
+                          onClick={handleInstallLocalDependencies}
+                          type="button"
+                        >
+                          {localDependencyInstall?.status === "pending" || localDependencyInstall?.status === "running" ? (
+                            <Loader2 className="spin" size={15} />
+                          ) : (
+                            <Download size={15} />
+                          )}
+                          安装本地转写依赖
+                        </button>
+                        {localDependencyInstall && (
+                          <p className="settings-message">
+                            {localDependencyInstall.status === "pending" && "准备安装本地转写依赖..."}
+                            {localDependencyInstall.status === "running" && `正在安装到 ${localDependencyInstall.python_path || "外部 Python"}，请保持网络连接...`}
+                            {localDependencyInstall.status === "succeeded" && "本地转写依赖安装完成，正在刷新检测结果。"}
+                            {localDependencyInstall.status === "failed" && `安装失败：${localDependencyInstall.error || localDependencyInstallError}`}
+                          </p>
+                        )}
+                        {localDependencyInstallError && <p className="inline-error">{localDependencyInstallError}</p>}
+                      </div>
+                    )}
                     {canOfferCudaInstall && (
                       <div className="model-download-box">
                         <p className="inline-warning">
@@ -1366,14 +1482,24 @@ function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
 
   const fasterWhisperDetail = runtime.faster_whisper.internal_available
     ? "内置 Faster Whisper 可用"
-    : runtime.faster_whisper.external_worker_available
-      ? `外部 Python worker：${runtime.faster_whisper.external_python_path ?? "已发现"}`
-      : runtime.faster_whisper.install_hint;
+    : !runtime.faster_whisper.python_available
+      ? runtime.faster_whisper.install_hint
+      : runtime.faster_whisper.worker_ready
+        ? `外部 Python worker：${runtime.faster_whisper.external_python_path ?? "已发现"}`
+        : runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint;
   const cudaDetail = runtime.faster_whisper.cuda_available
     ? `CTranslate2 检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备 · ${runtime.faster_whisper.cuda_source ?? "runtime"}`
     : runtime.faster_whisper.cuda_error
       ? `检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备，但 CUDA 推理运行库不可用：${runtime.faster_whisper.cuda_error}`
       : runtime.faster_whisper.cuda_runtime_hint || "未检测到 CUDA 设备；CPU 模式仍可使用";
+  const pythonDetail = !runtime.faster_whisper.python_available
+    ? "未检测到外部 Python 3.10+，本地转写无法启用"
+    : runtime.faster_whisper.worker_ready
+      ? `${runtime.faster_whisper.external_python_path ?? "外部 Python"} · 已具备本地转写依赖`
+      : runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint;
+  const modelDetail = runtime.faster_whisper.model_available
+    ? `${runtime.local_models.models.join(", ")} · ${runtime.local_models.root}`
+    : `未发现已缓存模型 · ${runtime.local_models.root}`;
 
   return (
     <section className="runtime-card" aria-label="运行环境检测">
@@ -1382,7 +1508,8 @@ function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
         title="FFmpeg"
         detail={runtime.ffmpeg.available ? runtime.ffmpeg.path || "可用" : runtime.ffmpeg.install_hint}
       />
-      <RuntimeItem ok={runtime.faster_whisper.available} title="本地转写" detail={fasterWhisperDetail} />
+      <RuntimeItem ok={runtime.faster_whisper.available} title="本地转写引擎" detail={fasterWhisperDetail} />
+      <RuntimeItem ok={runtime.faster_whisper.python_available && runtime.faster_whisper.worker_ready} title="外部 Python 环境" detail={pythonDetail} />
       <RuntimeItem
         ok={runtime.faster_whisper.cuda_available}
         soft
@@ -1390,14 +1517,10 @@ function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
         detail={cudaDetail}
       />
       <RuntimeItem
-        ok={runtime.local_models.models.length > 0}
+        ok={runtime.faster_whisper.model_available}
         soft
         title="本地模型目录"
-        detail={
-          runtime.local_models.models.length > 0
-            ? `${runtime.local_models.models.join(", ")} · ${runtime.local_models.root}`
-            : `未发现已缓存模型 · ${runtime.local_models.root}`
-        }
+        detail={modelDetail}
       />
       <RuntimeItem soft ok title="配置文件" detail={runtime.settings.path} />
     </section>
@@ -1421,7 +1544,9 @@ function HealthBadge({ health }: { health: HealthState | null }) {
     return <span className="badge muted">后端未连接</span>;
   }
   if (health.runtime) {
-    const runtimeOk = health.runtime.ffmpeg.available && health.runtime.faster_whisper.available;
+    const runtimeOk =
+      health.runtime.ffmpeg.available &&
+      (health.runtime.faster_whisper.internal_available || health.runtime.faster_whisper.worker_ready);
     return (
       <span className={runtimeOk ? "badge ok" : "badge warn"} title={health.runtime.settings.path}>
         {runtimeOk ? "运行环境可用" : "依赖待处理"}
