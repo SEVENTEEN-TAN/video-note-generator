@@ -1,38 +1,25 @@
 from __future__ import annotations
 
-import subprocess
-
 from backend.app import local_dependencies
+from backend.app.install_tasks import PackageInstallController
+
 
 
 def test_run_local_dependency_install_invokes_external_python_pip(monkeypatch) -> None:
     local_dependencies.clear_local_dependency_install_state()
     monkeypatch.setattr(local_dependencies, "find_external_python", lambda: "python")
 
-    def fake_run(args, **kwargs):
-        assert args == [
-            "python",
-            "-m",
-            "pip",
-            "install",
-            "fastapi==0.115.6",
-            "uvicorn[standard]==0.34.0",
-            "python-multipart==0.0.20",
-            "openai==1.59.7",
-            "pydantic==2.12.5",
-            "imageio-ffmpeg==0.5.1",
-            "faster-whisper==1.1.1",
-        ]
-        assert kwargs["env"]["PYTHONIOENCODING"].lower() == "utf-8"
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="installed", stderr="")
+    def fake_install(self, python_path: str) -> None:
+        assert python_path == "python"
 
-    monkeypatch.setattr(local_dependencies.subprocess, "run", fake_run)
+    monkeypatch.setattr(PackageInstallController, "install_packages", fake_install)
 
-    initial = local_dependencies.start_local_dependency_install()
+    initial, should_enqueue = local_dependencies.start_local_dependency_install()
     local_dependencies.run_local_dependency_install()
     finished = local_dependencies.get_local_dependency_install_state()
 
     assert initial.status == "pending"
+    assert should_enqueue is True
     assert finished.status == "succeeded"
     assert finished.progress == 100
     assert finished.error == ""
@@ -50,3 +37,17 @@ def test_run_local_dependency_install_records_missing_python(monkeypatch) -> Non
 
     assert finished.status == "failed"
     assert "External Python was not found" in finished.error
+
+
+
+def test_start_local_dependency_install_does_not_reenqueue_while_pending(monkeypatch) -> None:
+    local_dependencies.clear_local_dependency_install_state()
+    monkeypatch.setattr(local_dependencies, "find_external_python", lambda: "python")
+
+    first_state, first_should_enqueue = local_dependencies.start_local_dependency_install()
+    second_state, second_should_enqueue = local_dependencies.start_local_dependency_install()
+
+    assert first_state.status == "pending"
+    assert first_should_enqueue is True
+    assert second_state.status == "pending"
+    assert second_should_enqueue is False

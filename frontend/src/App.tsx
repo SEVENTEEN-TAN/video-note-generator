@@ -18,6 +18,7 @@ import {
   Upload
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
 
 type NoteLanguage = "zh" | "en" | "follow";
 type NoteStyle = "minimal" | "detailed" | "tutorial" | "academic" | "task_oriented" | "meeting_minutes";
@@ -139,6 +140,10 @@ type LocalDependencyInstallState = {
   python_path: string;
 };
 
+type PollableTaskState = {
+  status: "idle" | "pending" | "running" | "succeeded" | "failed";
+};
+
 type ModelDownloadState = {
   model_name: string;
   status: "idle" | "pending" | "running" | "succeeded" | "failed";
@@ -221,6 +226,66 @@ export function App() {
   const [previewVersionId, setPreviewVersionId] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
+  async function pollTaskState<T extends PollableTaskState>(
+    url: string,
+    setTask: Dispatch<SetStateAction<T | null>>,
+    setError: (message: string) => void,
+    errorMessage: string
+  ): Promise<void> {
+    try {
+      const response = await fetch(url);
+      const payload = (await response.json()) as T;
+      if (!response.ok) {
+        throw new Error((payload as { detail?: string }).detail || errorMessage);
+      }
+      setTask(payload);
+      if (payload.status === "succeeded") {
+        await refreshHealth();
+      }
+    } catch (error) {
+      setError(error instanceof Error ? error.message : errorMessage);
+    }
+  }
+
+  async function startTask<T extends PollableTaskState>({
+    request,
+    optimisticState,
+    setTask,
+    setError,
+    errorMessage
+  }: {
+    request: () => Promise<Response>;
+    optimisticState: T;
+    setTask: Dispatch<SetStateAction<T | null>>;
+    setError: (message: string) => void;
+    errorMessage: string;
+  }): Promise<void> {
+    setTask(optimisticState);
+    try {
+      const response = await request();
+      const payload = (await response.json()) as T;
+      if (!response.ok) {
+        throw new Error((payload as { detail?: string }).detail || errorMessage);
+      }
+      setTask(payload);
+      if (payload.status === "succeeded") {
+        await refreshHealth();
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : errorMessage;
+      setError(message);
+      setTask((current) =>
+        current
+          ? {
+              ...current,
+              status: "failed",
+              error: message
+            }
+          : null
+      );
+    }
+  }
+
   const isBusy = job?.status === "pending" || job?.status === "running" || isSubmitting || isRegenerating;
   const isLocalTranscription = transcriptionMode === "local_faster_whisper";
   const runtimeLocalStatus = health?.runtime?.faster_whisper;
@@ -257,20 +322,13 @@ export function App() {
     if (!modelDownload || (modelDownload.status !== "pending" && modelDownload.status !== "running")) {
       return;
     }
-    const timer = window.setInterval(async () => {
-      try {
-        const response = await fetch(`/api/models/faster-whisper/download/${encodeURIComponent(modelDownload.model_name)}`);
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.detail || "模型下载状态读取失败。");
-        }
-        setModelDownload(payload);
-        if (payload.status === "succeeded") {
-          await refreshHealth();
-        }
-      } catch (error) {
-        setModelDownloadError(error instanceof Error ? error.message : "模型下载状态读取失败。");
-      }
+    const timer = window.setInterval(() => {
+      void pollTaskState(
+        `/api/models/faster-whisper/download/${encodeURIComponent(modelDownload.model_name)}`,
+        setModelDownload,
+        setModelDownloadError,
+        "模型下载状态读取失败。"
+      );
     }, 1400);
     return () => window.clearInterval(timer);
   }, [modelDownload]);
@@ -279,20 +337,13 @@ export function App() {
     if (!localDependencyInstall || (localDependencyInstall.status !== "pending" && localDependencyInstall.status !== "running")) {
       return;
     }
-    const timer = window.setInterval(async () => {
-      try {
-        const response = await fetch("/api/runtime/local-dependencies/install");
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.detail || "本地转写依赖安装状态读取失败。");
-        }
-        setLocalDependencyInstall(payload);
-        if (payload.status === "succeeded") {
-          await refreshHealth();
-        }
-      } catch (error) {
-        setLocalDependencyInstallError(error instanceof Error ? error.message : "本地转写依赖安装状态读取失败。");
-      }
+    const timer = window.setInterval(() => {
+      void pollTaskState(
+        "/api/runtime/local-dependencies/install",
+        setLocalDependencyInstall,
+        setLocalDependencyInstallError,
+        "本地转写依赖安装状态读取失败。"
+      );
     }, 1600);
     return () => window.clearInterval(timer);
   }, [localDependencyInstall]);
@@ -301,20 +352,13 @@ export function App() {
     if (!cudaInstall || (cudaInstall.status !== "pending" && cudaInstall.status !== "running")) {
       return;
     }
-    const timer = window.setInterval(async () => {
-      try {
-        const response = await fetch("/api/runtime/cuda-dependencies/install");
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.detail || "CUDA 依赖安装状态读取失败。");
-        }
-        setCudaInstall(payload);
-        if (payload.status === "succeeded") {
-          await refreshHealth();
-        }
-      } catch (error) {
-        setCudaInstallError(error instanceof Error ? error.message : "CUDA 依赖安装状态读取失败。");
-      }
+    const timer = window.setInterval(() => {
+      void pollTaskState(
+        "/api/runtime/cuda-dependencies/install",
+        setCudaInstall,
+        setCudaInstallError,
+        "CUDA 依赖安装状态读取失败。"
+      );
     }, 1800);
     return () => window.clearInterval(timer);
   }, [cudaInstall]);
@@ -486,74 +530,44 @@ export function App() {
   async function handleDownloadLocalModel() {
     setModelDownloadError("");
     setSubmitError("");
-    setModelDownload({
-      model_name: transcriptionModel,
-      status: "pending",
-      progress: 0,
-      error: "",
-      model_root: health?.runtime?.local_models.root ?? ""
+    await startTask({
+      request: () =>
+        fetch("/api/models/faster-whisper/download", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model_name: transcriptionModel })
+        }),
+      optimisticState: {
+        model_name: transcriptionModel,
+        status: "pending",
+        progress: 0,
+        error: "",
+        model_root: health?.runtime?.local_models.root ?? ""
+      } as ModelDownloadState,
+      setTask: setModelDownload,
+      setError: setModelDownloadError,
+      errorMessage: "模型下载启动失败。"
     });
-    try {
-      const response = await fetch("/api/models/faster-whisper/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model_name: transcriptionModel })
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "模型下载启动失败。");
-      }
-      setModelDownload(payload);
-      if (payload.status === "succeeded") {
-        await refreshHealth();
-      }
-    } catch (error) {
-      setModelDownloadError(error instanceof Error ? error.message : "模型下载启动失败。");
-      setModelDownload((current) =>
-        current
-          ? {
-              ...current,
-              status: "failed",
-              error: error instanceof Error ? error.message : "模型下载启动失败。"
-            }
-          : null
-      );
-    }
   }
 
   async function handleInstallLocalDependencies() {
     setLocalDependencyInstallError("");
     setSubmitError("");
-    setLocalDependencyInstall({
-      status: "pending",
-      progress: 0,
-      error: "",
-      python_path: runtimeLocalStatus?.external_python_path ?? ""
+    await startTask({
+      request: () =>
+        fetch("/api/runtime/local-dependencies/install", {
+          method: "POST"
+        }),
+      optimisticState: {
+        status: "pending",
+        progress: 0,
+        error: "",
+        python_path: runtimeLocalStatus?.external_python_path ?? ""
+      } as LocalDependencyInstallState,
+      setTask: setLocalDependencyInstall,
+      setError: setLocalDependencyInstallError,
+      errorMessage: "本地转写依赖安装启动失败。"
     });
-    try {
-      const response = await fetch("/api/runtime/local-dependencies/install", {
-        method: "POST"
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "本地转写依赖安装启动失败。");
-      }
-      setLocalDependencyInstall(payload);
-      if (payload.status === "succeeded") {
-        await refreshHealth();
-      }
-    } catch (error) {
-      setLocalDependencyInstallError(error instanceof Error ? error.message : "本地转写依赖安装启动失败。");
-      setLocalDependencyInstall((current) =>
-        current
-          ? {
-              ...current,
-              status: "failed",
-              error: error instanceof Error ? error.message : "本地转写依赖安装启动失败。"
-            }
-          : null
-      );
-    }
   }
 
   async function handleInstallCudaDependencies() {
@@ -564,36 +578,21 @@ export function App() {
     if (!shouldInstall) {
       return;
     }
-    setCudaInstall({
-      status: "pending",
-      progress: 0,
-      error: "",
-      python_path: health?.runtime?.faster_whisper.external_python_path ?? ""
+    await startTask({
+      request: () =>
+        fetch("/api/runtime/cuda-dependencies/install", {
+          method: "POST"
+        }),
+      optimisticState: {
+        status: "pending",
+        progress: 0,
+        error: "",
+        python_path: health?.runtime?.faster_whisper.external_python_path ?? ""
+      } as CudaDependencyInstallState,
+      setTask: setCudaInstall,
+      setError: setCudaInstallError,
+      errorMessage: "CUDA 依赖安装启动失败。"
     });
-    try {
-      const response = await fetch("/api/runtime/cuda-dependencies/install", {
-        method: "POST"
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "CUDA 依赖安装启动失败。");
-      }
-      setCudaInstall(payload);
-      if (payload.status === "succeeded") {
-        await refreshHealth();
-      }
-    } catch (error) {
-      setCudaInstallError(error instanceof Error ? error.message : "CUDA 依赖安装启动失败。");
-      setCudaInstall((current) =>
-        current
-          ? {
-              ...current,
-              status: "failed",
-              error: error instanceof Error ? error.message : "CUDA 依赖安装启动失败。"
-            }
-          : null
-      );
-    }
   }
 
   function collectSettings(): UserSettings {
