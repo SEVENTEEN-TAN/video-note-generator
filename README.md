@@ -94,7 +94,7 @@ npm run dev
 python -m pip install -r backend/requirements-cuda.txt
 ```
 
-安装后重启后端或桌面 app。worker 会自动把 Python 包里的 `nvidia/*/bin` 加到 DLL 搜索路径。
+也可以在设置页的“字幕转写配置”中点击“安装 CUDA 加速依赖”，程序会调用当前检测到的外部 Python 执行同等安装。安装后重启后端或刷新运行环境检测；worker 会自动把 Python 包里的 `nvidia/*/bin` 加到 DLL 搜索路径。
 
 也可以在启动后端前用环境变量覆盖旧版/脚本运行场景。默认配置优先保证 Windows CPU 可用：
 

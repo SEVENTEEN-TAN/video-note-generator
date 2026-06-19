@@ -13,6 +13,12 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from .job_store import JobStore
+from .cuda_dependencies import (
+    CudaDependencyInstallState,
+    get_cuda_dependency_install_state,
+    run_cuda_dependency_install,
+    start_cuda_dependency_install,
+)
 from .model_downloads import (
     ModelDownloadRequest,
     ModelDownloadState,
@@ -44,6 +50,11 @@ app.add_middleware(
 store = JobStore(OUTPUTS_ROOT)
 
 
+@app.get("/api/ready")
+def ready() -> dict:
+    return {"ok": True}
+
+
 @app.get("/api/health")
 def health() -> dict:
     runtime = get_runtime_status()
@@ -59,6 +70,19 @@ def health() -> dict:
 @app.get("/api/runtime")
 def runtime() -> dict:
     return get_runtime_status()
+
+
+@app.post("/api/runtime/cuda-dependencies/install", response_model=CudaDependencyInstallState)
+def install_cuda_dependencies(background_tasks: BackgroundTasks) -> CudaDependencyInstallState:
+    state = start_cuda_dependency_install()
+    if state.status == "pending":
+        background_tasks.add_task(run_cuda_dependency_install)
+    return state
+
+
+@app.get("/api/runtime/cuda-dependencies/install", response_model=CudaDependencyInstallState)
+def get_cuda_dependency_install() -> CudaDependencyInstallState:
+    return get_cuda_dependency_install_state()
 
 
 @app.get("/api/settings", response_model=UserSettings)

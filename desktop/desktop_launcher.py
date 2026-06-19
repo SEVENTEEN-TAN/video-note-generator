@@ -41,11 +41,11 @@ def run_server(port: int) -> uvicorn.Server:
 
 def wait_until_ready(url: str, timeout_seconds: float = 20.0) -> None:
     deadline = time.time() + timeout_seconds
-    health_url = f"{url}/api/health"
+    ready_url = f"{url}/api/ready"
     last_error: Exception | None = None
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(health_url, timeout=1.5) as response:
+            with urllib.request.urlopen(ready_url, timeout=1.5) as response:
                 if response.status == 200:
                     return
         except Exception as exc:

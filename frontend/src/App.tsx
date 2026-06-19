@@ -131,6 +131,13 @@ type ModelDownloadState = {
   model_root: string;
 };
 
+type CudaDependencyInstallState = {
+  status: "idle" | "pending" | "running" | "succeeded" | "failed";
+  progress: number;
+  error: string;
+  python_path: string;
+};
+
 type MarkdownBlock =
   | { type: "heading"; level: number; text: string }
   | { type: "list"; ordered: boolean; items: string[] }
@@ -190,6 +197,8 @@ export function App() {
   const [settingsMessage, setSettingsMessage] = useState("");
   const [modelDownload, setModelDownload] = useState<ModelDownloadState | null>(null);
   const [modelDownloadError, setModelDownloadError] = useState("");
+  const [cudaInstall, setCudaInstall] = useState<CudaDependencyInstallState | null>(null);
+  const [cudaInstallError, setCudaInstallError] = useState("");
   const [noteVersions, setNoteVersions] = useState<NoteVersionIndex | null>(null);
   const [previewVersionId, setPreviewVersionId] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -198,6 +207,10 @@ export function App() {
   const isLocalTranscription = transcriptionMode === "local_faster_whisper";
   const selectedLocalModelAvailable =
     !isLocalTranscription || !health?.runtime || health.runtime.local_models.models.includes(transcriptionModel);
+  const canOfferCudaInstall =
+    isLocalTranscription &&
+    Boolean(health?.runtime?.faster_whisper.cuda_device_count) &&
+    !health?.runtime?.faster_whisper.cuda_available;
   const images = useMemo(() => job?.artifacts.filter((artifact) => artifact.kind === "image") ?? [], [job]);
   const previewVersion = useMemo(
     () => noteVersions?.versions.find((version) => version.id === previewVersionId) ?? null,
@@ -240,6 +253,28 @@ export function App() {
     }, 1400);
     return () => window.clearInterval(timer);
   }, [modelDownload]);
+
+  useEffect(() => {
+    if (!cudaInstall || (cudaInstall.status !== "pending" && cudaInstall.status !== "running")) {
+      return;
+    }
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch("/api/runtime/cuda-dependencies/install");
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.detail || "CUDA 依赖安装状态读取失败。");
+        }
+        setCudaInstall(payload);
+        if (payload.status === "succeeded") {
+          await refreshHealth();
+        }
+      } catch (error) {
+        setCudaInstallError(error instanceof Error ? error.message : "CUDA 依赖安装状态读取失败。");
+      }
+    }, 1800);
+    return () => window.clearInterval(timer);
+  }, [cudaInstall]);
 
   useEffect(() => {
     fetch("/api/settings")
@@ -433,6 +468,46 @@ export function App() {
               ...current,
               status: "failed",
               error: error instanceof Error ? error.message : "模型下载启动失败。"
+            }
+          : null
+      );
+    }
+  }
+
+  async function handleInstallCudaDependencies() {
+    setCudaInstallError("");
+    const shouldInstall = window.confirm(
+      "CUDA 加速依赖包含 NVIDIA cuBLAS/cuDNN，下载体积约 1GB+。是否现在安装到当前外部 Python 环境？"
+    );
+    if (!shouldInstall) {
+      return;
+    }
+    setCudaInstall({
+      status: "pending",
+      progress: 0,
+      error: "",
+      python_path: health?.runtime?.faster_whisper.external_python_path ?? ""
+    });
+    try {
+      const response = await fetch("/api/runtime/cuda-dependencies/install", {
+        method: "POST"
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "CUDA 依赖安装启动失败。");
+      }
+      setCudaInstall(payload);
+      if (payload.status === "succeeded") {
+        await refreshHealth();
+      }
+    } catch (error) {
+      setCudaInstallError(error instanceof Error ? error.message : "CUDA 依赖安装启动失败。");
+      setCudaInstall((current) =>
+        current
+          ? {
+              ...current,
+              status: "failed",
+              error: error instanceof Error ? error.message : "CUDA 依赖安装启动失败。"
             }
           : null
       );
@@ -920,6 +995,36 @@ export function App() {
                           ? `CUDA 不可用：${health.runtime.faster_whisper.cuda_error}`
                           : "当前后端未检测到 CTranslate2 CUDA 设备；如需 GPU 加速，请确认 NVIDIA 驱动和 CUDA 版依赖可用。"}
                     </p>
+                    {canOfferCudaInstall && (
+                      <div className="model-download-box">
+                        <p className="inline-warning">
+                          <AlertTriangle size={15} />
+                          检测到 CUDA 设备，但缺少 cuBLAS/cuDNN 推理运行库。
+                        </p>
+                        <button
+                          className="small-button strong"
+                          disabled={cudaInstall?.status === "pending" || cudaInstall?.status === "running"}
+                          onClick={handleInstallCudaDependencies}
+                          type="button"
+                        >
+                          {cudaInstall?.status === "pending" || cudaInstall?.status === "running" ? (
+                            <Loader2 className="spin" size={15} />
+                          ) : (
+                            <Download size={15} />
+                          )}
+                          安装 CUDA 加速依赖
+                        </button>
+                        {cudaInstall && (
+                          <p className="settings-message">
+                            {cudaInstall.status === "pending" && "准备安装 CUDA 依赖..."}
+                            {cudaInstall.status === "running" && `正在安装到 ${cudaInstall.python_path || "外部 Python"}，请保持网络连接...`}
+                            {cudaInstall.status === "succeeded" && "CUDA 依赖安装完成，正在刷新检测结果。"}
+                            {cudaInstall.status === "failed" && `安装失败：${cudaInstall.error || cudaInstallError}`}
+                          </p>
+                        )}
+                        {cudaInstallError && <p className="inline-error">{cudaInstallError}</p>}
+                      </div>
+                    )}
                     {!selectedLocalModelAvailable && (
                       <div className="model-download-box">
                         <p className="inline-warning">
