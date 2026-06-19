@@ -80,8 +80,8 @@ def runtime() -> dict:
 
 @app.post("/api/runtime/cuda-dependencies/install", response_model=CudaDependencyInstallState)
 def install_cuda_dependencies(background_tasks: BackgroundTasks) -> CudaDependencyInstallState:
-    state = start_cuda_dependency_install()
-    if state.status == "pending":
+    state, should_enqueue = start_cuda_dependency_install()
+    if should_enqueue:
         background_tasks.add_task(run_cuda_dependency_install)
     return state
 
@@ -93,8 +93,8 @@ def get_cuda_dependency_install() -> CudaDependencyInstallState:
 
 @app.post("/api/runtime/local-dependencies/install", response_model=LocalTranscriptionDependencyInstallState)
 def install_local_dependencies(background_tasks: BackgroundTasks) -> LocalTranscriptionDependencyInstallState:
-    state = start_local_dependency_install()
-    if state.status == "pending":
+    state, should_enqueue = start_local_dependency_install()
+    if should_enqueue:
         background_tasks.add_task(run_local_dependency_install)
     return state
 
