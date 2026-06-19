@@ -290,3 +290,49 @@ def test_external_faster_whisper_worker_forces_utf8_stdout(tmp_path, monkeypatch
     parsed = transcription.transcribe_with_external_faster_whisper(audio_path, config, model_root)
 
     assert parsed.text == "中文正常"
+
+
+def test_audio_transcriptions_reports_chunk_progress(monkeypatch, tmp_path) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"x" * 30_000_000)
+
+    chunk_dir = tmp_path / "chunks"
+    chunk_dir.mkdir()
+    chunk_a = chunk_dir / "chunk_000.mp3"
+    chunk_b = chunk_dir / "chunk_001.mp3"
+    chunk_a.write_bytes(b"a")
+    chunk_b.write_bytes(b"b")
+
+    monkeypatch.setattr(transcription, "split_audio", lambda *_args, **_kwargs: [chunk_a, chunk_b])
+    monkeypatch.setattr(transcription, "probe_duration", lambda _path: 10.0)
+    monkeypatch.setattr(
+        transcription,
+        "call_audio_endpoint",
+        lambda *_args, **_kwargs: {"text": "hello", "segments": [{"start": 0, "end": 1, "text": "hello"}]},
+    )
+
+    updates: list[tuple[str, int]] = []
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.audio_transcriptions,
+        transcription_api_key="test-key",
+        transcription_base_url="https://api.openai.com/v1",
+        transcription_model="whisper-1",
+        note_api_key="note-key",
+        note_base_url="https://api.openai.com/v1",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+
+    result = transcription.transcribe_with_audio_endpoint(
+        audio_path,
+        config,
+        tmp_path,
+        progress_callback=lambda step, progress: updates.append((step, progress)),
+    )
+
+    assert result.text == "hello hello"
+    assert updates == [
+        ("字幕生成中：第 1/2 段转写中", 35),
+        ("字幕生成中：第 2/2 段转写中", 47),
+    ]

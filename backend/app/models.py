@@ -194,3 +194,6 @@ class JobPublicState(BaseModel):
     progress: int
     error: str | None = None
     artifacts: list[Artifact] = Field(default_factory=list)
+    step_started_at: str | None = None
+    updated_at: str | None = None
+    stage_elapsed_seconds: float = 0
