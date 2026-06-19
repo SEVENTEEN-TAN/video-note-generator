@@ -1,0 +1,1554 @@
+import {
+  AlertTriangle,
+  Captions,
+  CheckCircle2,
+  Download,
+  FileArchive,
+  FileText,
+  History,
+  Image,
+  KeyRound,
+  Loader2,
+  Music,
+  Play,
+  RefreshCw,
+  Server,
+  Settings,
+  X,
+  Upload
+} from "lucide-react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
+
+type NoteLanguage = "zh" | "en" | "follow";
+type NoteStyle = "minimal" | "detailed" | "tutorial" | "academic" | "task_oriented" | "meeting_minutes";
+type TranscriptionMode = "audio_transcriptions" | "chat_audio" | "local_faster_whisper";
+type LocalWhisperDevice = "auto" | "cpu" | "cuda";
+type LocalWhisperComputeType = "default" | "int8" | "int8_float16" | "float16" | "float32";
+type JobStatus = "pending" | "running" | "succeeded" | "failed";
+
+type Artifact = {
+  label: string;
+  path: string;
+  kind: "audio" | "subtitle" | "markdown" | "image" | "json" | "zip";
+  asset_url: string;
+};
+
+type JobState = {
+  job_id: string;
+  status: JobStatus;
+  step: string;
+  progress: number;
+  error?: string | null;
+  artifacts: Artifact[];
+};
+
+type NoteVersion = {
+  id: string;
+  label: string;
+  created_at: string;
+  note_style: NoteStyle;
+  note_language: string;
+  note_model: string;
+  note_base_url: string;
+  frame_limit: number;
+  note_path: string;
+  frame_dir: string;
+  selected: boolean;
+  active: boolean;
+  extras_present: boolean;
+  extras_length: number;
+};
+
+type NoteVersionIndex = {
+  active_version_id?: string | null;
+  selected_version_ids: string[];
+  versions: NoteVersion[];
+};
+
+type HealthState = {
+  ok: boolean;
+  runtime_ok?: boolean;
+  ffmpeg_available: boolean;
+  ffmpeg_path?: string | null;
+  runtime?: RuntimeState;
+};
+
+type RuntimeState = {
+  ok: boolean;
+  ffmpeg: {
+    available: boolean;
+    path?: string | null;
+    install_hint: string;
+  };
+  faster_whisper: {
+    available: boolean;
+    internal_available: boolean;
+    internal_import_error: string;
+    cuda_available: boolean;
+    cuda_device_count?: number | null;
+    external_python_path?: string | null;
+    external_worker_path: string;
+    external_worker_available: boolean;
+    import_error: string;
+    install_hint: string;
+  };
+  local_models: {
+    root: string;
+    models: string[];
+    hint: string;
+  };
+  settings: {
+    path: string;
+    warning: string;
+  };
+};
+
+type UserSettings = {
+  transcription_mode: TranscriptionMode;
+  transcription_api_key: string;
+  transcription_base_url: string;
+  transcription_model: string;
+  local_whisper_device: LocalWhisperDevice;
+  local_whisper_compute_type: LocalWhisperComputeType;
+  note_api_key: string;
+  note_base_url: string;
+  note_model: string;
+  note_language: NoteLanguage;
+  note_style: NoteStyle;
+  extras: string;
+  frame_limit: number;
+};
+
+type ModelDownloadState = {
+  model_name: string;
+  status: "idle" | "pending" | "running" | "succeeded" | "failed";
+  progress: number;
+  error: string;
+  model_root: string;
+};
+
+type MarkdownBlock =
+  | { type: "heading"; level: number; text: string }
+  | { type: "list"; ordered: boolean; items: string[] }
+  | { type: "paragraph"; text: string }
+  | { type: "image"; alt: string; src: string };
+
+type PreviewImage = {
+  label: string;
+  path: string;
+  asset_url: string;
+};
+
+const OPENAI_BASE_URL = "https://api.openai.com/v1";
+const QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+
+const statusText: Record<JobStatus, string> = {
+  pending: "等待",
+  running: "处理中",
+  succeeded: "完成",
+  failed: "失败"
+};
+
+const noteStyleOptions: Array<{ value: NoteStyle; label: string }> = [
+  { value: "minimal", label: "minimal（极简）" },
+  { value: "detailed", label: "detailed（详细）" },
+  { value: "tutorial", label: "tutorial（教程）" },
+  { value: "academic", label: "academic（学术）" },
+  { value: "task_oriented", label: "task_oriented（任务导向）" },
+  { value: "meeting_minutes", label: "meeting_minutes（会议纪要）" }
+];
+
+export function App() {
+  const [transcriptionApiKey, setTranscriptionApiKey] = useState("");
+  const [transcriptionMode, setTranscriptionMode] = useState<TranscriptionMode>("local_faster_whisper");
+  const [transcriptionBaseUrl, setTranscriptionBaseUrl] = useState(OPENAI_BASE_URL);
+  const [transcriptionModel, setTranscriptionModel] = useState("small");
+  const [localWhisperDevice, setLocalWhisperDevice] = useState<LocalWhisperDevice>("cpu");
+  const [localWhisperComputeType, setLocalWhisperComputeType] = useState<LocalWhisperComputeType>("int8");
+  const [noteApiKey, setNoteApiKey] = useState("");
+  const [noteBaseUrl, setNoteBaseUrl] = useState(OPENAI_BASE_URL);
+  const [noteModel, setNoteModel] = useState("gpt-5.5");
+  const [noteLanguage, setNoteLanguage] = useState<NoteLanguage>("zh");
+  const [noteStyle, setNoteStyle] = useState<NoteStyle>("detailed");
+  const [extras, setExtras] = useState("");
+  const [frameLimit, setFrameLimit] = useState(6);
+  const [video, setVideo] = useState<File | null>(null);
+  const [job, setJob] = useState<JobState | null>(null);
+  const [notePreview, setNotePreview] = useState("");
+  const [subtitlePreview, setSubtitlePreview] = useState("");
+  const [health, setHealth] = useState<HealthState | null>(null);
+  const [submitError, setSubmitError] = useState("");
+  const [versionError, setVersionError] = useState("");
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isRegenerating, setIsRegenerating] = useState(false);
+  const [isSavingVersions, setIsSavingVersions] = useState(false);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const [modelDownload, setModelDownload] = useState<ModelDownloadState | null>(null);
+  const [modelDownloadError, setModelDownloadError] = useState("");
+  const [noteVersions, setNoteVersions] = useState<NoteVersionIndex | null>(null);
+  const [previewVersionId, setPreviewVersionId] = useState("");
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  const isBusy = job?.status === "pending" || job?.status === "running" || isSubmitting || isRegenerating;
+  const isLocalTranscription = transcriptionMode === "local_faster_whisper";
+  const selectedLocalModelAvailable =
+    !isLocalTranscription || !health?.runtime || health.runtime.local_models.models.includes(transcriptionModel);
+  const images = useMemo(() => job?.artifacts.filter((artifact) => artifact.kind === "image") ?? [], [job]);
+  const previewVersion = useMemo(
+    () => noteVersions?.versions.find((version) => version.id === previewVersionId) ?? null,
+    [noteVersions, previewVersionId]
+  );
+  const previewAssetBasePath = previewVersion ? `note_versions/${previewVersion.id}` : undefined;
+  const previewImages = useMemo<PreviewImage[]>(() => {
+    if (job && previewVersion) {
+      return extractMarkdownImages(notePreview, job.job_id, previewAssetBasePath);
+    }
+    return images.map((artifact) => ({
+      label: artifact.label,
+      path: artifact.path,
+      asset_url: artifact.asset_url
+    }));
+  }, [images, job, notePreview, previewAssetBasePath, previewVersion]);
+
+  useEffect(() => {
+    void refreshHealth();
+  }, []);
+
+  useEffect(() => {
+    if (!modelDownload || (modelDownload.status !== "pending" && modelDownload.status !== "running")) {
+      return;
+    }
+    const timer = window.setInterval(async () => {
+      try {
+        const response = await fetch(`/api/models/faster-whisper/download/${encodeURIComponent(modelDownload.model_name)}`);
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.detail || "模型下载状态读取失败。");
+        }
+        setModelDownload(payload);
+        if (payload.status === "succeeded") {
+          await refreshHealth();
+        }
+      } catch (error) {
+        setModelDownloadError(error instanceof Error ? error.message : "模型下载状态读取失败。");
+      }
+    }, 1400);
+    return () => window.clearInterval(timer);
+  }, [modelDownload]);
+
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((settings: UserSettings | null) => {
+        if (settings) {
+          applySettings(settings);
+        }
+      })
+      .catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (!job || (job.status !== "pending" && job.status !== "running")) {
+      return;
+    }
+    const timer = window.setInterval(async () => {
+      const nextJob = await fetchJob(job.job_id);
+      setJob(nextJob);
+    }, 1600);
+    return () => window.clearInterval(timer);
+  }, [job]);
+
+  useEffect(() => {
+    if (!job) {
+      setNoteVersions(null);
+      setPreviewVersionId("");
+      return;
+    }
+    if (job.status === "succeeded" || job.status === "failed") {
+      setIsRegenerating(false);
+    }
+    if (!job.artifacts.some((artifact) => artifact.path === "note.md")) {
+      return;
+    }
+
+    let cancelled = false;
+    fetchNoteVersions(job.job_id)
+      .then((index) => {
+        if (cancelled) {
+          return;
+        }
+        setNoteVersions(index);
+        setPreviewVersionId((current) => {
+          if (current && index.versions.some((version) => version.id === current)) {
+            return current;
+          }
+          return index.active_version_id ?? index.versions[0]?.id ?? "";
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setNoteVersions(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [job]);
+
+  useEffect(() => {
+    if (!job || !job.artifacts.some((artifact) => artifact.path === "subtitles.md")) {
+      return;
+    }
+    fetch(`/api/jobs/${job.job_id}/preview/subtitles`)
+      .then((response) => (response.ok ? response.text() : ""))
+      .then(setSubtitlePreview);
+  }, [job]);
+
+  useEffect(() => {
+    if (!job || !job.artifacts.some((artifact) => artifact.path === "note.md")) {
+      return;
+    }
+    const url = previewVersionId
+      ? `/api/jobs/${job.job_id}/preview/note/${encodeURIComponent(previewVersionId)}`
+      : `/api/jobs/${job.job_id}/preview/note`;
+    fetch(url)
+      .then((response) => (response.ok ? response.text() : ""))
+      .then(setNotePreview);
+  }, [job, previewVersionId]);
+
+  async function handleSubmit(event: FormEvent) {
+    event.preventDefault();
+    setSubmitError("");
+    setVersionError("");
+    setNotePreview("");
+    setSubtitlePreview("");
+    setNoteVersions(null);
+    setPreviewVersionId("");
+
+    if (!video) {
+      setSubmitError("请先选择视频文件。");
+      return;
+    }
+    if (!isLocalTranscription && !transcriptionApiKey.trim()) {
+      setSubmitError("请填写字幕转写 API Key。");
+      return;
+    }
+    if (!noteApiKey.trim()) {
+      setSubmitError("请填写笔记生成 API Key。");
+      return;
+    }
+    if (!transcriptionModel.trim() || !noteModel.trim()) {
+      setSubmitError("字幕转写模型和笔记生成模型都不能为空。");
+      return;
+    }
+    if (!selectedLocalModelAvailable) {
+      const shouldDownload = window.confirm(
+        `当前模型目录未发现 ${transcriptionModel}。是否现在下载到 ${health?.runtime?.local_models.root ?? "本地模型目录"}？`
+      );
+      if (shouldDownload) {
+        void handleDownloadLocalModel();
+      } else {
+        setSubmitError(`请先下载 ${transcriptionModel}，或切换远端字幕转写。`);
+      }
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("video", video);
+    formData.append("transcription_mode", transcriptionMode);
+    formData.append("transcription_api_key", isLocalTranscription ? "" : transcriptionApiKey);
+    formData.append("transcription_base_url", isLocalTranscription ? "" : transcriptionBaseUrl);
+    formData.append("transcription_model", transcriptionModel);
+    formData.append("local_whisper_device", isLocalTranscription ? localWhisperDevice : "");
+    formData.append("local_whisper_compute_type", isLocalTranscription ? localWhisperComputeType : "");
+    formData.append("note_api_key", noteApiKey);
+    formData.append("note_base_url", noteBaseUrl);
+    formData.append("note_model", noteModel);
+    formData.append("note_language", noteLanguage);
+    formData.append("note_style", noteStyle);
+    formData.append("extras", extras);
+    formData.append("frame_limit", String(frameLimit));
+
+    setIsSubmitting(true);
+    try {
+      const response = await fetch("/api/jobs", {
+        method: "POST",
+        body: formData
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "任务创建失败。");
+      }
+      setJob(await fetchJob(payload.job_id));
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "任务创建失败。");
+    } finally {
+      setIsSubmitting(false);
+    }
+  }
+
+  async function refreshHealth() {
+    try {
+      const response = await fetch("/api/health");
+      setHealth(response.ok ? await response.json() : null);
+    } catch {
+      setHealth(null);
+    }
+  }
+
+  async function handleDownloadLocalModel() {
+    setModelDownloadError("");
+    setSubmitError("");
+    setModelDownload({
+      model_name: transcriptionModel,
+      status: "pending",
+      progress: 0,
+      error: "",
+      model_root: health?.runtime?.local_models.root ?? ""
+    });
+    try {
+      const response = await fetch("/api/models/faster-whisper/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_name: transcriptionModel })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "模型下载启动失败。");
+      }
+      setModelDownload(payload);
+      if (payload.status === "succeeded") {
+        await refreshHealth();
+      }
+    } catch (error) {
+      setModelDownloadError(error instanceof Error ? error.message : "模型下载启动失败。");
+      setModelDownload((current) =>
+        current
+          ? {
+              ...current,
+              status: "failed",
+              error: error instanceof Error ? error.message : "模型下载启动失败。"
+            }
+          : null
+      );
+    }
+  }
+
+  function collectSettings(): UserSettings {
+    return {
+      transcription_mode: transcriptionMode,
+      transcription_api_key: transcriptionApiKey,
+      transcription_base_url: transcriptionBaseUrl,
+      transcription_model: transcriptionModel,
+      local_whisper_device: localWhisperDevice,
+      local_whisper_compute_type: localWhisperComputeType,
+      note_api_key: noteApiKey,
+      note_base_url: noteBaseUrl,
+      note_model: noteModel,
+      note_language: noteLanguage,
+      note_style: noteStyle,
+      extras,
+      frame_limit: frameLimit
+    };
+  }
+
+  function applySettings(settings: UserSettings) {
+    setTranscriptionMode(settings.transcription_mode);
+    setTranscriptionApiKey(settings.transcription_api_key);
+    setTranscriptionBaseUrl(settings.transcription_base_url);
+    setTranscriptionModel(settings.transcription_model);
+    setLocalWhisperDevice(settings.local_whisper_device ?? "cpu");
+    setLocalWhisperComputeType(settings.local_whisper_compute_type ?? "int8");
+    setNoteApiKey(settings.note_api_key);
+    setNoteBaseUrl(settings.note_base_url);
+    setNoteModel(settings.note_model);
+    setNoteLanguage(settings.note_language);
+    setNoteStyle(settings.note_style);
+    setExtras(settings.extras);
+    setFrameLimit(settings.frame_limit);
+  }
+
+  async function handleSaveSettings() {
+    setIsSavingSettings(true);
+    setSettingsMessage("");
+    try {
+      const response = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(collectSettings())
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "设置保存失败。");
+      }
+      applySettings(payload);
+      setSettingsMessage("设置已保存到本地配置文件。");
+    } catch (error) {
+      setSettingsMessage(error instanceof Error ? error.message : "设置保存失败。");
+    } finally {
+      setIsSavingSettings(false);
+    }
+  }
+
+  async function handleClearSettings() {
+    setIsSavingSettings(true);
+    setSettingsMessage("");
+    try {
+      const response = await fetch("/api/settings", { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "设置清除失败。");
+      }
+      applySettings(payload);
+      setSettingsMessage("本地设置已清除。");
+    } catch (error) {
+      setSettingsMessage(error instanceof Error ? error.message : "设置清除失败。");
+    } finally {
+      setIsSavingSettings(false);
+    }
+  }
+
+  async function saveNoteVersionSelection(selectedVersionIds: string[], activeVersionId?: string | null) {
+    if (!job) {
+      return;
+    }
+    setIsSavingVersions(true);
+    setVersionError("");
+    try {
+      const response = await fetch(`/api/jobs/${job.job_id}/note-versions`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          active_version_id: activeVersionId ?? noteVersions?.active_version_id ?? null,
+          selected_version_ids: selectedVersionIds
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "版本设置保存失败。");
+      }
+      setNoteVersions(payload);
+      if (activeVersionId) {
+        setPreviewVersionId(activeVersionId);
+      }
+      try {
+        setJob(await fetchJob(job.job_id));
+      } catch {
+        // Version settings are disk-backed; a missing in-memory job should not hide the saved choice.
+      }
+    } catch (error) {
+      setVersionError(error instanceof Error ? error.message : "版本设置保存失败。");
+    } finally {
+      setIsSavingVersions(false);
+    }
+  }
+
+  function handleToggleVersionSelected(versionId: string, selected: boolean) {
+    if (!noteVersions) {
+      return;
+    }
+    const current = noteVersions.selected_version_ids;
+    const next = selected
+      ? [...current.filter((id) => id !== versionId), versionId]
+      : current.filter((id) => id !== versionId);
+    void saveNoteVersionSelection(next, noteVersions.active_version_id ?? null);
+  }
+
+  function handleActivateVersion(versionId: string) {
+    if (!noteVersions) {
+      return;
+    }
+    const selectedVersionIds = noteVersions.selected_version_ids.includes(versionId)
+      ? noteVersions.selected_version_ids
+      : [...noteVersions.selected_version_ids, versionId];
+    void saveNoteVersionSelection(selectedVersionIds, versionId);
+  }
+
+  async function handleRegenerateNote() {
+    if (!job) {
+      return;
+    }
+    setVersionError("");
+    if (!noteApiKey.trim()) {
+      setVersionError("请填写笔记 API Key，再重新生成笔记。");
+      return;
+    }
+    if (!noteBaseUrl.trim() || !noteModel.trim()) {
+      setVersionError("笔记 Base URL 和模型不能为空。");
+      return;
+    }
+
+    const formData = new FormData();
+    formData.append("note_api_key", noteApiKey);
+    formData.append("note_base_url", noteBaseUrl);
+    formData.append("note_model", noteModel);
+    formData.append("note_language", noteLanguage);
+    formData.append("note_style", noteStyle);
+    formData.append("extras", extras);
+    formData.append("frame_limit", String(frameLimit));
+
+    setIsRegenerating(true);
+    try {
+      const response = await fetch(`/api/jobs/${job.job_id}/note-versions`, {
+        method: "POST",
+        body: formData
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "重新生成笔记失败。");
+      }
+      setJob({
+        ...job,
+        status: "running",
+        step: "重新生成笔记",
+        progress: Math.max(job.progress, 62),
+        error: null
+      });
+    } catch (error) {
+      setVersionError(error instanceof Error ? error.message : "重新生成笔记失败。");
+      setIsRegenerating(false);
+    }
+  }
+
+  return (
+    <main className="app-shell">
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">OpenAI-Compatible Video Notes</p>
+          <h1>视频笔记生成器</h1>
+        </div>
+        <div className="topbar-actions">
+          <HealthBadge health={health} />
+          <StatusBadge job={job} isSubmitting={isSubmitting} />
+          <button className="icon-button" onClick={() => setIsSettingsOpen(true)} title="打开设置" type="button">
+            <Settings size={17} />
+          </button>
+        </div>
+      </header>
+
+      <form className="workspace-grid" onSubmit={handleSubmit}>
+        <section className="panel progress-panel" aria-label="处理进度">
+          <PanelTitle icon={<Server size={18} />} title="处理进度" />
+          <div className="progress-header">
+            <span>{job ? job.step : "等待任务"}</span>
+            <strong>{job ? `${job.progress}%` : "0%"}</strong>
+          </div>
+          <div className="progress-track">
+            <div style={{ width: `${job?.progress ?? 0}%` }} />
+          </div>
+          {job?.error && (
+            <div className="error-box">
+              <AlertTriangle size={18} />
+              <span>{job.error}</span>
+            </div>
+          )}
+          <StepList job={job} />
+          <ArtifactList job={job} />
+        </section>
+
+        <div className="workspace-bottom">
+          <section className="panel config-panel" aria-label="任务配置">
+            <PanelTitle icon={<Upload size={18} />} title="视频与笔记要求" />
+
+            <label className="drop-zone">
+              <input
+                accept=".mp4,.mov,.mkv,.webm,.avi,video/*"
+                type="file"
+                onChange={(event) => setVideo(event.target.files?.[0] ?? null)}
+              />
+              <Upload size={22} />
+              <span>{video ? video.name : "选择视频文件"}</span>
+              <small>支持 mp4、mov、mkv、webm、avi</small>
+            </label>
+
+            <ModelUsageList
+              localWhisperComputeType={localWhisperComputeType}
+              localWhisperDevice={localWhisperDevice}
+              transcriptionMode={transcriptionMode}
+              transcriptionModel={transcriptionModel}
+              noteModel={noteModel}
+            />
+
+            <section className="note-requirements">
+              <div className="section-title">
+                <FileText size={16} />
+                <span>笔记要求</span>
+              </div>
+
+              <div className="two-col">
+                <label className="field">
+                  <span className="field-label">笔记语言</span>
+                  <select value={noteLanguage} onChange={(event) => setNoteLanguage(event.target.value as NoteLanguage)}>
+                    <option value="zh">中文</option>
+                    <option value="en">英文</option>
+                    <option value="follow">跟随原文</option>
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span className="field-label">笔记风格</span>
+                  <select value={noteStyle} onChange={(event) => setNoteStyle(event.target.value as NoteStyle)}>
+                    {noteStyleOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span className="field-label">关键帧上限</span>
+                  <input
+                    max={12}
+                    min={1}
+                    type="number"
+                    value={frameLimit}
+                    onChange={(event) => setFrameLimit(Number(event.target.value))}
+                  />
+                </label>
+              </div>
+
+              <label className="field">
+                <span className="field-label">额外笔记要求</span>
+                <textarea
+                  maxLength={2000}
+                  onChange={(event) => setExtras(event.target.value)}
+                  placeholder="例如：突出操作步骤、保留关键术语、最后补一组行动项"
+                  value={extras}
+                />
+              </label>
+            </section>
+
+            {submitError && (
+              <p className="inline-error">
+                <AlertTriangle size={15} />
+                {submitError}
+              </p>
+            )}
+
+            <button className="primary-button" disabled={isBusy} type="submit">
+              {isBusy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
+              开始生成
+            </button>
+          </section>
+
+          <section className="panel result-panel" aria-label="结果预览">
+            <PanelTitle icon={<FileText size={18} />} title="结果预览" />
+            <div className="download-row">
+              <DownloadLink job={job} artifactPath="note.md" label="Markdown" />
+              <DownloadLink job={job} artifactPath="subtitles.srt" label="SRT" />
+              <DownloadLink job={job} artifactPath="audio.mp3" label="MP3" />
+              {job?.artifacts.some((artifact) => artifact.path === "download.zip") && (
+                <a className="small-button strong" href={`/api/jobs/${job.job_id}/download.zip`}>
+                  <FileArchive size={15} />
+                  ZIP
+                </a>
+              )}
+            </div>
+
+            <NoteVersionPanel
+              activeVersionId={noteVersions?.active_version_id ?? ""}
+              disabled={!job || isBusy}
+              error={versionError}
+              isRegenerating={isRegenerating}
+              isSaving={isSavingVersions}
+              jobId={job?.job_id}
+              onActivate={handleActivateVersion}
+              onPreview={setPreviewVersionId}
+              onRegenerate={handleRegenerateNote}
+              onToggleSelected={handleToggleVersionSelected}
+              previewVersionId={previewVersionId}
+              versions={noteVersions?.versions ?? []}
+            />
+
+            <div className="preview-stack">
+              <PreviewBlock
+                assetBasePath={previewAssetBasePath}
+                title={previewVersion ? `视频笔记 Markdown · ${previewVersion.id}` : "视频笔记 Markdown"}
+                text={notePreview}
+                empty="完成后显示 note.md 预览"
+                jobId={job?.job_id}
+              />
+              <PreviewBlock title="字幕 Markdown" text={subtitlePreview} empty="字幕生成后显示时间戳预览" jobId={job?.job_id} />
+            </div>
+
+            <div className="frame-grid" aria-label="关键帧">
+              {previewImages.length === 0 ? (
+                <div className="empty-frames">
+                  <Image size={20} />
+                  <span>关键帧完成后显示在这里</span>
+                </div>
+              ) : (
+                previewImages.map((artifact) => (
+                  <figure key={artifact.path}>
+                    <img alt={artifact.label} src={artifact.asset_url} />
+                    <figcaption>{artifact.label}</figcaption>
+                  </figure>
+                ))
+              )}
+            </div>
+          </section>
+        </div>
+      </form>
+
+      {isSettingsOpen && (
+        <div className="modal-backdrop" onMouseDown={() => setIsSettingsOpen(false)}>
+          <section
+            aria-label="设置"
+            aria-modal="true"
+            className="settings-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <div className="modal-header">
+              <div>
+                <p className="eyebrow">Local Settings</p>
+                <h2>模型与运行环境设置</h2>
+              </div>
+              <button className="icon-button" onClick={() => setIsSettingsOpen(false)} title="关闭设置" type="button">
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <section className="settings-strip" aria-label="本地设置">
+                <div>
+                  <strong>本地配置文件</strong>
+                  <span title={health?.runtime?.settings.path}>
+                    保存 Base URL、模型和 API Key。Key 会明文写入本机配置文件。
+                  </span>
+                </div>
+                <div className="settings-actions">
+                  <button className="small-button strong" disabled={isSavingSettings} onClick={handleSaveSettings} type="button">
+                    {isSavingSettings ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+                    保存设置
+                  </button>
+                  <button className="small-button" disabled={isSavingSettings} onClick={handleClearSettings} type="button">
+                    清除设置
+                  </button>
+                </div>
+                {settingsMessage && <p className="settings-message">{settingsMessage}</p>}
+              </section>
+
+              <section className="api-section">
+                <div className="section-title">
+                  <Captions size={16} />
+                  <span>字幕转写配置</span>
+                </div>
+                <p className="field-help">
+                  {isLocalTranscription
+                    ? "本地 Faster Whisper 使用内置依赖或外部 Python worker；缺模型时可在这里下载。"
+                    : "远端转写使用 OpenAI-compatible API，请确认模型支持音频转写或多模态音频。"}
+                </p>
+
+                <label className="field">
+                  <span className="field-label">转写来源</span>
+                  <select
+                    value={transcriptionMode}
+                    onChange={(event) => {
+                      const nextMode = event.target.value as TranscriptionMode;
+                      setTranscriptionMode(nextMode);
+                      if (nextMode === "local_faster_whisper") {
+                        setTranscriptionModel("small");
+                      } else if (transcriptionMode === "local_faster_whisper") {
+                        setTranscriptionModel(nextMode === "chat_audio" ? "gpt-5.5" : "whisper-1");
+                      }
+                    }}
+                  >
+                    <option value="local_faster_whisper">本地 Faster Whisper</option>
+                    <option value="audio_transcriptions">Audio Transcriptions 端点</option>
+                    <option value="chat_audio">Chat 多模态音频兜底</option>
+                  </select>
+                </label>
+
+                {isLocalTranscription ? (
+                  <>
+                    <label className="field">
+                      <span className="field-label">本地模型</span>
+                      <select value={transcriptionModel} onChange={(event) => setTranscriptionModel(event.target.value)}>
+                        <option value="small">small（默认，速度/准确率均衡）</option>
+                        <option value="medium">medium（更准，更慢）</option>
+                        <option value="large-v3">large-v3（质量优先）</option>
+                        <option value="base">base（更快，准确率较低）</option>
+                      </select>
+                    </label>
+                    <div className="two-col">
+                      <label className="field">
+                        <span className="field-label">运行设备</span>
+                        <select
+                          value={localWhisperDevice}
+                          onChange={(event) => {
+                            const nextDevice = event.target.value as LocalWhisperDevice;
+                            setLocalWhisperDevice(nextDevice);
+                            if (nextDevice === "cuda" && localWhisperComputeType === "int8") {
+                              setLocalWhisperComputeType("float16");
+                            }
+                            if (nextDevice === "cpu" && localWhisperComputeType === "float16") {
+                              setLocalWhisperComputeType("int8");
+                            }
+                          }}
+                        >
+                          <option value="cpu">CPU（兼容优先）</option>
+                          <option value="cuda">CUDA GPU（NVIDIA）</option>
+                          <option value="auto">Auto（由 CTranslate2 判断）</option>
+                        </select>
+                      </label>
+
+                      <label className="field">
+                        <span className="field-label">计算精度</span>
+                        <select
+                          value={localWhisperComputeType}
+                          onChange={(event) => setLocalWhisperComputeType(event.target.value as LocalWhisperComputeType)}
+                        >
+                          <option value="int8">int8（CPU 推荐）</option>
+                          <option value="float16">float16（CUDA 推荐）</option>
+                          <option value="int8_float16">int8_float16（CUDA 省显存）</option>
+                          <option value="float32">float32（兼容调试）</option>
+                          <option value="default">default（库默认）</option>
+                        </select>
+                      </label>
+                    </div>
+                    <p className={localWhisperDevice === "cuda" && !health?.runtime?.faster_whisper.cuda_available ? "inline-warning" : "field-help"}>
+                      {health?.runtime?.faster_whisper.cuda_available
+                        ? `检测到 ${health.runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备；CUDA 建议使用 float16。`
+                        : "当前后端未检测到 CTranslate2 CUDA 设备；如需 GPU 加速，请确认 NVIDIA 驱动和 CUDA 版依赖可用。"}
+                    </p>
+                    {!selectedLocalModelAvailable && (
+                      <div className="model-download-box">
+                        <p className="inline-warning">
+                          <AlertTriangle size={15} />
+                          当前模型目录未发现 {transcriptionModel}：{health?.runtime?.local_models.root}
+                        </p>
+                        <button
+                          className="small-button strong"
+                          disabled={modelDownload?.status === "pending" || modelDownload?.status === "running"}
+                          onClick={handleDownloadLocalModel}
+                          type="button"
+                        >
+                          {modelDownload?.status === "pending" || modelDownload?.status === "running" ? (
+                            <Loader2 className="spin" size={15} />
+                          ) : (
+                            <Download size={15} />
+                          )}
+                          下载 {transcriptionModel}
+                        </button>
+                        {modelDownload && modelDownload.model_name === transcriptionModel && (
+                          <p className="settings-message">
+                            {modelDownload.status === "pending" && "准备下载模型..."}
+                            {modelDownload.status === "running" && "正在下载模型，完成前请保持网络连接..."}
+                            {modelDownload.status === "succeeded" && "模型已下载完成，可以开始生成。"}
+                            {modelDownload.status === "failed" && `下载失败：${modelDownload.error || modelDownloadError}`}
+                          </p>
+                        )}
+                        {modelDownloadError && <p className="inline-error">{modelDownloadError}</p>}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <label className="field">
+                      <span className="field-label">Base URL</span>
+                      <input value={transcriptionBaseUrl} onChange={(event) => setTranscriptionBaseUrl(event.target.value)} />
+                    </label>
+
+                    <label className="field">
+                      <span className="field-label">转写模型</span>
+                      <input value={transcriptionModel} onChange={(event) => setTranscriptionModel(event.target.value)} />
+                    </label>
+
+                    <label className="field">
+                      <span className="field-label">
+                        <KeyRound size={15} />
+                        转写 API Key
+                      </span>
+                      <input
+                        autoComplete="off"
+                        placeholder="可保存到本地设置"
+                        type="password"
+                        value={transcriptionApiKey}
+                        onChange={(event) => setTranscriptionApiKey(event.target.value)}
+                      />
+                    </label>
+                  </>
+                )}
+              </section>
+
+              <section className="api-section">
+                <div className="section-title">
+                  <FileText size={16} />
+                  <span>笔记生成 API</span>
+                </div>
+                <p className="field-help">用于把字幕整理为结构化笔记。可填 OpenAI、Qwen 或其他 OpenAI-compatible Chat API。</p>
+
+                <div className="preset-row" aria-label="常用 Base URL">
+                  <button type="button" onClick={() => setNoteBaseUrl(OPENAI_BASE_URL)}>
+                    OpenAI
+                  </button>
+                  <button type="button" onClick={() => setNoteBaseUrl(QWEN_BASE_URL)}>
+                    Qwen
+                  </button>
+                </div>
+
+                <label className="field">
+                  <span className="field-label">Base URL</span>
+                  <input value={noteBaseUrl} onChange={(event) => setNoteBaseUrl(event.target.value)} />
+                </label>
+
+                <label className="field">
+                  <span className="field-label">笔记模型</span>
+                  <input value={noteModel} onChange={(event) => setNoteModel(event.target.value)} />
+                </label>
+
+                <label className="field">
+                  <span className="field-label">
+                    <KeyRound size={15} />
+                    笔记 API Key
+                  </span>
+                  <input
+                    autoComplete="off"
+                    placeholder="可保存到本地设置"
+                    type="password"
+                    value={noteApiKey}
+                    onChange={(event) => setNoteApiKey(event.target.value)}
+                  />
+                </label>
+              </section>
+
+              <section className="api-section">
+                <div className="section-title">
+                  <Server size={16} />
+                  <span>运行环境</span>
+                </div>
+                <RuntimeStatusCard runtime={health?.runtime ?? null} />
+              </section>
+            </div>
+
+            <div className="modal-footer">
+              <button className="small-button" onClick={() => setIsSettingsOpen(false)} type="button">
+                关闭
+              </button>
+              <button className="small-button strong" disabled={isSavingSettings} onClick={handleSaveSettings} type="button">
+                {isSavingSettings ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+                保存设置
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+    </main>
+  );
+}
+
+async function fetchJob(jobId: string): Promise<JobState> {
+  const response = await fetch(`/api/jobs/${jobId}`);
+  if (!response.ok) {
+    throw new Error("任务状态读取失败。");
+  }
+  return response.json();
+}
+
+async function fetchNoteVersions(jobId: string): Promise<NoteVersionIndex> {
+  const response = await fetch(`/api/jobs/${jobId}/note-versions`);
+  if (!response.ok) {
+    throw new Error("笔记版本读取失败。");
+  }
+  return response.json();
+}
+
+function NoteVersionPanel({
+  activeVersionId,
+  disabled,
+  error,
+  isRegenerating,
+  isSaving,
+  jobId,
+  onActivate,
+  onPreview,
+  onRegenerate,
+  onToggleSelected,
+  previewVersionId,
+  versions
+}: {
+  activeVersionId: string;
+  disabled: boolean;
+  error: string;
+  isRegenerating: boolean;
+  isSaving: boolean;
+  jobId?: string;
+  onActivate: (versionId: string) => void;
+  onPreview: (versionId: string) => void;
+  onRegenerate: () => void;
+  onToggleSelected: (versionId: string, selected: boolean) => void;
+  previewVersionId: string;
+  versions: NoteVersion[];
+}) {
+  return (
+    <section className="version-panel" aria-label="笔记版本">
+      <div className="version-panel-header">
+        <div>
+          <div className="section-title">
+            <History size={16} />
+            <span>笔记版本</span>
+          </div>
+          <p className="field-help">重生成只复用已有字幕与源视频，旧版本会保留，可选择多个版本进入 ZIP。</p>
+        </div>
+        <button className="small-button strong" disabled={disabled} onClick={onRegenerate} type="button">
+          {isRegenerating ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+          重新生成笔记
+        </button>
+      </div>
+
+      {error && (
+        <p className="inline-error">
+          <AlertTriangle size={15} />
+          {error}
+        </p>
+      )}
+
+      {versions.length === 0 ? (
+        <p className="empty-state">完成第一次全流程后，这里会显示 note_001。</p>
+      ) : (
+        <div className="version-list">
+          {versions.map((version) => {
+            const isActive = version.id === activeVersionId;
+            const isPreviewing = version.id === previewVersionId;
+            return (
+              <article className={`version-card ${isActive ? "active" : ""} ${isPreviewing ? "previewing" : ""}`} key={version.id}>
+                <div className="version-card-main">
+                  <button
+                    className="version-title-button"
+                    disabled={isSaving}
+                    onClick={() => onPreview(version.id)}
+                    type="button"
+                  >
+                    <FileText size={15} />
+                    <strong>{version.id}</strong>
+                    <span>{formatNoteStyle(version.note_style)}</span>
+                  </button>
+                  <div className="version-badges">
+                    {isActive && <span className="mini-badge ok">主版本</span>}
+                    {isPreviewing && <span className="mini-badge">预览中</span>}
+                  </div>
+                </div>
+
+                <div className="version-meta">
+                  <span>{version.note_model}</span>
+                  <span>{formatVersionTime(version.created_at)}</span>
+                  <span>{version.frame_limit} 帧</span>
+                </div>
+
+                <div className="version-actions">
+                  <label className={`version-check ${isActive ? "locked" : ""}`}>
+                    <input
+                      checked={version.selected}
+                      disabled={isSaving || isActive}
+                      onChange={(event) => onToggleSelected(version.id, event.target.checked)}
+                      type="checkbox"
+                    />
+                    <span>保存到 ZIP</span>
+                  </label>
+                  <button className="small-button" disabled={isSaving} onClick={() => onPreview(version.id)} type="button">
+                    预览
+                  </button>
+                  <button
+                    className="small-button"
+                    disabled={isSaving || isActive}
+                    onClick={() => onActivate(version.id)}
+                    type="button"
+                  >
+                    设为主版本
+                  </button>
+                  {jobId && (
+                    <a className="small-button" href={`/api/jobs/${jobId}/assets/${version.note_path}`}>
+                      <Download size={15} />
+                      下载
+                    </a>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function formatNoteStyle(style: NoteStyle) {
+  return noteStyleOptions.find((option) => option.value === style)?.label ?? style;
+}
+
+function formatVersionTime(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
+}
+
+function ModelUsageList({
+  localWhisperComputeType,
+  localWhisperDevice,
+  transcriptionMode,
+  transcriptionModel,
+  noteModel
+}: {
+  localWhisperComputeType: LocalWhisperComputeType;
+  localWhisperDevice: LocalWhisperDevice;
+  transcriptionMode: TranscriptionMode;
+  transcriptionModel: string;
+  noteModel: string;
+}) {
+  return (
+    <div className="model-usage">
+      <div>
+        <Captions size={16} />
+        <span>字幕转写</span>
+        <strong>
+          {transcriptionModel || "未设置"} /{" "}
+          {transcriptionMode === "local_faster_whisper"
+            ? `本地 Faster Whisper · ${localWhisperDevice.toUpperCase()} · ${localWhisperComputeType}`
+            : transcriptionMode === "chat_audio"
+              ? "Chat audio"
+              : "Audio endpoint"}
+        </strong>
+      </div>
+      <div>
+        <FileText size={16} />
+        <span>笔记生成</span>
+        <strong>{noteModel || "未设置"}</strong>
+      </div>
+      <div>
+        <Music size={16} />
+        <span>音频分离</span>
+        <strong>FFmpeg</strong>
+      </div>
+      <div>
+        <Image size={16} />
+        <span>关键帧抽取</span>
+        <strong>FFmpeg + 笔记时间点</strong>
+      </div>
+    </div>
+  );
+}
+
+function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
+  if (!runtime) {
+    return (
+      <section className="runtime-card">
+        <div className="runtime-item muted">
+          <Server size={16} />
+          <div>
+            <strong>运行环境</strong>
+            <span>等待后端状态</span>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const fasterWhisperDetail = runtime.faster_whisper.internal_available
+    ? "内置 Faster Whisper 可用"
+    : runtime.faster_whisper.external_worker_available
+      ? `外部 Python worker：${runtime.faster_whisper.external_python_path ?? "已发现"}`
+      : runtime.faster_whisper.install_hint;
+
+  return (
+    <section className="runtime-card" aria-label="运行环境检测">
+      <RuntimeItem
+        ok={runtime.ffmpeg.available}
+        title="FFmpeg"
+        detail={runtime.ffmpeg.available ? runtime.ffmpeg.path || "可用" : runtime.ffmpeg.install_hint}
+      />
+      <RuntimeItem ok={runtime.faster_whisper.available} title="本地转写" detail={fasterWhisperDetail} />
+      <RuntimeItem
+        ok={runtime.faster_whisper.cuda_available}
+        soft
+        title="CUDA 加速"
+        detail={
+          runtime.faster_whisper.cuda_available
+            ? `CTranslate2 检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备`
+            : "未检测到 CUDA 设备；CPU 模式仍可使用"
+        }
+      />
+      <RuntimeItem
+        ok={runtime.local_models.models.length > 0}
+        soft
+        title="本地模型目录"
+        detail={
+          runtime.local_models.models.length > 0
+            ? `${runtime.local_models.models.join(", ")} · ${runtime.local_models.root}`
+            : `未发现已缓存模型 · ${runtime.local_models.root}`
+        }
+      />
+      <RuntimeItem soft ok title="配置文件" detail={runtime.settings.path} />
+    </section>
+  );
+}
+
+function RuntimeItem({ detail, ok, soft, title }: { detail: string; ok: boolean; soft?: boolean; title: string }) {
+  return (
+    <div className={`runtime-item ${ok ? "ok" : soft ? "soft" : "warn"}`} title={detail}>
+      {ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
+      <div>
+        <strong>{title}</strong>
+        <span>{detail}</span>
+      </div>
+    </div>
+  );
+}
+
+function HealthBadge({ health }: { health: HealthState | null }) {
+  if (!health) {
+    return <span className="badge muted">后端未连接</span>;
+  }
+  if (health.runtime) {
+    const runtimeOk = health.runtime.ffmpeg.available && health.runtime.faster_whisper.available;
+    return (
+      <span className={runtimeOk ? "badge ok" : "badge warn"} title={health.runtime.settings.path}>
+        {runtimeOk ? "运行环境可用" : "依赖待处理"}
+      </span>
+    );
+  }
+  return (
+    <span className={health.ffmpeg_available ? "badge ok" : "badge warn"} title={health.ffmpeg_path ?? undefined}>
+      {health.ffmpeg_available ? "FFmpeg 可用" : "缺少 FFmpeg"}
+    </span>
+  );
+}
+
+function StatusBadge({ job, isSubmitting }: { job: JobState | null; isSubmitting: boolean }) {
+  if (isSubmitting) {
+    return <span className="badge running">创建任务</span>;
+  }
+  if (!job) {
+    return <span className="badge muted">未开始</span>;
+  }
+  return <span className={`badge ${job.status}`}>{statusText[job.status]}</span>;
+}
+
+function PanelTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
+  return (
+    <div className="panel-title">
+      {icon}
+      <h2>{title}</h2>
+    </div>
+  );
+}
+
+function StepList({ job }: { job: JobState | null }) {
+  const steps = [
+    { label: "音频分离", icon: <Music size={17} />, threshold: 15 },
+    { label: "字幕生成", icon: <Captions size={17} />, threshold: 35 },
+    { label: "笔记生成", icon: <FileText size={17} />, threshold: 60 },
+    { label: "关键帧抽取", icon: <Image size={17} />, threshold: 78 },
+    { label: "Markdown 输出", icon: <CheckCircle2 size={17} />, threshold: 90 }
+  ];
+  return (
+    <ol className="step-list">
+      {steps.map((step) => {
+        const done = (job?.progress ?? 0) >= step.threshold && job?.status !== "failed";
+        const active = job?.step === step.label;
+        return (
+          <li className={done ? "done" : active ? "active" : ""} key={step.label}>
+            {step.icon}
+            <span>{step.label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+function ArtifactList({ job }: { job: JobState | null }) {
+  const artifacts = job?.artifacts ?? [];
+  if (artifacts.length === 0) {
+    return <p className="empty-state">生成产物会按音频、字幕、笔记和图片逐步出现。</p>;
+  }
+  return (
+    <div className="artifact-list">
+      {artifacts.slice(0, 8).map((artifact) => (
+        <a href={artifact.asset_url} key={artifact.path}>
+          <Download size={14} />
+          <span>{artifact.label}</span>
+        </a>
+      ))}
+    </div>
+  );
+}
+
+function DownloadLink({ job, artifactPath, label }: { job: JobState | null; artifactPath: string; label: string }) {
+  const artifact = job?.artifacts.find((item) => item.path === artifactPath);
+  if (!artifact) {
+    return (
+      <button className="small-button" disabled type="button">
+        <Download size={15} />
+        {label}
+      </button>
+    );
+  }
+  return (
+    <a className="small-button" href={artifact.asset_url}>
+      <Download size={15} />
+      {label}
+    </a>
+  );
+}
+
+function PreviewBlock({
+  assetBasePath,
+  title,
+  text,
+  empty,
+  jobId
+}: {
+  assetBasePath?: string;
+  title: string;
+  text: string;
+  empty: string;
+  jobId?: string;
+}) {
+  return (
+    <section className="preview-block">
+      <h3>{title}</h3>
+      {text ? <MarkdownPreview assetBasePath={assetBasePath} markdown={text} jobId={jobId} /> : <p>{empty}</p>}
+    </section>
+  );
+}
+
+function MarkdownPreview({ assetBasePath, markdown, jobId }: { assetBasePath?: string; markdown: string; jobId?: string }) {
+  return (
+    <div className="markdown-preview">
+      {parseMarkdown(markdown).map((block, index) => {
+        if (block.type === "heading") {
+          return <MarkdownHeading key={index} level={block.level} text={block.text} />;
+        }
+        if (block.type === "list") {
+          const items = block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>);
+          return block.ordered ? <ol key={index}>{items}</ol> : <ul key={index}>{items}</ul>;
+        }
+        if (block.type === "image") {
+          const src = resolvePreviewAssetUrl(block.src, jobId, assetBasePath);
+          if (!src) {
+            return (
+              <p className="markdown-unsupported" key={index}>
+                {block.alt || block.src}
+              </p>
+            );
+          }
+          return (
+            <figure className="markdown-image" key={index}>
+              <img alt={block.alt} src={src} />
+              {block.alt && <figcaption>{block.alt}</figcaption>}
+            </figure>
+          );
+        }
+        return <p key={index}>{block.text}</p>;
+      })}
+    </div>
+  );
+}
+
+function MarkdownHeading({ level, text }: { level: number; text: string }) {
+  if (level === 1) return <h1>{text}</h1>;
+  if (level === 2) return <h2>{text}</h2>;
+  if (level === 3) return <h3>{text}</h3>;
+  if (level === 4) return <h4>{text}</h4>;
+  if (level === 5) return <h5>{text}</h5>;
+  return <h6>{text}</h6>;
+}
+
+function parseMarkdown(markdown: string): MarkdownBlock[] {
+  const blocks: MarkdownBlock[] = [];
+  let paragraph: string[] = [];
+  let list: Extract<MarkdownBlock, { type: "list" }> | null = null;
+
+  const flushParagraph = () => {
+    if (paragraph.length > 0) {
+      blocks.push({ type: "paragraph", text: paragraph.join(" ") });
+      paragraph = [];
+    }
+  };
+  const flushList = () => {
+    if (list) {
+      blocks.push(list);
+      list = null;
+    }
+  };
+
+  for (const line of markdown.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      flushParagraph();
+      flushList();
+      continue;
+    }
+
+    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
+    const image = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(trimmed);
+    const unordered = /^[-*]\s+(.+)$/.exec(trimmed);
+    const ordered = /^\d+[.)]\s+(.+)$/.exec(trimmed);
+
+    if (heading) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "heading", level: heading[1].length, text: heading[2].trim() });
+    } else if (image) {
+      flushParagraph();
+      flushList();
+      blocks.push({ type: "image", alt: image[1].trim(), src: image[2].trim() });
+    } else if (unordered || ordered) {
+      flushParagraph();
+      const isOrdered = Boolean(ordered);
+      if (!list || list.ordered !== isOrdered) {
+        flushList();
+        list = { type: "list", ordered: isOrdered, items: [] };
+      }
+      list.items.push((ordered?.[1] ?? unordered?.[1] ?? "").trim());
+    } else {
+      flushList();
+      paragraph.push(trimmed);
+    }
+  }
+
+  flushParagraph();
+  flushList();
+  return blocks;
+}
+
+function extractMarkdownImages(markdown: string, jobId?: string, assetBasePath?: string): PreviewImage[] {
+  if (!jobId) {
+    return [];
+  }
+  return parseMarkdown(markdown)
+    .filter((block): block is Extract<MarkdownBlock, { type: "image" }> => block.type === "image")
+    .map((block, index) => ({
+      label: block.alt || `frame_${index + 1}`,
+      path: `${assetBasePath ? `${assetBasePath}/` : ""}${block.src}`.replace(/\\/g, "/"),
+      asset_url: resolvePreviewAssetUrl(block.src, jobId, assetBasePath)
+    }))
+    .filter((image) => image.asset_url);
+}
+
+function resolvePreviewAssetUrl(path: string, jobId?: string, assetBasePath?: string) {
+  const value = path.trim().replace(/^["']|["']$/g, "");
+  if (!jobId || !value || /^(?:[a-z][a-z\d+.-]*:|\/\/|\/)/i.test(value)) {
+    return "";
+  }
+  const normalizedPath = assetBasePath ? `${assetBasePath.replace(/\/$/, "")}/${value}` : value;
+  const segments = normalizedPath
+    .replace(/\\/g, "/")
+    .replace(/^\.?\//, "")
+    .split("/")
+    .filter((segment) => segment && segment !== "." && segment !== "..");
+  if (segments.length === 0) {
+    return "";
+  }
+  return `/api/jobs/${encodeURIComponent(jobId)}/assets/${segments.map(encodeURIComponent).join("/")}`;
+}

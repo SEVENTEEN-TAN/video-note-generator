@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import json
+from zipfile import ZipFile
+
+import pytest
+
+from backend.app import processor
+from backend.app.ffmpeg_tools import FFmpegError, run_ffmpeg
+from backend.app.job_store import JobStore
+from backend.app.models import Chapter, JobConfig, JobStatus, KeyMoment, NoteDraft, NoteLanguage
+
+
+def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, monkeypatch) -> None:
+    job_id = "test-job"
+    outputs_root = tmp_path / "outputs"
+    job_dir = outputs_root / job_id
+    source_dir = job_dir / "source_video"
+    source_dir.mkdir(parents=True)
+    video_path = source_dir / "input.mp4"
+
+    try:
+        run_ffmpeg(
+            [
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=320x180:rate=15",
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=1000:sample_rate=44100",
+                "-t",
+                "1.2",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "libx264",
+                "-c:a",
+                "aac",
+                str(video_path),
+            ]
+        )
+    except FFmpegError as exc:
+        pytest.skip(f"FFmpeg test video generation is unavailable: {exc}")
+
+    def fake_transcribe_audio(*args, **kwargs) -> dict:
+        return {"text": "hello world", "segments": [{"start": 0, "end": 1, "text": "hello world"}]}
+
+    def fake_generate_note_draft(*args, **kwargs) -> NoteDraft:
+        return NoteDraft(
+            title="Mock Note",
+            summary="Mock summary",
+            chapters=[
+                Chapter(
+                    title="Opening",
+                    start_time=0,
+                    end_time=1,
+                    bullets=["Mock point"],
+                    detail="Mock detail",
+                )
+            ],
+            key_moments=[KeyMoment(time=0.5, reason="Opening frame", chapter_index=0)],
+        )
+
+    monkeypatch.setattr(processor, "transcribe_audio", fake_transcribe_audio)
+    monkeypatch.setattr(processor, "generate_note_draft", fake_generate_note_draft)
+
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    config = JobConfig(
+        transcription_api_key="secret-transcription-key",
+        transcription_base_url="https://api.openai.com/v1",
+        transcription_model="whisper-1",
+        note_api_key="secret-note-key",
+        note_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        note_model="qwen-plus",
+        note_language=NoteLanguage.zh,
+        frame_limit=1,
+        original_filename="input.mp4",
+    )
+
+    processor.process_job(
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        config=config,
+        store=store,
+    )
+
+    state = store.get(job_id)
+    assert state is not None
+    assert state.status == JobStatus.succeeded
+    assert (job_dir / "audio.mp3").exists()
+    assert video_path.exists()
+    assert (job_dir / "subtitles.srt").exists()
+    assert (job_dir / "frames" / "frame_001.jpg").exists()
+    assert (job_dir / "note.md").exists()
+    assert (job_dir / "note_versions" / "note_001" / "note.md").exists()
+    assert (job_dir / "note_versions" / "note_001" / "frames" / "frame_001.jpg").exists()
+    assert (job_dir / "download.zip").exists()
+    metadata = json.loads((job_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert "api_key" not in metadata
+    metadata_text = (job_dir / "metadata.json").read_text(encoding="utf-8")
+    assert "secret-transcription-key" not in metadata_text
+    assert "secret-note-key" not in metadata_text
+    assert metadata["transcription_model"] == "whisper-1"
+    assert metadata["note_model"] == "qwen-plus"
+    assert "frames/frame_001.jpg" in (job_dir / "note.md").read_text(encoding="utf-8")
+    version_index = json.loads((job_dir / "note_versions" / "versions.json").read_text(encoding="utf-8"))
+    assert version_index["active_version_id"] == "note_001"
+    assert version_index["selected_version_ids"] == ["note_001"]
+
+    with ZipFile(job_dir / "download.zip") as archive:
+        names = set(archive.namelist())
+    assert "notes/note_001/note.md" in names
+    assert "notes/note_001/frames/frame_001.jpg" in names

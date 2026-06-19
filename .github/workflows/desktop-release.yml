@@ -1,0 +1,87 @@
+name: Desktop Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows desktop app
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install frontend dependencies
+        run: npm ci --prefix frontend
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r desktop/requirements.txt
+
+      - name: Run backend tests
+        run: python -m pytest backend\tests -q
+
+      - name: Build frontend
+        run: npm --prefix frontend run build
+
+      - name: Build desktop executable
+        run: python -m PyInstaller --clean --noconfirm desktop/VideoNoteGenerator.spec
+
+      - name: Package desktop app
+        shell: pwsh
+        run: |
+          Compress-Archive -Path "dist/VideoNoteGenerator/*" -DestinationPath "VideoNoteGenerator-windows-x64.zip" -Force
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoNoteGenerator-windows-x64
+          path: VideoNoteGenerator-windows-x64.zip
+          if-no-files-found: error
+
+      - name: Publish rolling release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = "desktop-latest"
+          $zip = "VideoNoteGenerator-windows-x64.zip"
+          $shortSha = "${{ github.sha }}".Substring(0, 7)
+          $notes = "Automated Windows desktop build for commit $shortSha. This release is updated on each push to main."
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f $tag "${{ github.sha }}"
+          git push --force origin "refs/tags/$tag"
+
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $zip --clobber
+            gh release edit $tag --title "Latest Desktop Build" --notes $notes
+          } else {
+            gh release create $tag $zip --title "Latest Desktop Build" --notes $notes --latest
+          }
