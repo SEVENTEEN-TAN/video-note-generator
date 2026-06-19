@@ -192,6 +192,7 @@ def test_local_faster_whisper_missing_dependency_reports_import_error(tmp_path, 
     audio_path = tmp_path / "audio.mp3"
     audio_path.write_bytes(b"fake audio")
     write_model_files(tmp_path / "models" / "small")
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
     monkeypatch.setattr(transcription, "WhisperModel", None)
     monkeypatch.setattr(transcription, "FASTER_WHISPER_IMPORT_ERROR", "No module named 'numpy._core._exceptions'")
     monkeypatch.setattr(
