@@ -46,3 +46,36 @@ def test_runtime_status_reports_install_hints_when_dependencies_missing(tmp_path
     assert status["faster_whisper"]["available"] is False
     assert "python -m pip install -r backend/requirements.txt" in status["faster_whisper"]["install_hint"]
     assert status["local_models"]["models"] == []
+
+
+def test_runtime_status_reports_external_cuda_runtime_error(tmp_path, monkeypatch) -> None:
+    worker_path = tmp_path / "worker.py"
+    worker_path.write_text("print('worker')", encoding="utf-8")
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(runtime_status, "get_ffmpeg_path", lambda: "C:/ffmpeg/bin/ffmpeg.exe")
+    monkeypatch.setattr(transcription, "WhisperModel", None)
+    monkeypatch.setattr(transcription, "FASTER_WHISPER_IMPORT_ERROR", "No module named 'faster_whisper'")
+    monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: worker_path)
+    monkeypatch.setattr(
+        runtime_status,
+        "get_internal_cuda_status",
+        lambda: {"source": "internal", "cuda_device_count": None, "cuda_runtime_available": False, "cuda_error": ""},
+    )
+    monkeypatch.setattr(
+        runtime_status,
+        "get_external_cuda_status",
+        lambda *_args: {
+            "source": "external",
+            "cuda_device_count": 1,
+            "cuda_runtime_available": False,
+            "cuda_error": "cublas64_12.dll is not found or cannot be loaded",
+        },
+    )
+
+    status = runtime_status.get_runtime_status()
+
+    assert status["faster_whisper"]["cuda_available"] is False
+    assert status["faster_whisper"]["cuda_device_count"] == 1
+    assert status["faster_whisper"]["cuda_source"] == "external"
+    assert "cublas64_12.dll" in status["faster_whisper"]["cuda_error"]

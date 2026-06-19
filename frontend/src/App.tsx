@@ -86,6 +86,10 @@ type RuntimeState = {
     internal_import_error: string;
     cuda_available: boolean;
     cuda_device_count?: number | null;
+    cuda_runtime_available?: boolean;
+    cuda_error?: string;
+    cuda_source?: string;
+    cuda_runtime_hint?: string;
     external_python_path?: string | null;
     external_worker_path: string;
     external_worker_available: boolean;
@@ -912,7 +916,9 @@ export function App() {
                     <p className={localWhisperDevice === "cuda" && !health?.runtime?.faster_whisper.cuda_available ? "inline-warning" : "field-help"}>
                       {health?.runtime?.faster_whisper.cuda_available
                         ? `检测到 ${health.runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备；CUDA 建议使用 float16。`
-                        : "当前后端未检测到 CTranslate2 CUDA 设备；如需 GPU 加速，请确认 NVIDIA 驱动和 CUDA 版依赖可用。"}
+                        : health?.runtime?.faster_whisper.cuda_error
+                          ? `CUDA 不可用：${health.runtime.faster_whisper.cuda_error}`
+                          : "当前后端未检测到 CTranslate2 CUDA 设备；如需 GPU 加速，请确认 NVIDIA 驱动和 CUDA 版依赖可用。"}
                     </p>
                     {!selectedLocalModelAvailable && (
                       <div className="model-download-box">
@@ -1258,6 +1264,11 @@ function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
     : runtime.faster_whisper.external_worker_available
       ? `外部 Python worker：${runtime.faster_whisper.external_python_path ?? "已发现"}`
       : runtime.faster_whisper.install_hint;
+  const cudaDetail = runtime.faster_whisper.cuda_available
+    ? `CTranslate2 检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备 · ${runtime.faster_whisper.cuda_source ?? "runtime"}`
+    : runtime.faster_whisper.cuda_error
+      ? `检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备，但 CUDA 推理运行库不可用：${runtime.faster_whisper.cuda_error}`
+      : runtime.faster_whisper.cuda_runtime_hint || "未检测到 CUDA 设备；CPU 模式仍可使用";
 
   return (
     <section className="runtime-card" aria-label="运行环境检测">
@@ -1271,11 +1282,7 @@ function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
         ok={runtime.faster_whisper.cuda_available}
         soft
         title="CUDA 加速"
-        detail={
-          runtime.faster_whisper.cuda_available
-            ? `CTranslate2 检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备`
-            : "未检测到 CUDA 设备；CPU 模式仍可使用"
-        }
+        detail={cudaDetail}
       />
       <RuntimeItem
         ok={runtime.local_models.models.length > 0}

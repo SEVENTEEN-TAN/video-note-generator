@@ -1,24 +1,35 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
+import os
+import site
 import sys
 from pathlib import Path
 
 REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")
+CUDA_RUNTIME_DLLS = ("cublas64_12.dll", "cudnn64_9.dll")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Faster Whisper transcription from an external Python runtime.")
     parser.add_argument("--audio", default="")
+    parser.add_argument("--runtime-status", action="store_true")
     parser.add_argument("--download-only", action="store_true")
-    parser.add_argument("--model", required=True)
-    parser.add_argument("--model-root", required=True)
+    parser.add_argument("--model", default="small")
+    parser.add_argument("--model-root", default="")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--compute-type", default="int8")
     args = parser.parse_args()
 
     try:
+        configure_cuda_dll_paths()
+        if args.runtime_status:
+            print(json.dumps(get_runtime_status(), ensure_ascii=False))
+            return 0
+        if not args.model_root:
+            raise RuntimeError("--model-root is required.")
         model_root = Path(args.model_root).expanduser()
         model_root.mkdir(parents=True, exist_ok=True)
         if args.download_only:
@@ -53,6 +64,115 @@ def main() -> int:
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1
+
+
+def get_runtime_status() -> dict:
+    status = {
+        "python_path": sys.executable,
+        "faster_whisper_available": False,
+        "faster_whisper_error": "",
+        "ctranslate2_available": False,
+        "ctranslate2_version": "",
+        "cuda_device_count": None,
+        "cuda_runtime_available": False,
+        "cuda_error": "",
+        "cuda_dll_dirs": [str(path) for path in discover_cuda_dll_dirs()],
+    }
+
+    try:
+        import ctranslate2
+
+        status["ctranslate2_available"] = True
+        status["ctranslate2_version"] = str(getattr(ctranslate2, "__version__", ""))
+        status["cuda_device_count"] = int(ctranslate2.get_cuda_device_count())
+    except Exception as exc:
+        status["cuda_error"] = str(exc)
+
+    try:
+        import faster_whisper  # noqa: F401
+
+        status["faster_whisper_available"] = True
+    except Exception as exc:
+        status["faster_whisper_error"] = str(exc)
+
+    if status["cuda_device_count"]:
+        missing = find_missing_cuda_runtime_dlls()
+        if missing:
+            details = "; ".join(f"{name}: {error}" for name, error in missing.items())
+            status["cuda_error"] = f"CUDA device is visible, but CUDA runtime DLLs are missing or cannot be loaded. {details}"
+        else:
+            status["cuda_runtime_available"] = True
+
+    return status
+
+
+def configure_cuda_dll_paths() -> None:
+    dll_dirs = discover_cuda_dll_dirs()
+    if not dll_dirs:
+        return
+    current_path = os.environ.get("PATH", "")
+    prefix = os.pathsep.join(str(path) for path in dll_dirs)
+    os.environ["PATH"] = f"{prefix}{os.pathsep}{current_path}" if current_path else prefix
+    add_dll_directory = getattr(os, "add_dll_directory", None)
+    if add_dll_directory is None:
+        return
+    for path in dll_dirs:
+        try:
+            add_dll_directory(str(path))
+        except OSError:
+            pass
+
+
+def discover_cuda_dll_dirs() -> list[Path]:
+    candidates: list[Path] = []
+    cuda_path = os.environ.get("CUDA_PATH", "").strip()
+    if cuda_path:
+        candidates.append(Path(cuda_path) / "bin")
+
+    site_roots: list[Path] = []
+    for value in sys.path:
+        if value:
+            site_roots.append(Path(value))
+    try:
+        site_roots.extend(Path(value) for value in site.getsitepackages())
+    except Exception:
+        pass
+    try:
+        site_roots.append(Path(site.getusersitepackages()))
+    except Exception:
+        pass
+
+    for root in site_roots:
+        nvidia_root = root / "nvidia"
+        if not nvidia_root.exists():
+            continue
+        for package_dir in nvidia_root.iterdir():
+            bin_dir = package_dir / "bin"
+            if bin_dir.exists():
+                candidates.append(bin_dir)
+
+    seen: set[str] = set()
+    result: list[Path] = []
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        key = str(resolved).lower()
+        if key not in seen and resolved.exists():
+            seen.add(key)
+            result.append(resolved)
+    return result
+
+
+def find_missing_cuda_runtime_dlls() -> dict[str, str]:
+    missing: dict[str, str] = {}
+    for name in CUDA_RUNTIME_DLLS:
+        try:
+            ctypes.WinDLL(name)
+        except Exception as exc:
+            missing[name] = str(exc)
+    return missing
 
 
 def resolve_local_faster_whisper_model(model_name: str, model_root: Path) -> str:

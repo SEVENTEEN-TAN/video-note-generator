@@ -86,7 +86,15 @@ npm run dev
 - CPU：兼容优先，推荐 `int8`。
 - CUDA GPU：NVIDIA 显卡加速，推荐 `float16`，显存紧张时可试 `int8_float16`。
 
-本机需要 NVIDIA 驱动和可用的 CTranslate2 CUDA 环境。设置页的“运行环境”会显示是否检测到 CUDA 设备。
+本机需要 NVIDIA 驱动和可用的 CTranslate2 CUDA 环境。设置页的“运行环境”会显示是否检测到 CUDA 设备，以及 cuBLAS/cuDNN 运行库是否能被外部 Python worker 加载。
+
+如果 CUDA 设备可见，但任务报 `cublas64_12.dll is not found or cannot be loaded`，说明 NVIDIA 驱动存在，但 CUDA 推理运行库缺失。可在外部 Python 环境中安装：
+
+```powershell
+python -m pip install -r backend/requirements-cuda.txt
+```
+
+安装后重启后端或桌面 app。worker 会自动把 Python 包里的 `nvidia/*/bin` 加到 DLL 搜索路径。
 
 也可以在启动后端前用环境变量覆盖旧版/脚本运行场景。默认配置优先保证 Windows CPU 可用：
 
