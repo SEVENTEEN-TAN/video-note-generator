@@ -11,6 +11,79 @@ from backend.app.job_store import JobStore
 from backend.app.models import Chapter, JobConfig, JobStatus, KeyMoment, NoteDraft, NoteLanguage
 
 
+
+
+def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> None:
+    job_id = "many-segments-job"
+    outputs_root = tmp_path / "outputs"
+    job_dir = outputs_root / job_id
+    source_dir = job_dir / "source_video"
+    source_dir.mkdir(parents=True)
+    video_path = source_dir / "input.mp4"
+    video_path.write_bytes(b"video")
+
+    segments = [
+        {"start": index * 2, "end": index * 2 + 1, "text": f"第 {index} 段字幕"}
+        for index in range(300)
+    ]
+
+    monkeypatch.setattr(processor, "probe_duration", lambda _path: 600.0)
+    monkeypatch.setattr(processor, "extract_mp3", lambda _video, audio: audio.write_bytes(b"audio"))
+    monkeypatch.setattr(
+        processor,
+        "transcribe_audio",
+        lambda *_args, **_kwargs: {"text": "\n".join(item["text"] for item in segments), "segments": segments},
+    )
+    monkeypatch.setattr(
+        processor,
+        "generate_note_draft",
+        lambda *_args, **_kwargs: NoteDraft(
+            title="长视频",
+            summary="summary",
+            chapters=[],
+            key_moments=[],
+            key_takeaways=[],
+            action_items=[],
+            markdown_body="",
+        ),
+    )
+    monkeypatch.setattr(
+        processor,
+        "create_note_version_from_draft",
+        lambda **kwargs: (kwargs["job_dir"] / "note.md").write_text("# 长视频\n", encoding="utf-8"),
+    )
+
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    config = JobConfig(
+        transcription_api_key="secret-transcription-key",
+        transcription_base_url="https://api.openai.com/v1",
+        transcription_model="whisper-1",
+        note_api_key="secret-note-key",
+        note_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        note_model="qwen-plus",
+        note_language=NoteLanguage.zh,
+        frame_limit=1,
+        original_filename="input.mp4",
+    )
+
+    processor.process_job(
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        config=config,
+        store=store,
+    )
+
+    state = store.get(job_id)
+    assert state is not None
+    assert state.status == JobStatus.succeeded, state.error
+    assert (job_dir / "transcript.json").exists()
+    assert (job_dir / "subtitles.md").exists()
+    assert "第 299 段字幕" in (job_dir / "subtitles.md").read_text(encoding="utf-8")
+    assert (job_dir / "download.zip").exists()
+
+
 def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, monkeypatch) -> None:
     job_id = "test-job"
     outputs_root = tmp_path / "outputs"

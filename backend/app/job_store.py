@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 
 from .models import Artifact, JobPublicState, JobStatus
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 class JobStore:
@@ -13,12 +18,16 @@ class JobStore:
         self._jobs: dict[str, JobPublicState] = {}
 
     def create(self, job_id: str) -> JobPublicState:
+        now = _now_iso()
         state = JobPublicState(
             job_id=job_id,
             status=JobStatus.pending,
             step="等待处理",
             progress=0,
             artifacts=[],
+            step_started_at=now,
+            updated_at=now,
+            stage_elapsed_seconds=0,
         )
         with self._lock:
             self._jobs[job_id] = state
@@ -39,6 +48,16 @@ class JobStore:
     ) -> None:
         with self._lock:
             state = self._jobs[job_id]
+            now = _now_iso()
+            old_step = state.step
+            new_step = step if step is not None else old_step
+            if new_step != old_step:
+                state.step_started_at = now
+            state.updated_at = now
+            if state.step_started_at:
+                started = datetime.fromisoformat(state.step_started_at)
+                current = datetime.fromisoformat(now)
+                state.stage_elapsed_seconds = max(0, (current - started).total_seconds())
             if status is not None:
                 state.status = status
             if step is not None:

@@ -16,6 +16,15 @@ class LLMError(RuntimeError):
 MAX_SINGLE_PROMPT_CHARS = 24_000
 MAX_CHUNK_TRANSCRIPT_CHARS = 12_000
 MAX_REDUCE_PROMPT_CHARS = 24_000
+LARGE_TRANSCRIPT_GAP_SECONDS = 45
+
+
+def estimate_prompt_tokens(text: str) -> int:
+    if not text:
+        return 0
+    ascii_chars = sum(1 for char in text if ord(char) < 128)
+    non_ascii_chars = len(text) - ascii_chars
+    return max(1, (ascii_chars + 3) // 4 + non_ascii_chars)
 
 
 NOTE_SCHEMA_DESCRIPTION = """
@@ -121,13 +130,15 @@ def render_transcript_lines(segments: list[TranscriptSegment]) -> list[str]:
     ]
 
 
-def chunk_segments(segments: list[TranscriptSegment], max_chars: int) -> list[list[TranscriptSegment]]:
+def chunk_segments(segments: list[TranscriptSegment], max_chars: int = MAX_CHUNK_TRANSCRIPT_CHARS) -> list[list[TranscriptSegment]]:
     chunks: list[list[TranscriptSegment]] = []
     current: list[TranscriptSegment] = []
     current_chars = 0
     for segment in segments:
         line_chars = len(segment.text) + 32
-        if current and current_chars + line_chars > max_chars:
+        has_large_gap = bool(current and segment.start - current[-1].end >= LARGE_TRANSCRIPT_GAP_SECONDS)
+        would_exceed = bool(current and current_chars + line_chars > max_chars)
+        if has_large_gap or would_exceed:
             chunks.append(current)
             current = []
             current_chars = 0
@@ -215,7 +226,7 @@ def generate_note_draft(
         note_style=config.note_style.value,
         extras=config.extras,
     )
-    if len(user_prompt) > MAX_SINGLE_PROMPT_CHARS:
+    if len(user_prompt) > MAX_SINGLE_PROMPT_CHARS or estimate_prompt_tokens(user_prompt) > MAX_SINGLE_PROMPT_CHARS // 4:
         return generate_chunked_note_draft(config, duration, segments, system_prompt)
 
     messages = [
@@ -256,9 +267,18 @@ def generate_chunked_note_draft(
             )
         )
 
-    reduce_prompt = build_reduce_prompt(config, duration, chunk_drafts)
-    if len(reduce_prompt) > MAX_REDUCE_PROMPT_CHARS:
-        reduce_prompt = build_reduce_prompt(config, duration, chunk_drafts, compact=True)
+    return reduce_note_drafts(config, duration, chunk_drafts, system_prompt)
+
+
+def reduce_note_drafts(
+    config: JobConfig,
+    duration: float | None,
+    partials: list[NoteDraft],
+    system_prompt: str,
+) -> NoteDraft:
+    reduce_prompt = build_reduce_prompt(config, duration, partials)
+    if len(reduce_prompt) > MAX_REDUCE_PROMPT_CHARS or estimate_prompt_tokens(reduce_prompt) > MAX_REDUCE_PROMPT_CHARS // 4:
+        reduce_prompt = build_reduce_prompt(config, duration, partials, compact=True)
     return call_note_model(
         config,
         [

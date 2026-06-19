@@ -79,7 +79,12 @@ def process_job(
         store.refresh_artifacts(job_id)
 
         store.update(job_id, step="字幕生成", progress=35)
-        transcript_payload = transcribe_audio(audio_path, config, job_dir)
+        transcript_payload = transcribe_audio(
+            audio_path,
+            config,
+            job_dir,
+            progress_callback=lambda step, progress: store.update(job_id, step=step, progress=progress),
+        )
         (job_dir / "transcript.json").write_text(
             json.dumps(transcript_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",

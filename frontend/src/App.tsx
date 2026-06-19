@@ -40,6 +40,9 @@ type JobState = {
   progress: number;
   error?: string | null;
   artifacts: Artifact[];
+  step_started_at?: string | null;
+  updated_at?: string | null;
+  stage_elapsed_seconds?: number;
 };
 
 type NoteVersion = {
@@ -188,6 +191,30 @@ const noteStyleOptions: Array<{ value: NoteStyle; label: string }> = [
   { value: "task_oriented", label: "task_oriented（任务导向）" },
   { value: "meeting_minutes", label: "meeting_minutes（会议纪要）" }
 ];
+
+function formatElapsedSeconds(seconds?: number): string {
+  if (!seconds || seconds < 1) {
+    return "少于 1 秒";
+  }
+
+  const totalSeconds = Math.floor(seconds);
+  const minutes = Math.floor(totalSeconds / 60);
+  const restSeconds = totalSeconds % 60;
+
+  if (minutes === 0) {
+    return `${restSeconds} 秒`;
+  }
+
+  return `${minutes} 分 ${restSeconds} 秒`;
+}
+
+function formatUpdateTime(value?: string | null): string {
+  if (!value) {
+    return "暂无";
+  }
+
+  return new Date(value).toLocaleTimeString();
+}
 
 export function App() {
   const [transcriptionApiKey, setTranscriptionApiKey] = useState("");
@@ -739,6 +766,12 @@ export function App() {
             </div>
           )}
           <StepList job={job} />
+          {job?.status === "running" && (
+            <div className="runtime-item muted">
+              <span>当前阶段耗时：{formatElapsedSeconds(job.stage_elapsed_seconds)}</span>
+              <span>最后更新：{formatUpdateTime(job.updated_at)}</span>
+            </div>
+          )}
           <ArtifactList job={job} />
         </section>
 
@@ -756,6 +789,9 @@ export function App() {
               <span>{video ? video.name : "选择视频文件"}</span>
               <small>支持 mp4、mov、mkv、webm、avi</small>
             </label>
+            <p className="runtime-item muted">
+              长视频处理可能长时间停留在“字幕生成”或“笔记生成”阶段。建议 1 小时级视频优先使用本地 CUDA 转写或 audio_transcriptions；chat_audio 更适合作为兜底模式。
+            </p>
 
             <section className="note-requirements">
               <div className="section-title">

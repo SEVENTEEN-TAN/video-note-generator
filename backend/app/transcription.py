@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
+from collections.abc import Callable
 
 from openai import OpenAI
 
@@ -21,6 +22,8 @@ STANDARD_TRANSCRIPTION_CHUNK_SECONDS = 600
 CHAT_AUDIO_CHUNK_SECONDS = 120
 FASTER_WHISPER_MODEL_ROOT = get_model_root()
 REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")
+ProgressCallback = Callable[[str, int], None]
+
 
 def load_internal_whisper_model() -> tuple[object | None, str]:
     try:
@@ -52,13 +55,18 @@ def dump_openai_model(value: object) -> dict:
     return json.loads(json.dumps(value, default=lambda item: getattr(item, "__dict__", str(item))))
 
 
-def transcribe_audio(audio_path: Path, config: JobConfig, work_dir: Path) -> dict:
+def transcribe_audio(
+    audio_path: Path,
+    config: JobConfig,
+    work_dir: Path,
+    progress_callback: ProgressCallback | None = None,
+) -> dict:
     if config.transcription_mode == TranscriptionMode.chat_audio:
-        payload = transcribe_with_chat_audio(audio_path, config, work_dir)
+        payload = transcribe_with_chat_audio(audio_path, config, work_dir, progress_callback=progress_callback)
     elif config.transcription_mode == TranscriptionMode.local_faster_whisper:
         payload = transcribe_with_faster_whisper(audio_path, config)
     else:
-        payload = transcribe_with_audio_endpoint(audio_path, config, work_dir)
+        payload = transcribe_with_audio_endpoint(audio_path, config, work_dir, progress_callback=progress_callback)
     return payload.model_dump()
 
 
@@ -256,14 +264,23 @@ def faster_whisper_segments_to_payload(segments_raw: object) -> TranscriptPayloa
     return TranscriptPayload(text=" ".join(full_text_parts).strip(), segments=segments)
 
 
-def transcribe_with_audio_endpoint(audio_path: Path, config: JobConfig, work_dir: Path) -> TranscriptPayload:
+def transcribe_with_audio_endpoint(
+    audio_path: Path,
+    config: JobConfig,
+    work_dir: Path,
+    progress_callback: ProgressCallback | None = None,
+) -> TranscriptPayload:
     if audio_path.stat().st_size <= MAX_TRANSCRIPTION_FILE_BYTES:
         return parse_transcription_payload(call_audio_endpoint(audio_path, config))
 
     chunks = split_audio(audio_path, work_dir / "transcription_chunks", STANDARD_TRANSCRIPTION_CHUNK_SECONDS)
     merged_segments: list[TranscriptSegment] = []
     offset = 0.0
-    for chunk in chunks:
+    chunk_count = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
+        if progress_callback:
+            progress = 35 + int((index - 1) / max(chunk_count, 1) * 25)
+            progress_callback(f"字幕生成中：第 {index}/{chunk_count} 段转写中", progress)
         payload = parse_transcription_payload(call_audio_endpoint(chunk, config))
         for segment in payload.segments:
             merged_segments.append(
@@ -292,12 +309,21 @@ def call_audio_endpoint(audio_path: Path, config: JobConfig) -> dict:
     return dump_openai_model(response)
 
 
-def transcribe_with_chat_audio(audio_path: Path, config: JobConfig, work_dir: Path) -> TranscriptPayload:
+def transcribe_with_chat_audio(
+    audio_path: Path,
+    config: JobConfig,
+    work_dir: Path,
+    progress_callback: ProgressCallback | None = None,
+) -> TranscriptPayload:
     chunks = split_audio(audio_path, work_dir / "chat_audio_chunks", CHAT_AUDIO_CHUNK_SECONDS)
     client = make_client(config.transcription_api_key, config.transcription_base_url)
     merged_segments: list[TranscriptSegment] = []
     offset = 0.0
-    for chunk in chunks:
+    chunk_count = len(chunks)
+    for index, chunk in enumerate(chunks, start=1):
+        if progress_callback:
+            progress = 35 + int((index - 1) / max(chunk_count, 1) * 25)
+            progress_callback(f"字幕生成中：第 {index}/{chunk_count} 段音频理解中", progress)
         payload = call_chat_audio_transcription(client, chunk, config.transcription_model, offset)
         for segment in payload.segments:
             merged_segments.append(segment)
