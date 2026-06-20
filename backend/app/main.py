@@ -170,8 +170,8 @@ async def create_job(
         raise HTTPException(status_code=400, detail="Transcription model is required.")
     if not note_model.strip():
         raise HTTPException(status_code=400, detail="Note model is required.")
-    if frame_limit < 1 or frame_limit > 12:
-        raise HTTPException(status_code=400, detail="frame_limit must be between 1 and 12.")
+    if frame_limit < 1 or frame_limit > 24:
+        raise HTTPException(status_code=400, detail="frame_limit must be between 1 and 24.")
     if transcription_mode == TranscriptionMode.local_faster_whisper:
         try:
             resolve_local_faster_whisper_model(transcription_model, get_faster_whisper_model_root())
@@ -297,8 +297,8 @@ def regenerate_note_version_endpoint(
         raise HTTPException(status_code=400, detail="Note API Key is required.")
     if not note_model.strip():
         raise HTTPException(status_code=400, detail="Note model is required.")
-    if frame_limit < 1 or frame_limit > 12:
-        raise HTTPException(status_code=400, detail="frame_limit must be between 1 and 12.")
+    if frame_limit < 1 or frame_limit > 24:
+        raise HTTPException(status_code=400, detail="frame_limit must be between 1 and 24.")
 
     metadata = read_metadata(job_dir)
     config = JobConfig(

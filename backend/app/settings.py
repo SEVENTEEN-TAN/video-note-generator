@@ -28,7 +28,7 @@ class UserSettings(BaseModel):
     note_language: NoteLanguage = NoteLanguage.zh
     note_style: NoteStyle = NoteStyle.detailed
     extras: str = ""
-    frame_limit: int = Field(default=6, ge=1, le=12)
+    frame_limit: int = Field(default=6, ge=1, le=24)
 
     @field_validator(
         "transcription_api_key",
@@ -82,7 +82,7 @@ class UserSettingsUpdate(BaseModel):
     note_language: NoteLanguage | None = None
     note_style: NoteStyle | None = None
     extras: str | None = None
-    frame_limit: int | None = Field(default=None, ge=1, le=12)
+    frame_limit: int | None = Field(default=None, ge=1, le=24)
 
     @field_validator(
         "transcription_api_key",

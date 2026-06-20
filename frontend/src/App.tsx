@@ -823,7 +823,7 @@ export function App() {
                 <label className="field">
                   <span className="field-label">关键帧上限</span>
                   <input
-                    max={12}
+                    max={24}
                     min={1}
                     type="number"
                     value={frameLimit}

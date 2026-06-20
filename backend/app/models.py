@@ -62,7 +62,7 @@ class JobConfig(BaseModel):
     note_language: NoteLanguage
     note_style: NoteStyle = NoteStyle.detailed
     extras: str = ""
-    frame_limit: int = Field(default=6, ge=1, le=12)
+    frame_limit: int = Field(default=6, ge=1, le=24)
     original_filename: str
 
     @field_validator(
