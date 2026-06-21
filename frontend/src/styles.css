@@ -326,6 +326,13 @@ a {
   margin: 7px 0 0;
 }
 
+.long-video-hint {
+  background: #fbf8f1;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
 .field {
   display: grid;
   gap: 7px;
@@ -800,6 +807,18 @@ textarea:focus {
   line-height: 1.35;
   margin-top: 3px;
   overflow-wrap: anywhere;
+}
+
+.progress-meta {
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 12px;
+  gap: 8px 14px;
+  line-height: 1.45;
+  margin-top: 14px;
+  padding-top: 12px;
 }
 
 .artifact-list {

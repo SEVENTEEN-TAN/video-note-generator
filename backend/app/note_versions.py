@@ -152,7 +152,7 @@ def create_note_version_from_draft(
     version_draft.key_moments = selected_moments
 
     note_path = version_dir / "note.md"
-    note_path.write_text(render_note_markdown(version_draft), encoding="utf-8")
+    note_path.write_text(render_note_markdown(version_draft), encoding="utf-8-sig")
     version = NoteVersion(
         id=version_id,
         label=f"{version_id} · {config.note_style.value}",

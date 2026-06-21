@@ -45,6 +45,7 @@ Return only valid JSON with this shape:
   "key_moments": [
     {"time": 12.0, "reason": "why this frame illustrates the note", "chapter_index": 0}
   ],
+  "recommended_frame_count": 6,
   "key_takeaways": ["takeaway"],
   "action_items": ["action item"],
   "markdown_body": "optional additional markdown, no image paths"
@@ -118,7 +119,10 @@ Transcript with timestamps:
 {chr(10).join(transcript_lines)}
 
 Create a professional video note. Use only facts from the transcript. Preserve useful timestamps.
-Choose key moments that can work as visual illustrations. Keep key_moments length <= {frame_limit}.
+Choose key moments that can work as visual illustrations.
+Also estimate a sensible recommended_frame_count between 1 and {frame_limit}.
+Prefer fewer high-signal frames over repetitive frames.
+Keep key_moments length <= {frame_limit}.
 {NOTE_SCHEMA_DESCRIPTION}
 """.strip()
 
@@ -163,9 +167,44 @@ def extract_json(text: str) -> dict:
         return json.loads(match.group(0))
 
 
+def _sanitize_text(value: str) -> str:
+    return re.sub(r"�+", "", value).strip()
+
+
+def sanitize_note_draft(draft: NoteDraft) -> NoteDraft:
+    return draft.model_copy(
+        update={
+            "title": _sanitize_text(draft.title),
+            "summary": _sanitize_text(draft.summary),
+            "chapters": [
+                chapter.model_copy(
+                    update={
+                        "title": _sanitize_text(chapter.title),
+                        "bullets": [_sanitize_text(bullet) for bullet in chapter.bullets],
+                        "detail": _sanitize_text(chapter.detail),
+                        "quote_times": [_sanitize_text(item) for item in chapter.quote_times],
+                    }
+                )
+                for chapter in draft.chapters
+            ],
+            "key_moments": [
+                moment.model_copy(update={"reason": _sanitize_text(moment.reason)})
+                for moment in draft.key_moments
+            ],
+            "key_takeaways": [_sanitize_text(item) for item in draft.key_takeaways],
+            "action_items": [_sanitize_text(item) for item in draft.action_items],
+            "markdown_body": _sanitize_text(draft.markdown_body),
+        }
+    )
+
+
 def parse_note_draft(text: str) -> NoteDraft:
     try:
-        return NoteDraft.model_validate(extract_json(text))
+        draft = sanitize_note_draft(NoteDraft.model_validate(extract_json(text)))
+        if draft.recommended_frame_count is not None:
+            return draft
+        fallback = min(max(len(draft.key_moments), 1), 12)
+        return draft.model_copy(update={"recommended_frame_count": fallback})
     except Exception as exc:
         raise LLMError(f"Model returned invalid note JSON: {exc}") from exc
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import codecs
 import json
 from zipfile import ZipFile
 
@@ -9,8 +10,6 @@ from backend.app import processor
 from backend.app.ffmpeg_tools import FFmpegError, run_ffmpeg
 from backend.app.job_store import JobStore
 from backend.app.models import Chapter, JobConfig, JobStatus, KeyMoment, NoteDraft, NoteLanguage
-
-
 
 
 def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> None:
@@ -50,7 +49,7 @@ def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> 
     monkeypatch.setattr(
         processor,
         "create_note_version_from_draft",
-        lambda **kwargs: (kwargs["job_dir"] / "note.md").write_text("# 长视频\n", encoding="utf-8"),
+        lambda **kwargs: (kwargs["job_dir"] / "note.md").write_text("# 长视频\n", encoding="utf-8-sig"),
     )
 
     store = JobStore(outputs_root)
@@ -80,7 +79,7 @@ def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> 
     assert state.status == JobStatus.succeeded, state.error
     assert (job_dir / "transcript.json").exists()
     assert (job_dir / "subtitles.md").exists()
-    assert "第 299 段字幕" in (job_dir / "subtitles.md").read_text(encoding="utf-8")
+    assert "第 299 段字幕" in (job_dir / "subtitles.md").read_text(encoding="utf-8-sig")
     assert (job_dir / "download.zip").exists()
 
 
@@ -180,7 +179,10 @@ def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, mo
     assert "secret-note-key" not in metadata_text
     assert metadata["transcription_model"] == "whisper-1"
     assert metadata["note_model"] == "qwen-plus"
-    assert "frames/frame_001.jpg" in (job_dir / "note.md").read_text(encoding="utf-8")
+    assert (job_dir / "note.md").read_bytes().startswith(codecs.BOM_UTF8)
+    assert (job_dir / "subtitles.srt").read_bytes().startswith(codecs.BOM_UTF8)
+    assert (job_dir / "subtitles.md").read_bytes().startswith(codecs.BOM_UTF8)
+    assert "frames/frame_001.jpg" in (job_dir / "note.md").read_text(encoding="utf-8-sig")
     version_index = json.loads((job_dir / "note_versions" / "versions.json").read_text(encoding="utf-8"))
     assert version_index["active_version_id"] == "note_001"
     assert version_index["selected_version_ids"] == ["note_001"]

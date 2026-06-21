@@ -173,6 +173,16 @@ type PreviewImage = {
   asset_url: string;
 };
 
+declare global {
+  interface Window {
+    pywebview?: {
+      api?: {
+        save_file?: (suggestedName: string, sourceUrl: string) => Promise<{ ok: boolean; path?: string; reason?: string }>;
+      };
+    };
+  }
+}
+
 const OPENAI_BASE_URL = "https://api.openai.com/v1";
 const QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
 
@@ -250,6 +260,7 @@ export function App() {
   const [noteVersions, setNoteVersions] = useState<NoteVersionIndex | null>(null);
   const [previewVersionId, setPreviewVersionId] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [downloadMessage, setDownloadMessage] = useState("");
 
   async function pollTaskState<T extends PollableTaskState>(
     url: string,
@@ -759,6 +770,13 @@ export function App() {
       <form className="workspace-grid" onSubmit={handleSubmit}>
         <section className="panel progress-panel" aria-label="处理进度">
           <PanelTitle icon={<Server size={18} />} title="处理进度" />
+          <div className="progress-header">
+            <span>{job ? job.step : "等待任务"}</span>
+            <strong>{job ? `${job.progress}%` : "0%"}</strong>
+          </div>
+          <div className="progress-track">
+            <div style={{ width: `${job?.progress ?? 0}%` }} />
+          </div>
           {job?.error && (
             <div className="error-box">
               <AlertTriangle size={18} />
@@ -767,12 +785,12 @@ export function App() {
           )}
           <StepList job={job} />
           {job?.status === "running" && (
-            <div className="runtime-item muted">
+            <div className="progress-meta">
               <span>当前阶段耗时：{formatElapsedSeconds(job.stage_elapsed_seconds)}</span>
               <span>最后更新：{formatUpdateTime(job.updated_at)}</span>
             </div>
           )}
-          <ArtifactList job={job} />
+          <ArtifactList job={job} onDownloadError={setDownloadMessage} />
         </section>
 
         <div className="workspace-bottom">
@@ -789,7 +807,7 @@ export function App() {
               <span>{video ? video.name : "选择视频文件"}</span>
               <small>支持 mp4、mov、mkv、webm、avi</small>
             </label>
-            <p className="runtime-item muted">
+            <p className="field-help long-video-hint">
               长视频处理可能长时间停留在“字幕生成”或“笔记生成”阶段。建议 1 小时级视频优先使用本地 CUDA 转写或 audio_transcriptions；chat_audio 更适合作为兜底模式。
             </p>
 
@@ -860,14 +878,17 @@ export function App() {
             <PanelTitle icon={<FileText size={18} />} title="结果预览" />
             <div className="download-row">
               <div className="download-actions">
-                <DownloadLink job={job} artifactPath="note.md" label="Markdown" />
-                <DownloadLink job={job} artifactPath="subtitles.srt" label="SRT" />
-                <DownloadLink job={job} artifactPath="audio.mp3" label="MP3" />
-                {job?.artifacts.some((artifact) => artifact.path === "download.zip") && (
-                  <a className="small-button strong" href={`/api/jobs/${job.job_id}/download.zip`}>
-                    <FileArchive size={15} />
-                    ZIP
-                  </a>
+                <DownloadLink job={job} artifactPath="note.md" label="Markdown" onDownloadError={setDownloadMessage} />
+                <DownloadLink job={job} artifactPath="subtitles.srt" label="SRT" onDownloadError={setDownloadMessage} />
+                <DownloadLink job={job} artifactPath="audio.mp3" label="MP3" onDownloadError={setDownloadMessage} />
+                {job?.artifacts.some((artifact) => artifact.path === "download.zip") && job && (
+                  <ArtifactDownloadButton
+                    className="small-button strong"
+                    filename={`video-note-${job.job_id}.zip`}
+                    label="ZIP"
+                    onError={setDownloadMessage}
+                    url={`/api/jobs/${job.job_id}/download.zip`}
+                  />
                 )}
               </div>
               <button className="small-button strong" disabled={!job || isBusy} onClick={handleRegenerateNote} type="button">
@@ -875,6 +896,12 @@ export function App() {
                 重新生成笔记
               </button>
             </div>
+            {downloadMessage && (
+              <p className="inline-warning">
+                <AlertTriangle size={15} />
+                {downloadMessage}
+              </p>
+            )}
             {versionError && (
               <p className="inline-error">
                 <AlertTriangle size={15} />
@@ -1234,6 +1261,43 @@ async function fetchJob(jobId: string): Promise<JobState> {
   return response.json();
 }
 
+function isDesktopDownloadAvailable() {
+  return typeof window !== "undefined" && typeof window.pywebview?.api?.save_file === "function";
+}
+
+function buildAbsoluteUrl(path: string) {
+  return new URL(path, window.location.origin).toString();
+}
+
+function deriveDownloadFilename(path: string, fallbackLabel: string) {
+  const lastSegment = path.split("/").filter(Boolean).at(-1);
+  return lastSegment || fallbackLabel;
+}
+
+async function triggerBrowserDownload(url: string, filename: string) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`下载失败：${response.status}`);
+  }
+  const blob = await response.blob();
+  const objectUrl = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = objectUrl;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(objectUrl);
+}
+
+async function downloadArtifact(url: string, filename: string) {
+  if (isDesktopDownloadAvailable()) {
+    return window.pywebview!.api!.save_file!(filename, buildAbsoluteUrl(url));
+  }
+  await triggerBrowserDownload(url, filename);
+  return { ok: true };
+}
+
 async function fetchNoteVersions(jobId: string): Promise<NoteVersionIndex> {
   const response = await fetch(`/api/jobs/${jobId}/note-versions`);
   if (!response.ok) {
@@ -1380,7 +1444,7 @@ function StepList({ job }: { job: JobState | null }) {
   );
 }
 
-function ArtifactList({ job }: { job: JobState | null }) {
+function ArtifactList({ job, onDownloadError }: { job: JobState | null; onDownloadError: (message: string) => void }) {
   const artifacts = job?.artifacts ?? [];
   if (artifacts.length === 0) {
     return null;
@@ -1388,16 +1452,29 @@ function ArtifactList({ job }: { job: JobState | null }) {
   return (
     <div className="artifact-list">
       {artifacts.slice(0, 8).map((artifact) => (
-        <a href={artifact.asset_url} key={artifact.path}>
-          <Download size={14} />
-          <span>{artifact.label}</span>
-        </a>
+        <ArtifactDownloadButton
+          filename={deriveDownloadFilename(artifact.path, artifact.label)}
+          key={artifact.path}
+          label={artifact.label}
+          onError={onDownloadError}
+          url={artifact.asset_url}
+        />
       ))}
     </div>
   );
 }
 
-function DownloadLink({ job, artifactPath, label }: { job: JobState | null; artifactPath: string; label: string }) {
+function DownloadLink({
+  job,
+  artifactPath,
+  label,
+  onDownloadError
+}: {
+  job: JobState | null;
+  artifactPath: string;
+  label: string;
+  onDownloadError: (message: string) => void;
+}) {
   const artifact = job?.artifacts.find((item) => item.path === artifactPath);
   if (!artifact) {
     return (
@@ -1408,10 +1485,45 @@ function DownloadLink({ job, artifactPath, label }: { job: JobState | null; arti
     );
   }
   return (
-    <a className="small-button" href={artifact.asset_url}>
+    <ArtifactDownloadButton
+      filename={deriveDownloadFilename(artifact.path, `${label}.txt`)}
+      label={label}
+      onError={onDownloadError}
+      url={artifact.asset_url}
+    />
+  );
+}
+
+function ArtifactDownloadButton({
+  className = "small-button",
+  filename,
+  label,
+  onError,
+  url
+}: {
+  className?: string;
+  filename: string;
+  label: string;
+  onError: (message: string) => void;
+  url: string;
+}) {
+  async function handleClick() {
+    onError("");
+    try {
+      const result = await downloadArtifact(url, filename);
+      if (!result.ok && result.reason !== "cancelled") {
+        onError("下载失败，请稍后重试。");
+      }
+    } catch (error) {
+      onError(error instanceof Error ? error.message : "下载失败，请稍后重试。");
+    }
+  }
+
+  return (
+    <button className={className} onClick={handleClick} type="button">
       <Download size={15} />
       {label}
-    </a>
+    </button>
   );
 }
 

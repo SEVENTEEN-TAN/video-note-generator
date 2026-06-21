@@ -19,6 +19,8 @@ from .cuda_dependencies import (
     run_cuda_dependency_install,
     start_cuda_dependency_install,
 )
+from .ffmpeg_tools import extract_mp3, probe_duration
+from .llm import generate_note_draft
 from .local_dependencies import (
     LocalTranscriptionDependencyInstallState,
     get_local_dependency_install_state,
@@ -32,13 +34,23 @@ from .model_downloads import (
     run_model_download,
     start_model_download,
 )
-from .models import JobConfig, JobPublicState, NoteLanguage, NoteStyle, NoteVersionIndex, NoteVersionSelection, TranscriptionMode
+from .models import (
+    FrameSuggestion,
+    JobConfig,
+    JobPublicState,
+    NoteLanguage,
+    NoteStyle,
+    NoteVersionIndex,
+    NoteVersionSelection,
+    TranscriptionMode,
+)
 from .note_versions import activate_note_version, get_note_version, load_note_version_index, set_note_version_selection
 from .processor import create_zip, process_job, regenerate_note_job
 from .runtime_status import get_runtime_status
 from .runtime_paths import get_frontend_dist_dir, get_outputs_root
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
-from .transcription import TranscriptionError, get_faster_whisper_model_root, resolve_local_faster_whisper_model
+from .subtitles import transcript_segments_from_payload
+from .transcription import TranscriptionError, get_faster_whisper_model_root, resolve_local_faster_whisper_model, transcribe_audio
 
 OUTPUTS_ROOT = get_outputs_root()
 OUTPUTS_ROOT.mkdir(parents=True, exist_ok=True)
@@ -133,6 +145,90 @@ def download_faster_whisper_model_endpoint(
 @app.get("/api/models/faster-whisper/download/{model_name}", response_model=ModelDownloadState)
 def get_faster_whisper_model_download(model_name: str) -> ModelDownloadState:
     return get_model_download_state(model_name)
+
+
+@app.post("/api/jobs/frame-suggestion", response_model=FrameSuggestion)
+async def suggest_frame_count(
+    video: Annotated[UploadFile, File()],
+    note_language: Annotated[NoteLanguage, Form()],
+    note_style: Annotated[NoteStyle, Form()] = NoteStyle.detailed,
+    extras: Annotated[str, Form()] = "",
+    transcription_mode: Annotated[TranscriptionMode, Form()] = TranscriptionMode.audio_transcriptions,
+    transcription_api_key: Annotated[str, Form()] = "",
+    transcription_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
+    transcription_model: Annotated[str, Form()] = "whisper-1",
+    local_whisper_device: Annotated[str, Form()] = "",
+    local_whisper_compute_type: Annotated[str, Form()] = "",
+    note_api_key: Annotated[str, Form()] = "",
+    note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
+    note_model: Annotated[str, Form()] = "gpt-5.5",
+) -> FrameSuggestion:
+    suffix = Path(video.filename or "").suffix.lower()
+    if suffix not in ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported video format. Use one of: {', '.join(sorted(ALLOWED_EXTENSIONS))}.",
+        )
+    uses_remote_transcription = transcription_mode != TranscriptionMode.local_faster_whisper
+    if uses_remote_transcription and not transcription_api_key.strip():
+        raise HTTPException(status_code=400, detail="Transcription API Key is required.")
+    if uses_remote_transcription and not transcription_base_url.strip():
+        raise HTTPException(status_code=400, detail="Transcription Base URL is required.")
+    if not note_api_key.strip():
+        raise HTTPException(status_code=400, detail="Note API Key is required.")
+    if not transcription_model.strip():
+        raise HTTPException(status_code=400, detail="Transcription model is required.")
+    if not note_model.strip():
+        raise HTTPException(status_code=400, detail="Note model is required.")
+    if transcription_mode == TranscriptionMode.local_faster_whisper:
+        try:
+            resolve_local_faster_whisper_model(transcription_model, get_faster_whisper_model_root())
+        except TranscriptionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    temp_dir = OUTPUTS_ROOT / ".frame-suggestions" / uuid.uuid4().hex
+    source_dir = temp_dir / "source_video"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    video_path = source_dir / f"input{suffix}"
+    try:
+        with video_path.open("wb") as target:
+            shutil.copyfileobj(video.file, target)
+
+        config = JobConfig(
+            transcription_mode=transcription_mode,
+            transcription_api_key=transcription_api_key,
+            transcription_base_url=transcription_base_url,
+            transcription_model=transcription_model,
+            local_whisper_device=local_whisper_device,
+            local_whisper_compute_type=local_whisper_compute_type,
+            note_api_key=note_api_key,
+            note_base_url=note_base_url,
+            note_model=note_model,
+            note_language=note_language,
+            note_style=note_style,
+            extras=extras,
+            frame_limit=12,
+            original_filename=video.filename or video_path.name,
+        )
+        duration = probe_duration(video_path)
+        audio_path = temp_dir / "audio.mp3"
+        extract_mp3(video_path, audio_path)
+        transcript_payload = transcribe_audio(audio_path, config, temp_dir)
+        segments = transcript_segments_from_payload(transcript_payload)
+        if not segments:
+            raise HTTPException(status_code=400, detail="Transcription returned no usable text segments.")
+        draft = generate_note_draft(config, duration, segments)
+        return FrameSuggestion(
+            recommended_frame_count=draft.recommended_frame_count or min(max(len(draft.key_moments), 1), 12),
+            candidate_count=len(draft.key_moments),
+            reasons=[moment.reason for moment in draft.key_moments[:3]],
+        )
+    except HTTPException:
+        raise
+    except (OSError, TranscriptionError, Exception) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 @app.post("/api/jobs")
@@ -238,7 +334,11 @@ def get_asset(job_id: str, asset_path: str) -> FileResponse:
     file_path = safe_job_path(job_id, asset_path)
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Asset not found.")
-    return FileResponse(file_path)
+    suffix = file_path.suffix.lower()
+    inline_suffixes = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+    if suffix in inline_suffixes:
+        return FileResponse(file_path)
+    return FileResponse(file_path, filename=file_path.name)
 
 
 @app.get("/api/jobs/{job_id}/download.zip")
@@ -327,7 +427,7 @@ def read_job_text_file(job_id: str, filename: str) -> str:
     file_path = safe_job_path(job_id, filename)
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail=f"{filename} is not ready.")
-    return file_path.read_text(encoding="utf-8")
+    return file_path.read_text(encoding="utf-8-sig")
 
 
 def safe_job_dir(job_id: str) -> Path:

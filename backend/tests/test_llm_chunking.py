@@ -5,6 +5,7 @@ from backend.app.llm import (
     build_transcript_prompt,
     chunk_segments,
     estimate_prompt_tokens,
+    parse_note_draft,
 )
 from backend.app.models import JobConfig, NoteDraft, NoteLanguage, NoteStyle, TranscriptSegment, TranscriptionMode
 
@@ -158,3 +159,13 @@ def test_reduce_prompt_compacts_when_full_reduce_is_too_large(monkeypatch) -> No
 
     assert captured_prompts
     assert "m" * 100 not in captured_prompts[-1]
+
+
+def test_parse_note_draft_strips_replacement_characters() -> None:
+    draft = parse_note_draft(
+        '{"title":"展��AI大��型","summary":"sum","chapters":[],"key_moments":[{"time":12.0,"reason":"展��AI大��型课程官网","chapter_index":0}],"key_takeaways":[],"action_items":[],"markdown_body":"展��AI大��型"}'
+    )
+
+    assert "�" not in draft.title
+    assert "�" not in draft.key_moments[0].reason
+    assert "�" not in draft.markdown_body

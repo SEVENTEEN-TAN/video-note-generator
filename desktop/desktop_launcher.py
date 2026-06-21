@@ -18,6 +18,24 @@ APP_TITLE = "视频笔记生成器"
 HOST = "127.0.0.1"
 
 
+class DesktopBridge:
+    def save_file(self, suggested_name: str, source_url: str) -> dict[str, str | bool]:
+        import webview
+
+        selected = webview.windows[0].create_file_dialog(
+            webview.SAVE_DIALOG,
+            save_filename=suggested_name,
+        )
+        if not selected:
+            return {"ok": False, "reason": "cancelled"}
+
+        target = selected if isinstance(selected, str) else selected[0]
+        target_path = Path(target)
+        with urllib.request.urlopen(source_url, timeout=30) as response:
+            target_path.write_bytes(response.read())
+        return {"ok": True, "path": str(target_path)}
+
+
 def find_free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind((HOST, 0))
@@ -67,9 +85,11 @@ def log_error(message: str) -> None:
 def open_window(url: str) -> None:
     try:
         import webview
+
         webview.create_window(
             APP_TITLE,
             url,
+            js_api=DesktopBridge(),
             width=1420,
             height=940,
             min_size=(1040, 720),

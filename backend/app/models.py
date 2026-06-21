@@ -147,9 +147,16 @@ class NoteDraft(BaseModel):
     summary: str
     chapters: list[Chapter] = Field(default_factory=list)
     key_moments: list[KeyMoment] = Field(default_factory=list)
+    recommended_frame_count: int | None = Field(default=None, ge=1, le=12)
     key_takeaways: list[str] = Field(default_factory=list)
     action_items: list[str] = Field(default_factory=list)
     markdown_body: str = ""
+
+
+class FrameSuggestion(BaseModel):
+    recommended_frame_count: int
+    candidate_count: int
+    reasons: list[str] = Field(default_factory=list)
 
 
 class NoteVersion(BaseModel):
