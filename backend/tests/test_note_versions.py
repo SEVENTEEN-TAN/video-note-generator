@@ -152,4 +152,4 @@ def test_regenerate_note_version_reuses_transcript_and_creates_new_version(tmp_p
     assert version.note_style == NoteStyle.meeting_minutes
     assert (job_dir / "note_versions" / "note_001" / "note.md").exists()
     assert (job_dir / "note_versions" / "note_001" / "frames" / "frame_001.jpg").exists()
-    assert (job_dir / "note.md").read_text(encoding="utf-8").startswith("# Regenerated")
+    assert (job_dir / "note.md").read_text(encoding="utf-8-sig").startswith("# Regenerated")
