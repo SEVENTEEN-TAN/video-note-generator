@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
+
 from fastapi.testclient import TestClient
 
 from backend.app import main
+from backend.app.job_store import JobStore
 from backend.app.main import app
 from backend.app.models import Chapter, KeyMoment, NoteDraft
 
@@ -124,3 +127,37 @@ def test_create_job_accepts_frame_limit_24_and_exposes_stage_timestamps(tmp_path
     assert payload["step_started_at"]
     assert payload["updated_at"]
     assert payload["stage_elapsed_seconds"] == 0
+
+
+def test_create_job_keeps_previous_output_dirs(tmp_path, monkeypatch) -> None:
+    old_job_dirs = []
+    for index in range(4):
+        old_job_dir = tmp_path / f"old-job-{index}"
+        old_job_dir.mkdir()
+        (old_job_dir / "note.md").write_text("# old", encoding="utf-8")
+        os.utime(old_job_dir, (index + 1, index + 1))
+        old_job_dirs.append(old_job_dir)
+
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(main, "process_job", lambda **_kwargs: None)
+
+    response = TestClient(app).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_base_url": "https://api.openai.com/v1",
+            "transcription_model": "whisper-1",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "frame_limit": "6",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 200
+    assert all(job_dir.exists() for job_dir in old_job_dirs)

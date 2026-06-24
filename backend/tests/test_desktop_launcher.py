@@ -31,6 +31,20 @@ class FakeDownloadResponse:
         return self.payload
 
 
+class FakeThread:
+    def __init__(self) -> None:
+        self.joined_with: float | None = None
+
+    def join(self, timeout: float | None = None) -> None:
+        self.joined_with = timeout
+
+
+class FakeServer:
+    def __init__(self) -> None:
+        self.should_exit = False
+        self.force_exit = False
+
+
 def test_desktop_launcher_waits_on_lightweight_ready_endpoint(monkeypatch) -> None:
     requested_urls: list[str] = []
 
@@ -79,3 +93,33 @@ def test_desktop_bridge_saves_downloaded_file_to_selected_path(monkeypatch, tmp_
     assert result == {"ok": True, "path": str(target_path)}
     assert requested_urls == ["http://127.0.0.1:8000/api/jobs/job-1/assets/note.md"]
     assert target_path.read_bytes() == b"# saved"
+
+
+def test_desktop_server_handle_stops_uvicorn_thread() -> None:
+    server = FakeServer()
+    thread = FakeThread()
+
+    desktop_launcher.DesktopServerHandle(server=server, thread=thread).stop(timeout_seconds=1.5)
+
+    assert server.should_exit is True
+    assert server.force_exit is True
+    assert thread.joined_with == 1.5
+
+
+def test_destroy_other_webview_windows_keeps_main_and_closes_children() -> None:
+    destroyed: list[str] = []
+
+    class FakeWindow:
+        def __init__(self, uid: str) -> None:
+            self.uid = uid
+
+        def destroy(self) -> None:
+            destroyed.append(self.uid)
+
+    main_window = FakeWindow("master")
+    child_window = FakeWindow("child")
+    fake_webview = SimpleNamespace(windows=[main_window, child_window])
+
+    desktop_launcher.destroy_other_webview_windows(fake_webview, main_window)
+
+    assert destroyed == ["child"]

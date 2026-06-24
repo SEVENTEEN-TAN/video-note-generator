@@ -204,3 +204,19 @@ class JobPublicState(BaseModel):
     step_started_at: str | None = None
     updated_at: str | None = None
     stage_elapsed_seconds: float = 0
+
+
+class JobSummary(BaseModel):
+    job_id: str
+    title: str
+    original_filename: str
+    created_at: str | None = None
+    status: JobStatus
+    duration_seconds: float | None = None
+    artifact_count: int = 0
+    note_version_count: int = 0
+    active_version_id: str | None = None
+
+
+class JobHistory(BaseModel):
+    jobs: list[JobSummary] = Field(default_factory=list)

@@ -7,6 +7,7 @@ import time
 import traceback
 import urllib.request
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 
 import uvicorn
@@ -16,6 +17,20 @@ from backend.app.main import app
 
 APP_TITLE = "视频笔记生成器"
 HOST = "127.0.0.1"
+
+
+@dataclass
+class DesktopServerHandle:
+    server: uvicorn.Server
+    thread: threading.Thread
+
+    def stop(self, timeout_seconds: float = 5.0) -> None:
+        self.server.should_exit = True
+        if hasattr(self.server, "force_exit"):
+            self.server.force_exit = True
+        is_alive = getattr(self.thread, "is_alive", lambda: True)
+        if is_alive():
+            self.thread.join(timeout_seconds)
 
 
 class DesktopBridge:
@@ -42,7 +57,7 @@ def find_free_port() -> int:
         return int(sock.getsockname()[1])
 
 
-def run_server(port: int) -> uvicorn.Server:
+def run_server(port: int) -> DesktopServerHandle:
     config = uvicorn.Config(
         app,
         host=HOST,
@@ -54,7 +69,7 @@ def run_server(port: int) -> uvicorn.Server:
     server = uvicorn.Server(config)
     thread = threading.Thread(target=server.run, name="video-note-backend", daemon=True)
     thread.start()
-    return server
+    return DesktopServerHandle(server=server, thread=thread)
 
 
 def wait_until_ready(url: str, timeout_seconds: float = 20.0) -> None:
@@ -82,11 +97,22 @@ def log_error(message: str) -> None:
         log_file.write("\n")
 
 
-def open_window(url: str) -> None:
+def destroy_other_webview_windows(webview_module, main_window) -> None:
+    for window in list(getattr(webview_module, "windows", [])):
+        if window is main_window:
+            continue
+        try:
+            window.destroy()
+        except Exception:
+            log_error("Failed to destroy secondary WebView window.")
+            log_error(traceback.format_exc())
+
+
+def open_window(url: str, server_handle: DesktopServerHandle | None = None) -> None:
     try:
         import webview
 
-        webview.create_window(
+        window = webview.create_window(
             APP_TITLE,
             url,
             js_api=DesktopBridge(),
@@ -94,7 +120,17 @@ def open_window(url: str) -> None:
             height=940,
             min_size=(1040, 720),
         )
-        webview.start()
+
+        def cleanup_after_close() -> None:
+            destroy_other_webview_windows(webview, window)
+            if server_handle:
+                server_handle.stop(timeout_seconds=0.5)
+
+        window.events.closed += cleanup_after_close
+        try:
+            webview.start()
+        finally:
+            cleanup_after_close()
     except Exception:
         log_error("Native WebView failed; falling back to system browser.")
         log_error(traceback.format_exc())
@@ -106,12 +142,12 @@ def open_window(url: str) -> None:
 def main() -> None:
     port = find_free_port()
     url = f"http://{HOST}:{port}"
-    server = run_server(port)
+    server_handle = run_server(port)
     try:
         wait_until_ready(url)
-        open_window(url)
+        open_window(url, server_handle)
     finally:
-        server.should_exit = True
+        server_handle.stop()
 
 
 if __name__ == "__main__":

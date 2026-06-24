@@ -37,6 +37,7 @@ from .model_downloads import (
 from .models import (
     FrameSuggestion,
     JobConfig,
+    JobHistory,
     JobPublicState,
     NoteLanguage,
     NoteStyle,
@@ -298,6 +299,7 @@ async def create_job(
         frame_limit=frame_limit,
         original_filename=video.filename or video_path.name,
     )
+    sync_store_outputs_root()
     store.create(job_id)
     background_tasks.add_task(
         process_job,
@@ -310,13 +312,35 @@ async def create_job(
     return {"job_id": job_id}
 
 
+@app.get("/api/jobs", response_model=JobHistory)
+def list_jobs() -> JobHistory:
+    sync_store_outputs_root()
+    return JobHistory(jobs=store.list_history())
+
+
 @app.get("/api/jobs/{job_id}", response_model=JobPublicState)
 def get_job(job_id: str) -> JobPublicState:
+    sync_store_outputs_root()
     state = store.get(job_id)
+    if not state:
+        safe_job_dir(job_id)
+        state = store.load_from_disk(job_id)
     if not state:
         raise HTTPException(status_code=404, detail="Job not found.")
     store.refresh_artifacts(job_id)
     return state
+
+
+@app.delete("/api/jobs/{job_id}")
+def delete_job(job_id: str) -> dict:
+    sync_store_outputs_root()
+    state = store.get(job_id)
+    if state and state.status in {JobStatus.pending, JobStatus.running}:
+        raise HTTPException(status_code=409, detail="Cannot delete a running job.")
+    job_dir = safe_job_dir(job_id)
+    shutil.rmtree(job_dir)
+    store.remove(job_id)
+    return {"ok": True}
 
 
 @app.get("/api/jobs/{job_id}/preview/note", response_class=PlainTextResponse)
@@ -452,6 +476,10 @@ def read_metadata(job_dir: Path) -> dict:
     if not metadata_path.exists():
         return {}
     return json.loads(metadata_path.read_text(encoding="utf-8"))
+
+
+def sync_store_outputs_root() -> None:
+    store.outputs_root = OUTPUTS_ROOT
 
 
 frontend_dist_dir = get_frontend_dist_dir()

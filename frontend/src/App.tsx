@@ -3,21 +3,22 @@ import {
   Captions,
   CheckCircle2,
   Download,
-  FileArchive,
   FileText,
+  FolderOpen,
+  History,
   Image,
   KeyRound,
   Loader2,
-  Music,
   Play,
   RefreshCw,
   Server,
   Settings,
+  Trash2,
   X,
   Upload
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
-import type { Dispatch, SetStateAction } from "react";
+import type { ChangeEvent, Dispatch, SetStateAction } from "react";
 
 type NoteLanguage = "zh" | "en" | "follow";
 type NoteStyle = "minimal" | "detailed" | "tutorial" | "academic" | "task_oriented" | "meeting_minutes";
@@ -43,6 +44,18 @@ type JobState = {
   step_started_at?: string | null;
   updated_at?: string | null;
   stage_elapsed_seconds?: number;
+};
+
+type JobSummary = {
+  job_id: string;
+  title: string;
+  original_filename: string;
+  created_at?: string | null;
+  status: JobStatus;
+  duration_seconds?: number | null;
+  artifact_count: number;
+  note_version_count: number;
+  active_version_id?: string | null;
 };
 
 type NoteVersion = {
@@ -226,6 +239,23 @@ function formatUpdateTime(value?: string | null): string {
   return new Date(value).toLocaleTimeString();
 }
 
+function formatHistoryTime(value?: string | null): string {
+  if (!value) {
+    return "未知时间";
+  }
+  return new Date(value).toLocaleString();
+}
+
+function formatVersionOption(version: NoteVersion): string {
+  return version.id;
+}
+
+function formatVersionDetails(version: NoteVersion): string {
+  const createdAt = formatHistoryTime(version.created_at);
+  const style = noteStyleOptions.find((option) => option.value === version.note_style)?.label ?? version.note_style;
+  return `${style} · ${createdAt} · ${version.note_model}`;
+}
+
 export function App() {
   const [transcriptionApiKey, setTranscriptionApiKey] = useState("");
   const [transcriptionMode, setTranscriptionMode] = useState<TranscriptionMode>("local_faster_whisper");
@@ -259,6 +289,10 @@ export function App() {
   const [cudaInstallError, setCudaInstallError] = useState("");
   const [noteVersions, setNoteVersions] = useState<NoteVersionIndex | null>(null);
   const [previewVersionId, setPreviewVersionId] = useState("");
+  const [jobHistory, setJobHistory] = useState<JobSummary[]>([]);
+  const [historyError, setHistoryError] = useState("");
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [isDeletingJobId, setIsDeletingJobId] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [downloadMessage, setDownloadMessage] = useState("");
 
@@ -350,8 +384,20 @@ export function App() {
     }));
   }, [images, job, notePreview, previewAssetBasePath, previewVersion]);
 
+  function resetTaskContext() {
+    setJob(null);
+    setNotePreview("");
+    setSubtitlePreview("");
+    setNoteVersions(null);
+    setPreviewVersionId("");
+    setVersionError("");
+    setDownloadMessage("");
+    setIsRegenerating(false);
+  }
+
   useEffect(() => {
     void refreshHealth();
+    void refreshJobHistory();
   }, []);
 
   useEffect(() => {
@@ -414,11 +460,17 @@ export function App() {
     if (!job || (job.status !== "pending" && job.status !== "running")) {
       return;
     }
+    let cancelled = false;
     const timer = window.setInterval(async () => {
       const nextJob = await fetchJob(job.job_id);
-      setJob(nextJob);
+      if (!cancelled) {
+        setJob((current) => (current?.job_id === job.job_id ? nextJob : current));
+      }
     }, 1600);
-    return () => window.clearInterval(timer);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
   }, [job]);
 
   useEffect(() => {
@@ -431,6 +483,8 @@ export function App() {
       setIsRegenerating(false);
     }
     if (!job.artifacts.some((artifact) => artifact.path === "note.md")) {
+      setNoteVersions(null);
+      setPreviewVersionId("");
       return;
     }
 
@@ -459,34 +513,59 @@ export function App() {
   }, [job]);
 
   useEffect(() => {
+    if (job?.status === "succeeded" || job?.status === "failed") {
+      void refreshJobHistory();
+    }
+  }, [job?.job_id, job?.status]);
+
+  useEffect(() => {
     if (!job || !job.artifacts.some((artifact) => artifact.path === "subtitles.md")) {
+      setSubtitlePreview("");
       return;
     }
+    let cancelled = false;
     fetch(`/api/jobs/${job.job_id}/preview/subtitles`)
       .then((response) => (response.ok ? response.text() : ""))
-      .then(setSubtitlePreview);
+      .then((text) => {
+        if (!cancelled) {
+          setSubtitlePreview(text);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [job]);
 
   useEffect(() => {
     if (!job || !job.artifacts.some((artifact) => artifact.path === "note.md")) {
+      setNotePreview("");
       return;
     }
+    let cancelled = false;
     const url = previewVersionId
       ? `/api/jobs/${job.job_id}/preview/note/${encodeURIComponent(previewVersionId)}`
       : `/api/jobs/${job.job_id}/preview/note`;
     fetch(url)
       .then((response) => (response.ok ? response.text() : ""))
-      .then(setNotePreview);
+      .then((text) => {
+        if (!cancelled) {
+          setNotePreview(text);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [job, previewVersionId]);
+
+  function handleVideoChange(event: ChangeEvent<HTMLInputElement>) {
+    setVideo(event.target.files?.[0] ?? null);
+    setSubmitError("");
+    resetTaskContext();
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setSubmitError("");
-    setVersionError("");
-    setNotePreview("");
-    setSubtitlePreview("");
-    setNoteVersions(null);
-    setPreviewVersionId("");
 
     if (!video) {
       setSubmitError("请先选择视频文件。");
@@ -520,6 +599,8 @@ export function App() {
       return;
     }
 
+    resetTaskContext();
+
     const formData = new FormData();
     formData.append("video", video);
     formData.append("transcription_mode", transcriptionMode);
@@ -547,6 +628,7 @@ export function App() {
         throw new Error(payload.detail || "任务创建失败。");
       }
       setJob(await fetchJob(payload.job_id));
+      await refreshJobHistory();
     } catch (error) {
       setSubmitError(error instanceof Error ? error.message : "任务创建失败。");
     } finally {
@@ -560,6 +642,19 @@ export function App() {
       setHealth(response.ok ? await response.json() : null);
     } catch {
       setHealth(null);
+    }
+  }
+
+  async function refreshJobHistory() {
+    setIsHistoryLoading(true);
+    setHistoryError("");
+    try {
+      const payload = await fetchJobHistory();
+      setJobHistory(payload.jobs);
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "历史任务读取失败。");
+    } finally {
+      setIsHistoryLoading(false);
     }
   }
 
@@ -751,12 +846,84 @@ export function App() {
     }
   }
 
+  async function handleLoadHistoryJob(jobId: string) {
+    setHistoryError("");
+    setSubmitError("");
+    resetTaskContext();
+    setVideo(null);
+    try {
+      setJob(await fetchJob(jobId));
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "历史任务载入失败。");
+    }
+  }
+
+  async function handleDeleteHistoryJob(jobId: string) {
+    if (!window.confirm("删除后会移除该任务及其所有笔记版本，是否继续？")) {
+      return;
+    }
+    setIsDeletingJobId(jobId);
+    setHistoryError("");
+    try {
+      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "历史任务删除失败。");
+      }
+      if (job?.job_id === jobId) {
+        resetTaskContext();
+        setVideo(null);
+      }
+      await refreshJobHistory();
+    } catch (error) {
+      setHistoryError(error instanceof Error ? error.message : "历史任务删除失败。");
+    } finally {
+      setIsDeletingJobId("");
+    }
+  }
+
+  async function handleNoteVersionChange(event: ChangeEvent<HTMLSelectElement>) {
+    if (!job || !noteVersions) {
+      return;
+    }
+    const nextVersionId = event.target.value;
+    const previousVersionId = previewVersionId;
+    setPreviewVersionId(nextVersionId);
+    setVersionError("");
+    try {
+      const response = await fetch(`/api/jobs/${job.job_id}/note-versions`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          active_version_id: nextVersionId,
+          selected_version_ids: noteVersions.selected_version_ids.length
+            ? noteVersions.selected_version_ids
+            : noteVersions.versions.map((version) => version.id)
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "笔记版本切换失败。");
+      }
+      setNoteVersions(payload);
+      setPreviewVersionId(payload.active_version_id ?? nextVersionId);
+      setJob(await fetchJob(job.job_id));
+      await refreshJobHistory();
+    } catch (error) {
+      setPreviewVersionId(previousVersionId);
+      setVersionError(error instanceof Error ? error.message : "笔记版本切换失败。");
+    }
+  }
+
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div>
+        <div className="topbar-brand">
           <p className="eyebrow">OpenAI-Compatible Video Notes</p>
           <h1>视频笔记生成器</h1>
+        </div>
+        <div className="topbar-stepper">
+          <StepList job={job} />
         </div>
         <div className="topbar-actions">
           <HealthBadge health={health} />
@@ -768,114 +935,155 @@ export function App() {
       </header>
 
       <form className="workspace-grid" onSubmit={handleSubmit}>
-        <section className="panel progress-panel" aria-label="处理进度">
-          <PanelTitle icon={<Server size={18} />} title="处理进度" />
-          <div className="progress-header">
-            <span>{job ? job.step : "等待任务"}</span>
-            <strong>{job ? `${job.progress}%` : "0%"}</strong>
+        {job?.error && (
+          <div className="error-box">
+            <AlertTriangle size={18} />
+            <span>{job.error}</span>
           </div>
-          <div className="progress-track">
-            <div style={{ width: `${job?.progress ?? 0}%` }} />
+        )}
+
+        <section className="panel config-panel task-config-panel" aria-label="任务配置">
+          <PanelTitle icon={<Upload size={18} />} title="视频与笔记要求" />
+
+          <div className="config-main">
+            <div className="field video-config-block">
+              <span className="field-label">视频文件</span>
+              <label className="drop-zone">
+                <input
+                  accept=".mp4,.mov,.mkv,.webm,.avi,video/*"
+                  type="file"
+                  onChange={handleVideoChange}
+                />
+                <Upload size={18} />
+                <span>{video ? video.name : "选择文件"}</span>
+              </label>
+            </div>
+
+            <div className="quick-settings">
+              <label className="field">
+                <span className="field-label">笔记语言</span>
+                <select value={noteLanguage} onChange={(event) => setNoteLanguage(event.target.value as NoteLanguage)}>
+                  <option value="zh">中文</option>
+                  <option value="en">英文</option>
+                  <option value="follow">跟随原文</option>
+                </select>
+              </label>
+
+              <label className="field">
+                <span className="field-label">笔记风格</span>
+                <select value={noteStyle} onChange={(event) => setNoteStyle(event.target.value as NoteStyle)}>
+                  {noteStyleOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="field">
+                <span className="field-label">关键帧上限</span>
+                <input
+                  max={24}
+                  min={1}
+                  type="number"
+                  value={frameLimit}
+                  onChange={(event) => setFrameLimit(Number(event.target.value))}
+                />
+              </label>
+            </div>
+
+            <label className="field extras-field">
+              <span className="field-label">额外笔记要求</span>
+              <input
+                maxLength={2000}
+                onChange={(event) => setExtras(event.target.value)}
+                placeholder="例如：突出操作步骤、保留关键术语、最后补一组行动项"
+                type="text"
+                value={extras}
+              />
+            </label>
+
+            <div className="config-submit-block">
+              {submitError && (
+                <p className="inline-error">
+                  <AlertTriangle size={15} />
+                  {submitError}
+                </p>
+              )}
+
+              <button className="primary-button" disabled={isBusy} type="submit">
+                {isBusy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
+                开始生成
+              </button>
+            </div>
           </div>
-          {job?.error && (
-            <div className="error-box">
-              <AlertTriangle size={18} />
-              <span>{job.error}</span>
-            </div>
-          )}
-          <StepList job={job} />
-          {job?.status === "running" && (
-            <div className="progress-meta">
-              <span>当前阶段耗时：{formatElapsedSeconds(job.stage_elapsed_seconds)}</span>
-              <span>最后更新：{formatUpdateTime(job.updated_at)}</span>
-            </div>
-          )}
-          <ArtifactList job={job} onDownloadError={setDownloadMessage} />
         </section>
 
         <div className="workspace-bottom">
-          <section className="panel config-panel" aria-label="任务配置">
-            <PanelTitle icon={<Upload size={18} />} title="视频与笔记要求" />
-
-            <label className="drop-zone">
-              <input
-                accept=".mp4,.mov,.mkv,.webm,.avi,video/*"
-                type="file"
-                onChange={(event) => setVideo(event.target.files?.[0] ?? null)}
-              />
-              <Upload size={22} />
-              <span>{video ? video.name : "选择视频文件"}</span>
-              <small>支持 mp4、mov、mkv、webm、avi</small>
-            </label>
-            <p className="field-help long-video-hint">
-              长视频处理可能长时间停留在“字幕生成”或“笔记生成”阶段。建议 1 小时级视频优先使用本地 CUDA 转写或 audio_transcriptions；chat_audio 更适合作为兜底模式。
-            </p>
-
-            <section className="note-requirements">
+          <section className="panel history-panel history-column" aria-label="历史任务">
+            <div className="history-header">
               <div className="section-title">
-                <FileText size={16} />
-                <span>笔记要求</span>
+                <History size={16} />
+                <span>历史任务</span>
               </div>
-
-              <div className="two-col">
-                <label className="field">
-                  <span className="field-label">笔记语言</span>
-                  <select value={noteLanguage} onChange={(event) => setNoteLanguage(event.target.value as NoteLanguage)}>
-                    <option value="zh">中文</option>
-                    <option value="en">英文</option>
-                    <option value="follow">跟随原文</option>
-                  </select>
-                </label>
-
-                <label className="field">
-                  <span className="field-label">笔记风格</span>
-                  <select value={noteStyle} onChange={(event) => setNoteStyle(event.target.value as NoteStyle)}>
-                    {noteStyleOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label className="field">
-                  <span className="field-label">关键帧上限</span>
-                  <input
-                    max={24}
-                    min={1}
-                    type="number"
-                    value={frameLimit}
-                    onChange={(event) => setFrameLimit(Number(event.target.value))}
-                  />
-                </label>
-              </div>
-
-              <label className="field">
-                <span className="field-label">额外笔记要求</span>
-                <textarea
-                  maxLength={2000}
-                  onChange={(event) => setExtras(event.target.value)}
-                  placeholder="例如：突出操作步骤、保留关键术语、最后补一组行动项"
-                  value={extras}
-                />
-              </label>
-            </section>
-
-            {submitError && (
+              <button className="small-button" disabled={isHistoryLoading} onClick={() => void refreshJobHistory()} type="button">
+                {isHistoryLoading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+                刷新
+              </button>
+            </div>
+            {historyError && (
               <p className="inline-error">
                 <AlertTriangle size={15} />
-                {submitError}
+                {historyError}
               </p>
             )}
-
-            <button className="primary-button" disabled={isBusy} type="submit">
-              {isBusy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-              开始生成
-            </button>
+            {jobHistory.length === 0 ? (
+              <p className="empty-history">完成任务后会显示在这里。</p>
+            ) : (
+              <div className="history-list">
+                {jobHistory.map((item) => (
+                  <article className={`history-item ${job?.job_id === item.job_id ? "active" : ""}`} key={item.job_id}>
+                    <div className="history-item-main">
+                      <div>
+                        <strong>{item.title || item.original_filename}</strong>
+                        <span>{item.original_filename}</span>
+                      </div>
+                      <span className={`badge ${item.status}`}>{statusText[item.status]}</span>
+                    </div>
+                    <div className="history-meta">
+                      <span>{formatHistoryTime(item.created_at)}</span>
+                      <span>{item.note_version_count} 个版本</span>
+                      <span>{item.artifact_count} 个产物</span>
+                    </div>
+                    <div className="history-actions">
+                      <button className="small-button" disabled={isBusy} onClick={() => void handleLoadHistoryJob(item.job_id)} type="button">
+                        <FolderOpen size={15} />
+                        载入
+                      </button>
+                      <button
+                        className="small-button danger"
+                        disabled={isBusy || isDeletingJobId === item.job_id}
+                        onClick={() => void handleDeleteHistoryJob(item.job_id)}
+                        type="button"
+                      >
+                        {isDeletingJobId === item.job_id ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
+                        删除
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            )}
           </section>
 
           <section className="panel result-panel" aria-label="结果预览">
-            <PanelTitle icon={<FileText size={18} />} title="结果预览" />
+            <div className="panel-title result-panel-title">
+              <div className="panel-title-main">
+                <FileText size={18} />
+                <h2>结果预览</h2>
+              </div>
+              {previewVersion && <span className="result-version-summary">{formatVersionDetails(previewVersion)}</span>}
+            </div>
             <div className="download-row">
               <div className="download-actions">
                 <DownloadLink job={job} artifactPath="note.md" label="Markdown" onDownloadError={setDownloadMessage} />
@@ -891,10 +1099,25 @@ export function App() {
                   />
                 )}
               </div>
-              <button className="small-button strong" disabled={!job || isBusy} onClick={handleRegenerateNote} type="button">
-                {isRegenerating ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-                重新生成笔记
-              </button>
+              <div className="result-toolbar-right">
+                {noteVersions && noteVersions.versions.length > 0 && (
+                  <label className="version-inline">
+                    <span>版本</span>
+                    <select disabled={isBusy} value={previewVersionId} onChange={handleNoteVersionChange}>
+                      {noteVersions.versions.map((version) => (
+                        <option key={version.id} value={version.id}>
+                          {formatVersionOption(version)}
+                        </option>
+                      ))}
+                    </select>
+                    {previewVersion?.active && <span className="mini-badge ok">当前</span>}
+                  </label>
+                )}
+                <button className="small-button strong" disabled={!job || isBusy} onClick={handleRegenerateNote} type="button">
+                  {isRegenerating ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+                  重新生成笔记
+                </button>
+              </div>
             </div>
             {downloadMessage && (
               <p className="inline-warning">
@@ -908,32 +1131,33 @@ export function App() {
                 {versionError}
               </p>
             )}
+            <div className="result-body-scroll">
+              <div className="preview-stack">
+                <PreviewBlock
+                  assetBasePath={previewAssetBasePath}
+                  title={previewVersion ? `视频笔记 Markdown · ${previewVersion.id}` : "视频笔记 Markdown"}
+                  text={notePreview}
+                  empty="完成后显示 note.md 预览"
+                  jobId={job?.job_id}
+                />
+                <PreviewBlock title="字幕 Markdown" text={subtitlePreview} empty="字幕生成后显示时间戳预览" jobId={job?.job_id} />
+              </div>
 
-            <div className="preview-stack">
-              <PreviewBlock
-                assetBasePath={previewAssetBasePath}
-                title={previewVersion ? `视频笔记 Markdown · ${previewVersion.id}` : "视频笔记 Markdown"}
-                text={notePreview}
-                empty="完成后显示 note.md 预览"
-                jobId={job?.job_id}
-              />
-              <PreviewBlock title="字幕 Markdown" text={subtitlePreview} empty="字幕生成后显示时间戳预览" jobId={job?.job_id} />
-            </div>
-
-            <div className="frame-grid" aria-label="关键帧">
-              {previewImages.length === 0 ? (
-                <div className="empty-frames">
-                  <Image size={20} />
-                  <span>关键帧完成后显示在这里</span>
-                </div>
-              ) : (
-                previewImages.map((artifact) => (
-                  <figure key={artifact.path}>
-                    <img alt={artifact.label} src={artifact.asset_url} />
-                    <figcaption>{artifact.label}</figcaption>
-                  </figure>
-                ))
-              )}
+              <div className="frame-grid" aria-label="关键帧">
+                {previewImages.length === 0 ? (
+                  <div className="empty-frames">
+                    <Image size={20} />
+                    <span>关键帧完成后显示在这里</span>
+                  </div>
+                ) : (
+                  previewImages.map((artifact) => (
+                    <figure key={artifact.path}>
+                      <img alt={artifact.label} src={artifact.asset_url} />
+                      <figcaption>{artifact.label}</figcaption>
+                    </figure>
+                  ))
+                )}
+              </div>
             </div>
           </section>
         </div>
@@ -1261,6 +1485,14 @@ async function fetchJob(jobId: string): Promise<JobState> {
   return response.json();
 }
 
+async function fetchJobHistory(): Promise<{ jobs: JobSummary[] }> {
+  const response = await fetch("/api/jobs");
+  if (!response.ok) {
+    throw new Error("历史任务读取失败。");
+  }
+  return response.json();
+}
+
 function isDesktopDownloadAvailable() {
   return typeof window !== "undefined" && typeof window.pywebview?.api?.save_file === "function";
 }
@@ -1422,45 +1654,25 @@ function PanelTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
 
 function StepList({ job }: { job: JobState | null }) {
   const steps = [
-    { label: "音频分离", icon: <Music size={17} />, threshold: 15 },
-    { label: "字幕生成", icon: <Captions size={17} />, threshold: 35 },
-    { label: "笔记生成", icon: <FileText size={17} />, threshold: 60 },
-    { label: "关键帧抽取", icon: <Image size={17} />, threshold: 78 },
-    { label: "Markdown 输出", icon: <CheckCircle2 size={17} />, threshold: 90 }
+    { label: "音频分离", threshold: 15 },
+    { label: "字幕生成", threshold: 35 },
+    { label: "笔记生成", threshold: 60 },
+    { label: "关键帧抽取", threshold: 78 },
+    { label: "Markdown 输出", threshold: 90 }
   ];
   return (
     <ol className="step-list">
-      {steps.map((step) => {
+      {steps.map((step, index) => {
         const done = (job?.progress ?? 0) >= step.threshold && job?.status !== "failed";
         const active = job?.step === step.label;
         return (
           <li className={done ? "done" : active ? "active" : ""} key={step.label}>
-            {step.icon}
+            <strong>{index + 1}</strong>
             <span>{step.label}</span>
           </li>
         );
       })}
     </ol>
-  );
-}
-
-function ArtifactList({ job, onDownloadError }: { job: JobState | null; onDownloadError: (message: string) => void }) {
-  const artifacts = job?.artifacts ?? [];
-  if (artifacts.length === 0) {
-    return null;
-  }
-  return (
-    <div className="artifact-list">
-      {artifacts.slice(0, 8).map((artifact) => (
-        <ArtifactDownloadButton
-          filename={deriveDownloadFilename(artifact.path, artifact.label)}
-          key={artifact.path}
-          label={artifact.label}
-          onError={onDownloadError}
-          url={artifact.asset_url}
-        />
-      ))}
-    </div>
   );
 }
 

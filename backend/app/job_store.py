@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 
-from .models import Artifact, JobPublicState, JobStatus
+from .models import Artifact, JobPublicState, JobStatus, JobSummary
+from .note_versions import load_note_version_index
 
 
 def _now_iso() -> str:
@@ -97,3 +99,77 @@ class JobStore:
             if state:
                 state.artifacts = artifacts
         return artifacts
+
+    def load_from_disk(self, job_id: str) -> JobPublicState | None:
+        job_dir = self.outputs_root / job_id
+        if not job_dir.exists() or not job_dir.is_dir():
+            return None
+
+        metadata = self._read_metadata(job_dir)
+        artifacts = self.refresh_artifacts(job_id)
+        timestamp = str(metadata.get("created_at") or _mtime_iso(job_dir))
+        state = JobPublicState(
+            job_id=job_id,
+            status=JobStatus.succeeded,
+            step="已从历史记录载入",
+            progress=100,
+            artifacts=artifacts,
+            step_started_at=timestamp,
+            updated_at=timestamp,
+            stage_elapsed_seconds=0,
+        )
+        with self._lock:
+            self._jobs[job_id] = state
+        return state
+
+    def list_history(self) -> list[JobSummary]:
+        if not self.outputs_root.exists():
+            return []
+
+        summaries = [self._summarize_job_dir(path) for path in self._iter_job_dirs()]
+        return sorted(summaries, key=lambda item: item.created_at or "", reverse=True)
+
+    def remove(self, job_id: str) -> None:
+        with self._lock:
+            self._jobs.pop(job_id, None)
+
+    def _iter_job_dirs(self) -> list[Path]:
+        return [
+            path
+            for path in self.outputs_root.iterdir()
+            if path.is_dir() and not path.name.startswith(".")
+        ]
+
+    def _summarize_job_dir(self, job_dir: Path) -> JobSummary:
+        metadata = self._read_metadata(job_dir)
+        version_index = load_note_version_index(job_dir)
+        artifacts = self.refresh_artifacts(job_dir.name)
+        with self._lock:
+            memory_state = self._jobs.get(job_dir.name)
+        created_at = str(metadata.get("created_at") or _mtime_iso(job_dir))
+        original_filename = str(metadata.get("original_filename") or job_dir.name)
+        title = str(metadata.get("title") or original_filename)
+        return JobSummary(
+            job_id=job_dir.name,
+            title=title,
+            original_filename=original_filename,
+            created_at=created_at,
+            status=memory_state.status if memory_state else JobStatus.succeeded,
+            duration_seconds=metadata.get("duration_seconds"),
+            artifact_count=len(artifacts),
+            note_version_count=len(version_index.versions),
+            active_version_id=version_index.active_version_id,
+        )
+
+    def _read_metadata(self, job_dir: Path) -> dict:
+        metadata_path = job_dir / "metadata.json"
+        if not metadata_path.exists():
+            return {}
+        try:
+            return json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+
+def _mtime_iso(path: Path) -> str:
+    return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
