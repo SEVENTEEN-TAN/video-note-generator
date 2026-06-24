@@ -21,7 +21,8 @@ MAX_TRANSCRIPTION_FILE_BYTES = 24 * 1024 * 1024
 STANDARD_TRANSCRIPTION_CHUNK_SECONDS = 600
 CHAT_AUDIO_CHUNK_SECONDS = 120
 FASTER_WHISPER_MODEL_ROOT = get_model_root()
-REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")
+REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json")
+FASTER_WHISPER_VOCABULARY_FILES = ("vocabulary.txt", "vocabulary.json")
 ProgressCallback = Callable[[str, int], None]
 
 
@@ -247,7 +248,12 @@ def huggingface_cache_repo_dir_name(model_name: str) -> str:
 
 
 def is_complete_faster_whisper_model_dir(model_dir: Path) -> bool:
-    return model_dir.exists() and model_dir.is_dir() and all((model_dir / name).exists() for name in REQUIRED_FASTER_WHISPER_FILES)
+    return (
+        model_dir.exists()
+        and model_dir.is_dir()
+        and all((model_dir / name).exists() for name in REQUIRED_FASTER_WHISPER_FILES)
+        and any((model_dir / name).exists() for name in FASTER_WHISPER_VOCABULARY_FILES)
+    )
 
 
 def faster_whisper_segments_to_payload(segments_raw: object) -> TranscriptPayload:

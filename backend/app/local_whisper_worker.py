@@ -8,7 +8,8 @@ import site
 import sys
 from pathlib import Path
 
-REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json", "vocabulary.txt")
+REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json")
+FASTER_WHISPER_VOCABULARY_FILES = ("vocabulary.txt", "vocabulary.json")
 CUDA_RUNTIME_DLLS = ("cublas64_12.dll", "cudnn64_9.dll")
 
 
@@ -224,7 +225,12 @@ def huggingface_cache_repo_dir_name(model_name: str) -> str:
 
 
 def is_complete_faster_whisper_model_dir(model_dir: Path) -> bool:
-    return model_dir.exists() and model_dir.is_dir() and all((model_dir / name).exists() for name in REQUIRED_FASTER_WHISPER_FILES)
+    return (
+        model_dir.exists()
+        and model_dir.is_dir()
+        and all((model_dir / name).exists() for name in REQUIRED_FASTER_WHISPER_FILES)
+        and any((model_dir / name).exists() for name in FASTER_WHISPER_VOCABULARY_FILES)
+    )
 
 
 def download_faster_whisper_model(model_name: str, model_root: Path) -> None:

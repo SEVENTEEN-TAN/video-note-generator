@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
-from backend.app import transcription
+from backend.app import local_whisper_worker, transcription
 from backend.app.models import JobConfig, NoteLanguage, TranscriptPayload, TranscriptSegment, TranscriptionMode
 from backend.app.transcription import (
     faster_whisper_segments_to_payload,
@@ -177,6 +177,24 @@ def test_resolve_local_faster_whisper_model_uses_huggingface_snapshot(tmp_path) 
     resolved = resolve_local_faster_whisper_model("small", model_root)
 
     assert resolved == str(snapshot_dir)
+
+
+def test_resolve_local_faster_whisper_model_accepts_large_v3_vocabulary_json(tmp_path) -> None:
+    model_root = tmp_path / "models"
+    snapshot_id = "abc123"
+    repo_dir = model_root / "models--Systran--faster-whisper-large-v3"
+    (repo_dir / "refs").mkdir(parents=True)
+    (repo_dir / "refs" / "main").write_text(snapshot_id, encoding="utf-8")
+    snapshot_dir = repo_dir / "snapshots" / snapshot_id
+    snapshot_dir.mkdir(parents=True)
+    for name in ("config.json", "model.bin", "tokenizer.json", "vocabulary.json"):
+        (snapshot_dir / name).write_text("x", encoding="utf-8")
+
+    resolved = resolve_local_faster_whisper_model("large-v3", model_root)
+    worker_resolved = local_whisper_worker.resolve_local_faster_whisper_model("large-v3", model_root)
+
+    assert resolved == str(snapshot_dir)
+    assert worker_resolved == str(snapshot_dir)
 
 
 def test_resolve_local_faster_whisper_model_requires_local_files(tmp_path) -> None:
