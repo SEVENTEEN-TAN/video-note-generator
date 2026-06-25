@@ -17,7 +17,7 @@ import {
   X,
   Upload
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, Dispatch, SetStateAction } from "react";
 
 type NoteLanguage = "zh" | "en" | "follow";
@@ -295,6 +295,7 @@ export function App() {
   const [isDeletingJobId, setIsDeletingJobId] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [downloadMessage, setDownloadMessage] = useState("");
+  const videoInputRef = useRef<HTMLInputElement | null>(null);
 
   async function pollTaskState<T extends PollableTaskState>(
     url: string,
@@ -393,6 +394,16 @@ export function App() {
     setVersionError("");
     setDownloadMessage("");
     setIsRegenerating(false);
+  }
+
+  function clearVideoInput() {
+    if (videoInputRef.current) {
+      videoInputRef.current.value = "";
+    }
+  }
+
+  function hasTaskContext() {
+    return Boolean(job || notePreview || subtitlePreview || noteVersions);
   }
 
   useEffect(() => {
@@ -558,9 +569,23 @@ export function App() {
   }, [job, previewVersionId]);
 
   function handleVideoChange(event: ChangeEvent<HTMLInputElement>) {
-    setVideo(event.target.files?.[0] ?? null);
+    const selectedVideo = event.target.files?.[0] ?? null;
+    if (!selectedVideo) {
+      return;
+    }
+
+    if (
+      hasTaskContext() &&
+      !window.confirm("当前页面已有任务内容。选择新视频会清空当前页面并准备创建新任务，历史任务仍可在左侧重新载入。是否继续？")
+    ) {
+      event.currentTarget.value = "";
+      return;
+    }
+
     setSubmitError("");
     resetTaskContext();
+    setVideo(selectedVideo);
+    event.currentTarget.value = "";
   }
 
   async function handleSubmit(event: FormEvent) {
@@ -851,6 +876,7 @@ export function App() {
     setSubmitError("");
     resetTaskContext();
     setVideo(null);
+    clearVideoInput();
     try {
       setJob(await fetchJob(jobId));
     } catch (error) {
@@ -873,6 +899,7 @@ export function App() {
       if (job?.job_id === jobId) {
         resetTaskContext();
         setVideo(null);
+        clearVideoInput();
       }
       await refreshJobHistory();
     } catch (error) {
@@ -951,6 +978,7 @@ export function App() {
               <label className="drop-zone">
                 <input
                   accept=".mp4,.mov,.mkv,.webm,.avi,video/*"
+                  ref={videoInputRef}
                   type="file"
                   onChange={handleVideoChange}
                 />
