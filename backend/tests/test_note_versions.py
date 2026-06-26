@@ -116,6 +116,64 @@ def test_activate_note_version_rejects_filtered_unsafe_version(tmp_path) -> None
     assert not (job_dir / "note.md").exists()
 
 
+def test_activate_note_version_rejects_missing_note_before_changing_active(tmp_path) -> None:
+    job_dir = tmp_path
+    (job_dir / "note.md").write_text("# Active", encoding="utf-8")
+    frames_dir = job_dir / "frames"
+    frames_dir.mkdir()
+    (frames_dir / "frame_001.jpg").write_bytes(b"active frame")
+
+    version_dir = job_dir / "note_versions" / "note_001"
+    (version_dir / "frames").mkdir(parents=True)
+    (version_dir / "frames" / "frame_001.jpg").write_bytes(b"new frame")
+    write_note_version_index(
+        job_dir,
+        NoteVersionIndex(
+            active_version_id=None,
+            selected_version_ids=[],
+            versions=[make_version("note_001", selected=False, active=False)],
+        ),
+    )
+
+    with pytest.raises(FileNotFoundError):
+        activate_note_version(job_dir, "note_001")
+
+    loaded = load_note_version_index(job_dir)
+    assert loaded.active_version_id is None
+    assert loaded.selected_version_ids == []
+    assert (job_dir / "note.md").read_text(encoding="utf-8") == "# Active"
+    assert (frames_dir / "frame_001.jpg").read_bytes() == b"active frame"
+
+
+def test_activate_note_version_rejects_missing_frames_before_deleting_current_frames(tmp_path) -> None:
+    job_dir = tmp_path
+    (job_dir / "note.md").write_text("# Active", encoding="utf-8")
+    frames_dir = job_dir / "frames"
+    frames_dir.mkdir()
+    (frames_dir / "frame_001.jpg").write_bytes(b"active frame")
+
+    version_dir = job_dir / "note_versions" / "note_001"
+    version_dir.mkdir(parents=True)
+    (version_dir / "note.md").write_text("# New", encoding="utf-8")
+    write_note_version_index(
+        job_dir,
+        NoteVersionIndex(
+            active_version_id=None,
+            selected_version_ids=[],
+            versions=[make_version("note_001", selected=False, active=False)],
+        ),
+    )
+
+    with pytest.raises(FileNotFoundError):
+        activate_note_version(job_dir, "note_001")
+
+    loaded = load_note_version_index(job_dir)
+    assert loaded.active_version_id is None
+    assert loaded.selected_version_ids == []
+    assert (job_dir / "note.md").read_text(encoding="utf-8") == "# Active"
+    assert (frames_dir / "frame_001.jpg").read_bytes() == b"active frame"
+
+
 def test_create_zip_includes_selected_note_versions_with_relative_frames(tmp_path) -> None:
     job_dir = tmp_path
     (job_dir / "audio.mp3").write_bytes(b"mp3")
@@ -182,6 +240,34 @@ def test_create_zip_ignores_unsafe_note_version_paths_from_disk_index(tmp_path) 
     assert "note.md" in names
     assert "notes/note_001/note.md" not in names
     assert b"# secret" not in payloads.values()
+
+
+def test_create_zip_archives_normalized_note_version_index(tmp_path) -> None:
+    job_dir = tmp_path
+    (job_dir / "note.md").write_text("# Active", encoding="utf-8")
+    unsafe = make_version("note_001").model_copy(update={"note_path": "../secret.md"})
+    safe = make_version("note_002")
+    safe_dir = job_dir / "note_versions" / "note_002"
+    (safe_dir / "frames").mkdir(parents=True)
+    (safe_dir / "note.md").write_text("# Safe", encoding="utf-8")
+    index_path = job_dir / "note_versions" / "versions.json"
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(
+        NoteVersionIndex(
+            active_version_id="note_001",
+            selected_version_ids=["note_001", "note_002"],
+            versions=[unsafe, safe],
+        ).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    zip_path = create_zip(job_dir)
+
+    with ZipFile(zip_path) as archive:
+        archived_index = json.loads(archive.read("notes/versions.json"))
+
+    assert [version["id"] for version in archived_index["versions"]] == ["note_002"]
+    assert "../secret.md" not in json.dumps(archived_index)
 
 
 def test_create_zip_keeps_existing_zip_when_rebuild_fails(tmp_path, monkeypatch) -> None:

@@ -164,21 +164,30 @@ def set_note_version_selection(
 
 
 def activate_note_version(job_dir: Path, version_id: str) -> NoteVersionIndex:
-    index = set_note_version_selection(job_dir, load_note_version_index(job_dir).selected_version_ids, version_id)
-    version = get_note_version(index, version_id)
+    current_index = load_note_version_index(job_dir)
+    version = get_note_version(current_index, version_id)
     if not version:
         raise FileNotFoundError(f"Note version not found: {version_id}")
 
     source_note = resolve_job_relative_path(job_dir, version.note_path)
-    if source_note.exists():
-        shutil.copyfile(source_note, job_dir / "note.md")
+    if not source_note.exists() or not source_note.is_file():
+        raise FileNotFoundError(f"Note version file is missing: {version_id}")
+
+    source_frames = resolve_job_relative_path(job_dir, version.frame_dir)
+    if not source_frames.exists() or not source_frames.is_dir():
+        raise FileNotFoundError(f"Note version frames are missing: {version_id}")
+
+    index = set_note_version_selection(job_dir, current_index.selected_version_ids, version_id)
+    version = get_note_version(index, version_id)
+    if not version:
+        raise FileNotFoundError(f"Note version not found: {version_id}")
+
+    shutil.copyfile(source_note, job_dir / "note.md")
 
     root_frames = job_dir / "frames"
     if root_frames.exists():
         shutil.rmtree(root_frames)
-    source_frames = resolve_job_relative_path(job_dir, version.frame_dir)
-    if source_frames.exists():
-        shutil.copytree(source_frames, root_frames)
+    shutil.copytree(source_frames, root_frames)
     return index
 
 

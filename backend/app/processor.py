@@ -83,9 +83,9 @@ def create_zip(job_dir: Path) -> Path:
                 for frame_path in sorted(frames_dir.glob("*.jpg")):
                     archive.write(frame_path, arcname=frame_path.relative_to(job_dir).as_posix())
             version_index_path = note_version_index_path(job_dir)
-            if version_index_path.exists():
-                archive.write(version_index_path, arcname="notes/versions.json")
             version_index = load_note_version_index(job_dir)
+            if version_index_path.exists() or version_index.versions:
+                archive.writestr("notes/versions.json", version_index.model_dump_json(indent=2))
             selected_ids = set(version_index.selected_version_ids)
             for version in version_index.versions:
                 if version.id not in selected_ids:

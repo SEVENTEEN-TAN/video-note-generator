@@ -501,12 +501,12 @@ def read_job_text_file(job_id: str, filename: str) -> str:
 
 
 def safe_job_dir(job_id: str) -> Path:
-    if not job_id or job_id in {".", ".."} or "/" in job_id or "\\" in job_id:
+    if not job_id or job_id in {".", ".."} or "/" in job_id or "\\" in job_id or ":" in job_id:
         raise HTTPException(status_code=400, detail="Invalid job id.")
 
     outputs_root = OUTPUTS_ROOT.resolve()
     job_dir = (outputs_root / job_id).resolve()
-    if job_dir.parent != outputs_root:
+    if job_dir.parent != outputs_root or job_dir.name != job_id:
         raise HTTPException(status_code=400, detail="Invalid job id.")
     if not job_dir.exists():
         raise HTTPException(status_code=404, detail="Job not found.")

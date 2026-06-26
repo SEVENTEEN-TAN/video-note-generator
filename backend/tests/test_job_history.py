@@ -257,6 +257,23 @@ def test_get_job_rejects_encoded_dot_job_id_without_loading_outputs_root(tmp_pat
     assert (tmp_path / "root-sentinel.txt").exists()
 
 
+def test_get_job_rejects_drive_relative_job_id_alias(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    write_history_job(
+        tmp_path,
+        "foo",
+        created_at="2026-06-24T00:00:00+00:00",
+        title="Foo",
+        original_filename="foo.mp4",
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).get("/api/jobs/C:foo")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid job id."
+
+
 def test_delete_job_removes_disk_history(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))
@@ -308,6 +325,24 @@ def test_delete_job_rejects_encoded_dot_job_id_without_deleting_outputs_root(tmp
     assert response.json()["detail"] == "Invalid job id."
     assert tmp_path.exists()
     assert (tmp_path / "root-sentinel.txt").exists()
+
+
+def test_delete_job_rejects_drive_relative_job_id_alias(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    write_history_job(
+        tmp_path,
+        "foo",
+        created_at="2026-06-24T00:00:00+00:00",
+        title="Foo",
+        original_filename="foo.mp4",
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).delete("/api/jobs/C:foo")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid job id."
+    assert (tmp_path / "foo").exists()
 
 
 def test_delete_job_returns_json_error_when_files_are_in_use(tmp_path, monkeypatch) -> None:
