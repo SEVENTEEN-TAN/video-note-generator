@@ -4,7 +4,10 @@ import json
 from zipfile import ZipFile
 
 import pytest
+from fastapi.testclient import TestClient
 
+from backend.app import main
+from backend.app.main import app
 from backend.app.models import (
     Chapter,
     JobConfig,
@@ -167,6 +170,43 @@ def test_activate_note_version_rejects_missing_frames_before_deleting_current_fr
     with pytest.raises(FileNotFoundError):
         activate_note_version(job_dir, "note_001")
 
+    loaded = load_note_version_index(job_dir)
+    assert loaded.active_version_id is None
+    assert loaded.selected_version_ids == []
+    assert (job_dir / "note.md").read_text(encoding="utf-8") == "# Active"
+    assert (frames_dir / "frame_001.jpg").read_bytes() == b"active frame"
+
+
+def test_note_version_patch_rejects_missing_frames_before_changing_active(tmp_path, monkeypatch) -> None:
+    outputs_root = tmp_path / "outputs"
+    job_id = "missing-frames-job"
+    job_dir = outputs_root / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "note.md").write_text("# Active", encoding="utf-8")
+    frames_dir = job_dir / "frames"
+    frames_dir.mkdir()
+    (frames_dir / "frame_001.jpg").write_bytes(b"active frame")
+
+    version_dir = job_dir / "note_versions" / "note_001"
+    version_dir.mkdir(parents=True)
+    (version_dir / "note.md").write_text("# New", encoding="utf-8")
+    write_note_version_index(
+        job_dir,
+        NoteVersionIndex(
+            active_version_id=None,
+            selected_version_ids=[],
+            versions=[make_version("note_001", selected=False, active=False)],
+        ),
+    )
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
+    monkeypatch.setattr(main, "store", JobStore(outputs_root))
+
+    response = TestClient(app, raise_server_exceptions=False).patch(
+        f"/api/jobs/{job_id}/note-versions",
+        json={"active_version_id": "note_001", "selected_version_ids": ["note_001"]},
+    )
+
+    assert response.status_code == 404
     loaded = load_note_version_index(job_dir)
     assert loaded.active_version_id is None
     assert loaded.selected_version_ids == []

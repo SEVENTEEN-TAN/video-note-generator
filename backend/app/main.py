@@ -433,7 +433,6 @@ def preview_note_version(job_id: str, version_id: str) -> str:
 @app.patch("/api/jobs/{job_id}/note-versions", response_model=NoteVersionIndex)
 def update_note_version_selection(job_id: str, selection: NoteVersionSelection) -> NoteVersionIndex:
     job_dir = safe_job_dir(job_id)
-    index = set_note_version_selection(job_dir, selection.selected_version_ids, selection.active_version_id)
     if selection.active_version_id:
         try:
             index = activate_note_version(job_dir, selection.active_version_id)
@@ -441,6 +440,9 @@ def update_note_version_selection(job_id: str, selection: NoteVersionSelection) 
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        index = set_note_version_selection(job_dir, selection.selected_version_ids, selection.active_version_id)
+    else:
+        index = set_note_version_selection(job_dir, selection.selected_version_ids)
     create_zip(job_dir)
     store.refresh_artifacts(job_id)
     return index
