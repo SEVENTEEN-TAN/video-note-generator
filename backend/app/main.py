@@ -11,6 +11,7 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadF
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
 
 from .job_store import JobStore
 from .cuda_dependencies import (
@@ -233,6 +234,25 @@ async def suggest_frame_count(
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def ensure_local_cuda_ready(config: JobConfig) -> None:
+    if config.transcription_mode != TranscriptionMode.local_faster_whisper:
+        return
+    if str(config.local_whisper_device or "").strip() != "cuda":
+        return
+
+    runtime = get_runtime_status()
+    faster_whisper = runtime.get("faster_whisper", {})
+    if faster_whisper.get("ready_for_cuda"):
+        return
+
+    detail = (
+        faster_whisper.get("cuda_runtime_hint")
+        or faster_whisper.get("cuda_error")
+        or "CUDA runtime is not ready. Install CUDA dependencies or switch local transcription to CPU."
+    )
+    raise HTTPException(status_code=400, detail=f"CUDA 未就绪：{detail}")
+
+
 @app.post("/api/jobs")
 async def create_job(
     background_tasks: BackgroundTasks,
@@ -270,43 +290,51 @@ async def create_job(
         raise HTTPException(status_code=400, detail="Note model is required.")
     if frame_limit < 1 or frame_limit > 24:
         raise HTTPException(status_code=400, detail="frame_limit must be between 1 and 24.")
-    if transcription_mode == TranscriptionMode.local_faster_whisper:
+    try:
+        config = JobConfig(
+            transcription_mode=transcription_mode,
+            transcription_api_key=transcription_api_key,
+            transcription_base_url=transcription_base_url,
+            transcription_model=transcription_model,
+            local_whisper_device=local_whisper_device,
+            local_whisper_compute_type=local_whisper_compute_type,
+            note_api_key=note_api_key,
+            note_base_url=note_base_url,
+            note_model=note_model,
+            note_language=note_language,
+            note_style=note_style,
+            extras=extras,
+            frame_limit=frame_limit,
+            original_filename=video.filename or f"input{suffix}",
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if config.transcription_mode == TranscriptionMode.local_faster_whisper:
         try:
-            resolve_local_faster_whisper_model(transcription_model, get_faster_whisper_model_root())
+            resolve_local_faster_whisper_model(config.transcription_model, get_faster_whisper_model_root())
         except TranscriptionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        ensure_local_cuda_ready(config)
 
     job_id = uuid.uuid4().hex
     job_dir = OUTPUTS_ROOT / job_id
     source_dir = job_dir / "source_video"
-    source_dir.mkdir(parents=True, exist_ok=True)
     video_path = source_dir / f"input{suffix}"
-    with video_path.open("wb") as target:
-        shutil.copyfileobj(video.file, target)
-
-    config = JobConfig(
-        transcription_mode=transcription_mode,
-        transcription_api_key=transcription_api_key,
-        transcription_base_url=transcription_base_url,
-        transcription_model=transcription_model,
-        local_whisper_device=local_whisper_device,
-        local_whisper_compute_type=local_whisper_compute_type,
-        note_api_key=note_api_key,
-        note_base_url=note_base_url,
-        note_model=note_model,
-        note_language=note_language,
-        note_style=note_style,
-        extras=extras,
-        frame_limit=frame_limit,
-        original_filename=video.filename or video_path.name,
-    )
-    write_job_metadata(
-        job_id=job_id,
-        job_dir=job_dir,
-        config=config,
-        title=config.original_filename,
-        duration=None,
-    )
+    try:
+        source_dir.mkdir(parents=True, exist_ok=True)
+        with video_path.open("wb") as target:
+            shutil.copyfileobj(video.file, target)
+        write_job_metadata(
+            job_id=job_id,
+            job_dir=job_dir,
+            config=config,
+            title=config.original_filename,
+            duration=None,
+        )
+    except OSError as exc:
+        shutil.rmtree(job_dir, ignore_errors=True)
+        raise HTTPException(status_code=400, detail=f"Cannot create job files: {exc}") from exc
     sync_store_outputs_root()
     store.create(job_id)
     background_tasks.add_task(

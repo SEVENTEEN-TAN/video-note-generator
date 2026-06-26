@@ -33,6 +33,100 @@ def test_create_job_rejects_missing_local_faster_whisper_model(tmp_path, monkeyp
     assert "Local Faster Whisper model 'small' is not available" in response.json()["detail"]
 
 
+def test_create_job_rejects_invalid_config_before_creating_output_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "local_faster_whisper",
+            "transcription_model": "small",
+            "local_whisper_device": "gpu",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "frame_limit": "6",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 400
+    assert "local_whisper_device must be auto, cpu, or cuda" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_create_job_cleans_output_dir_when_video_copy_fails(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+
+    def fail_copy(_source, _target) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(main.shutil, "copyfileobj", fail_copy)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_base_url": "https://api.openai.com/v1",
+            "transcription_model": "whisper-1",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "frame_limit": "6",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 400
+    assert "Cannot create job files" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_create_job_rejects_local_cuda_when_runtime_is_not_ready(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(main, "resolve_local_faster_whisper_model", lambda *_args, **_kwargs: "small")
+    monkeypatch.setattr(
+        main,
+        "get_runtime_status",
+        lambda: {
+            "faster_whisper": {
+                "ready_for_cuda": False,
+                "cuda_runtime_hint": "请安装 CUDA 运行库，或切回 CPU。",
+                "cuda_error": "missing ctranslate2 cuda runtime",
+            }
+        },
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "local_faster_whisper",
+            "transcription_model": "small",
+            "local_whisper_device": "cuda",
+            "local_whisper_compute_type": "float16",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "frame_limit": "6",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 400
+    assert "CUDA" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_frame_suggestion_returns_recommended_count_from_note_draft(monkeypatch) -> None:
     client = TestClient(app)
 
