@@ -215,6 +215,18 @@ def test_get_job_loads_incomplete_disk_history_as_failed(tmp_path, monkeypatch) 
     assert {artifact["path"] for artifact in payload["artifacts"]} == {"audio.mp3", "metadata.json"}
 
 
+def test_get_job_rejects_encoded_dot_job_id_without_loading_outputs_root(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    (tmp_path / "root-sentinel.txt").write_text("keep root", encoding="utf-8")
+
+    response = TestClient(app, raise_server_exceptions=False).get("/api/jobs/%2E")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid job id."
+    assert (tmp_path / "root-sentinel.txt").exists()
+
+
 def test_delete_job_removes_disk_history(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))
@@ -253,6 +265,19 @@ def test_delete_loaded_history_job_removes_memory_state_and_disk_files(tmp_path,
     assert response.json() == {"ok": True}
     assert not (tmp_path / "loaded-job").exists()
     assert main.store.get("loaded-job") is None
+
+
+def test_delete_job_rejects_encoded_dot_job_id_without_deleting_outputs_root(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    (tmp_path / "root-sentinel.txt").write_text("keep root", encoding="utf-8")
+
+    response = TestClient(app, raise_server_exceptions=False).delete("/api/jobs/%2E")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid job id."
+    assert tmp_path.exists()
+    assert (tmp_path / "root-sentinel.txt").exists()
 
 
 def test_delete_job_returns_json_error_when_files_are_in_use(tmp_path, monkeypatch) -> None:
