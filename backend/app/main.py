@@ -46,7 +46,7 @@ from .models import (
     TranscriptionMode,
 )
 from .note_versions import activate_note_version, get_note_version, load_note_version_index, set_note_version_selection
-from .processor import create_zip, process_job, regenerate_note_job
+from .processor import create_zip, process_job, regenerate_note_job, write_job_metadata
 from .runtime_status import get_runtime_status
 from .runtime_paths import get_frontend_dist_dir, get_outputs_root
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
@@ -298,6 +298,13 @@ async def create_job(
         extras=extras,
         frame_limit=frame_limit,
         original_filename=video.filename or video_path.name,
+    )
+    write_job_metadata(
+        job_id=job_id,
+        job_dir=job_dir,
+        config=config,
+        title=config.original_filename,
+        duration=None,
     )
     sync_store_outputs_root()
     store.create(job_id)

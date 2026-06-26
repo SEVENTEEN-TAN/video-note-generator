@@ -161,3 +161,37 @@ def test_create_job_keeps_previous_output_dirs(tmp_path, monkeypatch) -> None:
 
     assert response.status_code == 200
     assert all(job_dir.exists() for job_dir in old_job_dirs)
+
+
+def test_create_job_seeds_history_title_from_uploaded_filename(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(main, "process_job", lambda **_kwargs: None)
+
+    response = TestClient(app).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_base_url": "https://api.openai.com/v1",
+            "transcription_model": "whisper-1",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "frame_limit": "6",
+        },
+        files={"video": ("02_梯度消失问题.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+
+    history_response = TestClient(app).get("/api/jobs")
+
+    assert history_response.status_code == 200
+    jobs = history_response.json()["jobs"]
+    assert jobs[0]["job_id"] == job_id
+    assert jobs[0]["title"] == "02_梯度消失问题.mp4"
+    assert jobs[0]["original_filename"] == "02_梯度消失问题.mp4"

@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
+import time
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -15,9 +17,19 @@ class FFmpegError(RuntimeError):
 
 
 def get_ffmpeg_path() -> str | None:
+    if getattr(sys, "frozen", False):
+        bundled_path = _get_bundled_ffmpeg_path()
+        if bundled_path:
+            return bundled_path
+        return shutil.which("ffmpeg")
+
     system_path = shutil.which("ffmpeg")
     if system_path:
         return system_path
+    return _get_bundled_ffmpeg_path()
+
+
+def _get_bundled_ffmpeg_path() -> str | None:
     try:
         return imageio_ffmpeg.get_ffmpeg_exe()
     except Exception:
@@ -33,13 +45,7 @@ def require_ffmpeg() -> str:
 
 def run_ffmpeg(args: list[str]) -> subprocess.CompletedProcess[str]:
     ffmpeg_path = require_ffmpeg()
-    completed = subprocess.run(
-        [ffmpeg_path, *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    completed = _run_ffmpeg_process_with_startup_retries([ffmpeg_path, *args])
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "FFmpeg command failed."
         raise FFmpegError(message[-2000:])
@@ -48,13 +54,7 @@ def run_ffmpeg(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 def probe_duration(video_path: Path) -> float | None:
     ffmpeg_path = require_ffmpeg()
-    completed = subprocess.run(
-        [ffmpeg_path, "-hide_banner", "-i", str(video_path)],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
+    completed = _run_ffmpeg_process_with_startup_retries([ffmpeg_path, "-hide_banner", "-i", str(video_path)])
     text = f"{completed.stderr}\n{completed.stdout}"
     match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
     if not match:
@@ -168,3 +168,49 @@ def _frame_seek_candidates(safe_time: float) -> list[float]:
         if not any(abs(candidate - existing) < 0.001 for existing in unique):
             unique.append(candidate)
     return unique
+
+
+def _run_ffmpeg_process_with_startup_retries(command: list[str]) -> subprocess.CompletedProcess[str]:
+    completed: subprocess.CompletedProcess[str] | None = None
+    for attempt in range(3):
+        completed = _run_ffmpeg_process(command)
+        if not _is_windows_startup_failure(completed.returncode):
+            return completed
+        if attempt < 2:
+            time.sleep(0.25 * (attempt + 1))
+    if completed is None:
+        raise FFmpegError("FFmpeg command failed.")
+    return completed
+
+
+def _run_ffmpeg_process(command: list[str]) -> subprocess.CompletedProcess[str]:
+    _suppress_windows_error_dialogs()
+    kwargs: dict = {
+        "capture_output": True,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    return subprocess.run(command, **kwargs)
+
+
+def _is_windows_startup_failure(returncode: int) -> bool:
+    return returncode in {-1073741502, 3221225794}
+
+
+def _suppress_windows_error_dialogs() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        sem_failcriticalerrors = 0x0001
+        sem_nogpfault_errorbox = 0x0002
+        sem_noopenfile_errorbox = 0x8000
+        ctypes.windll.kernel32.SetErrorMode(
+            sem_failcriticalerrors | sem_nogpfault_errorbox | sem_noopenfile_errorbox
+        )
+    except Exception:
+        return

@@ -23,6 +23,41 @@ class ProcessingError(RuntimeError):
     pass
 
 
+def write_job_metadata(
+    *,
+    job_id: str,
+    job_dir: Path,
+    config: JobConfig,
+    title: str,
+    duration: float | None,
+) -> dict:
+    existing = _read_metadata(job_dir)
+    metadata = {
+        "job_id": job_id,
+        "created_at": str(existing.get("created_at") or datetime.now(timezone.utc).isoformat()),
+        "original_filename": config.original_filename,
+        "transcription_mode": config.transcription_mode.value,
+        "transcription_base_url": config.transcription_base_url,
+        "transcription_model": config.transcription_model,
+        "local_whisper_device": config.local_whisper_device,
+        "local_whisper_compute_type": config.local_whisper_compute_type,
+        "note_base_url": config.note_base_url,
+        "note_model": config.note_model,
+        "note_language": config.note_language.value,
+        "note_style": config.note_style.value,
+        "extras_present": bool(config.extras),
+        "extras_length": len(config.extras),
+        "frame_limit": config.frame_limit,
+        "duration_seconds": duration,
+        "title": title.strip() or config.original_filename,
+    }
+    (job_dir / "metadata.json").write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return metadata
+
+
 def create_zip(job_dir: Path) -> Path:
     zip_path = job_dir / "download.zip"
     include_names = [
@@ -97,6 +132,13 @@ def process_job(
 
         store.update(job_id, step="笔记生成", progress=60)
         draft = generate_note_draft(config, duration, segments)
+        write_job_metadata(
+            job_id=job_id,
+            job_dir=job_dir,
+            config=config,
+            title=draft.title,
+            duration=duration,
+        )
 
         store.update(job_id, step="关键帧抽取", progress=78)
         create_note_version_from_draft(
@@ -110,28 +152,12 @@ def process_job(
         store.refresh_artifacts(job_id)
 
         store.update(job_id, step="Markdown 输出", progress=90)
-        metadata = {
-            "job_id": job_id,
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "original_filename": config.original_filename,
-            "transcription_mode": config.transcription_mode.value,
-            "transcription_base_url": config.transcription_base_url,
-            "transcription_model": config.transcription_model,
-            "local_whisper_device": config.local_whisper_device,
-            "local_whisper_compute_type": config.local_whisper_compute_type,
-            "note_base_url": config.note_base_url,
-            "note_model": config.note_model,
-            "note_language": config.note_language.value,
-            "note_style": config.note_style.value,
-            "extras_present": bool(config.extras),
-            "extras_length": len(config.extras),
-            "frame_limit": config.frame_limit,
-            "duration_seconds": duration,
-            "title": draft.title,
-        }
-        (job_dir / "metadata.json").write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        write_job_metadata(
+            job_id=job_id,
+            job_dir=job_dir,
+            config=config,
+            title=draft.title,
+            duration=duration,
         )
         create_zip(job_dir)
         store.refresh_artifacts(job_id)
@@ -159,3 +185,13 @@ def regenerate_note_job(
     except (FFmpegError, LLMError, ProcessingError, Exception) as exc:
         store.refresh_artifacts(job_id)
         store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
+
+
+def _read_metadata(job_dir: Path) -> dict:
+    metadata_path = job_dir / "metadata.json"
+    if not metadata_path.exists():
+        return {}
+    try:
+        return json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
