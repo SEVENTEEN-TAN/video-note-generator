@@ -435,7 +435,12 @@ def update_note_version_selection(job_id: str, selection: NoteVersionSelection) 
     job_dir = safe_job_dir(job_id)
     index = set_note_version_selection(job_dir, selection.selected_version_ids, selection.active_version_id)
     if selection.active_version_id:
-        index = activate_note_version(job_dir, selection.active_version_id)
+        try:
+            index = activate_note_version(job_dir, selection.active_version_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
     create_zip(job_dir)
     store.refresh_artifacts(job_id)
     return index

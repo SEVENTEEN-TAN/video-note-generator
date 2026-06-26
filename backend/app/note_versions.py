@@ -16,6 +16,42 @@ NOTE_VERSIONS_DIR = "note_versions"
 NOTE_VERSION_INDEX = "versions.json"
 
 
+def safe_note_version_id(version_id: str) -> str:
+    if not version_id or version_id in {".", ".."} or "/" in version_id or "\\" in version_id:
+        raise ValueError(f"Unsafe note version id: {version_id}")
+    return version_id
+
+
+def resolve_job_relative_path(job_dir: Path, relative_path: str) -> Path:
+    if not relative_path or Path(relative_path).is_absolute():
+        raise ValueError(f"Unsafe note version path: {relative_path}")
+    root = job_dir.resolve()
+    candidate = (root / relative_path).resolve()
+    if candidate == root or root not in candidate.parents:
+        raise ValueError(f"Unsafe note version path: {relative_path}")
+    return candidate
+
+
+def is_safe_note_version(job_dir: Path, version: NoteVersion) -> bool:
+    try:
+        safe_note_version_id(version.id)
+        resolve_job_relative_path(job_dir, version.note_path)
+        resolve_job_relative_path(job_dir, version.frame_dir)
+    except ValueError:
+        return False
+    return True
+
+
+def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
+    tmp_path = path.with_name(f"{path.name}.tmp")
+    try:
+        tmp_path.write_text(text, encoding=encoding)
+        tmp_path.replace(path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
 def note_version_index_path(job_dir: Path) -> Path:
     return job_dir / NOTE_VERSIONS_DIR / NOTE_VERSION_INDEX
 
@@ -24,14 +60,32 @@ def load_note_version_index(job_dir: Path) -> NoteVersionIndex:
     path = note_version_index_path(job_dir)
     if not path.exists():
         return NoteVersionIndex()
-    return normalize_note_version_index(NoteVersionIndex.model_validate_json(path.read_text(encoding="utf-8")))
+    try:
+        raw_index = NoteVersionIndex.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return NoteVersionIndex()
+
+    safe_versions = [version for version in raw_index.versions if is_safe_note_version(job_dir, version)]
+    return normalize_note_version_index(
+        NoteVersionIndex(
+            active_version_id=raw_index.active_version_id,
+            selected_version_ids=raw_index.selected_version_ids,
+            versions=safe_versions,
+        )
+    )
 
 
 def write_note_version_index(job_dir: Path, index: NoteVersionIndex) -> NoteVersionIndex:
-    normalized = normalize_note_version_index(index)
+    normalized = normalize_note_version_index(
+        NoteVersionIndex(
+            active_version_id=index.active_version_id,
+            selected_version_ids=index.selected_version_ids,
+            versions=[version for version in index.versions if is_safe_note_version(job_dir, version)],
+        )
+    )
     path = note_version_index_path(job_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(normalized.model_dump_json(indent=2), encoding="utf-8")
+    atomic_write_text(path, normalized.model_dump_json(indent=2), encoding="utf-8")
     return normalized
 
 
@@ -115,14 +169,14 @@ def activate_note_version(job_dir: Path, version_id: str) -> NoteVersionIndex:
     if not version:
         raise FileNotFoundError(f"Note version not found: {version_id}")
 
-    source_note = job_dir / version.note_path
+    source_note = resolve_job_relative_path(job_dir, version.note_path)
     if source_note.exists():
         shutil.copyfile(source_note, job_dir / "note.md")
 
     root_frames = job_dir / "frames"
     if root_frames.exists():
         shutil.rmtree(root_frames)
-    source_frames = job_dir / version.frame_dir
+    source_frames = resolve_job_relative_path(job_dir, version.frame_dir)
     if source_frames.exists():
         shutil.copytree(source_frames, root_frames)
     return index
@@ -137,7 +191,7 @@ def create_note_version_from_draft(
     config: JobConfig,
     version_id: str | None = None,
 ) -> NoteVersion:
-    version_id = version_id or next_note_version_id(job_dir)
+    version_id = safe_note_version_id(version_id or next_note_version_id(job_dir))
     version_dir = job_dir / NOTE_VERSIONS_DIR / version_id
     frames_dir = version_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)

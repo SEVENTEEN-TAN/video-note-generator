@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from zipfile import ZipFile
 
+import pytest
+
 from backend.app.models import (
     Chapter,
     JobConfig,
@@ -15,7 +17,13 @@ from backend.app.models import (
     TranscriptionMode,
 )
 from backend.app.job_store import JobStore
-from backend.app.note_versions import add_note_version, load_note_version_index, regenerate_note_version, write_note_version_index
+from backend.app.note_versions import (
+    activate_note_version,
+    add_note_version,
+    load_note_version_index,
+    regenerate_note_version,
+    write_note_version_index,
+)
 from backend.app.processor import create_zip
 
 
@@ -47,6 +55,65 @@ def test_add_note_version_keeps_existing_selection_and_makes_new_version_active(
     assert loaded.selected_version_ids == ["note_001", "note_002"]
     assert [version.id for version in loaded.versions] == ["note_001", "note_002"]
     assert [version.active for version in loaded.versions] == [False, True]
+
+
+def test_load_note_version_index_returns_empty_index_when_json_is_corrupt(tmp_path) -> None:
+    job_dir = tmp_path
+    index_path = job_dir / "note_versions" / "versions.json"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text("{not valid json", encoding="utf-8")
+
+    loaded = load_note_version_index(job_dir)
+
+    assert loaded.active_version_id is None
+    assert loaded.selected_version_ids == []
+    assert loaded.versions == []
+
+
+def test_load_note_version_index_filters_versions_with_unsafe_paths(tmp_path) -> None:
+    job_dir = tmp_path
+    unsafe_note = make_version("note_001").model_copy(update={"note_path": "../secret.md"})
+    unsafe_frames = make_version("note_002").model_copy(update={"frame_dir": "../frames"})
+    unsafe_id = make_version("../note_003")
+    safe = make_version("note_004")
+    index_path = job_dir / "note_versions" / "versions.json"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text(
+        NoteVersionIndex(
+            active_version_id="note_001",
+            selected_version_ids=["note_001", "note_002", "../note_003", "note_004"],
+            versions=[unsafe_note, unsafe_frames, unsafe_id, safe],
+        ).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    loaded = load_note_version_index(job_dir)
+
+    assert [version.id for version in loaded.versions] == ["note_004"]
+    assert loaded.active_version_id is None
+    assert loaded.selected_version_ids == ["note_004"]
+
+
+def test_activate_note_version_rejects_filtered_unsafe_version(tmp_path) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    secret = tmp_path / "secret.md"
+    secret.write_text("# secret", encoding="utf-8")
+    index_path = job_dir / "note_versions" / "versions.json"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text(
+        NoteVersionIndex(
+            active_version_id="note_001",
+            selected_version_ids=["note_001"],
+            versions=[make_version("note_001").model_copy(update={"note_path": "../secret.md"})],
+        ).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileNotFoundError):
+        activate_note_version(job_dir, "note_001")
+
+    assert not (job_dir / "note.md").exists()
 
 
 def test_create_zip_includes_selected_note_versions_with_relative_frames(tmp_path) -> None:
