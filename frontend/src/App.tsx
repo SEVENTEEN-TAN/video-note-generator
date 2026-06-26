@@ -892,9 +892,8 @@ export function App() {
     setHistoryError("");
     try {
       const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
-      const payload = await response.json();
       if (!response.ok) {
-        throw new Error(payload.detail || "历史任务删除失败。");
+        throw new Error(await readResponseError(response, "历史任务删除失败。"));
       }
       if (job?.job_id === jobId) {
         resetTaskContext();
@@ -1508,7 +1507,7 @@ export function App() {
 async function fetchJob(jobId: string): Promise<JobState> {
   const response = await fetch(`/api/jobs/${jobId}`);
   if (!response.ok) {
-    throw new Error("任务状态读取失败。");
+    throw new Error(await readResponseError(response, "任务状态读取失败。"));
   }
   return response.json();
 }
@@ -1516,9 +1515,23 @@ async function fetchJob(jobId: string): Promise<JobState> {
 async function fetchJobHistory(): Promise<{ jobs: JobSummary[] }> {
   const response = await fetch("/api/jobs");
   if (!response.ok) {
-    throw new Error("历史任务读取失败。");
+    throw new Error(await readResponseError(response, "历史任务读取失败。"));
   }
   return response.json();
+}
+
+async function readResponseError(response: Response, fallback: string): Promise<string> {
+  const contentType = response.headers.get("content-type") ?? "";
+  try {
+    if (contentType.includes("application/json")) {
+      const payload = (await response.json()) as { detail?: string };
+      return payload.detail || fallback;
+    }
+    const text = (await response.text()).trim();
+    return text || fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 function isDesktopDownloadAvailable() {

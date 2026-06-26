@@ -39,6 +39,7 @@ from .models import (
     JobConfig,
     JobHistory,
     JobPublicState,
+    JobStatus,
     NoteLanguage,
     NoteStyle,
     NoteVersionIndex,
@@ -345,7 +346,12 @@ def delete_job(job_id: str) -> dict:
     if state and state.status in {JobStatus.pending, JobStatus.running}:
         raise HTTPException(status_code=409, detail="Cannot delete a running job.")
     job_dir = safe_job_dir(job_id)
-    shutil.rmtree(job_dir)
+    try:
+        shutil.rmtree(job_dir)
+    except PermissionError as exc:
+        raise HTTPException(status_code=409, detail=f"Cannot delete job because files are in use: {exc}") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=f"Cannot delete job files: {exc}") from exc
     store.remove(job_id)
     return {"ok": True}
 

@@ -107,12 +107,15 @@ class JobStore:
 
         metadata = self._read_metadata(job_dir)
         artifacts = self.refresh_artifacts(job_id)
+        version_index = load_note_version_index(job_dir)
         timestamp = str(metadata.get("created_at") or _mtime_iso(job_dir))
+        status = _infer_disk_job_status(job_dir, artifacts, version_index)
         state = JobPublicState(
             job_id=job_id,
-            status=JobStatus.succeeded,
-            step="已从历史记录载入",
+            status=status,
+            step="已从历史记录载入" if status == JobStatus.succeeded else "历史任务不完整",
             progress=100,
+            error=None if status == JobStatus.succeeded else "历史任务缺少完整笔记输出，可能在上次生成中断。",
             artifacts=artifacts,
             step_started_at=timestamp,
             updated_at=timestamp,
@@ -149,12 +152,13 @@ class JobStore:
         created_at = str(metadata.get("created_at") or _mtime_iso(job_dir))
         original_filename = str(metadata.get("original_filename") or job_dir.name)
         title = str(metadata.get("title") or original_filename)
+        status = memory_state.status if memory_state else _infer_disk_job_status(job_dir, artifacts, version_index)
         return JobSummary(
             job_id=job_dir.name,
             title=title,
             original_filename=original_filename,
             created_at=created_at,
-            status=memory_state.status if memory_state else JobStatus.succeeded,
+            status=status,
             duration_seconds=metadata.get("duration_seconds"),
             artifact_count=len(artifacts),
             note_version_count=len(version_index.versions),
@@ -173,3 +177,13 @@ class JobStore:
 
 def _mtime_iso(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+
+
+def _infer_disk_job_status(job_dir: Path, artifacts: list[Artifact], version_index) -> JobStatus:
+    artifact_paths = {artifact.path for artifact in artifacts}
+    if "note.md" in artifact_paths:
+        return JobStatus.succeeded
+    for version in version_index.versions:
+        if (job_dir / version.note_path).exists():
+            return JobStatus.succeeded
+    return JobStatus.failed

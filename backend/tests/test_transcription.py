@@ -130,6 +130,49 @@ def test_transcribe_audio_dispatches_local_faster_whisper(tmp_path, monkeypatch)
     assert parsed["segments"] == [{"start": 0.0, "end": 1.0, "text": "local text"}]
 
 
+def test_transcribe_audio_reports_progress_for_internal_local_faster_whisper(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"fake audio")
+    write_model_files(tmp_path / "models" / "small")
+
+    class FakeWhisperModel:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def transcribe(self, _file_path):
+            return [SimpleNamespace(start=0, end=1, text="local text")], SimpleNamespace(language="zh")
+
+    monkeypatch.setattr(transcription, "WhisperModel", FakeWhisperModel)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
+
+    updates: list[tuple[str, int]] = []
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_api_key="",
+        transcription_base_url="",
+        transcription_model="small",
+        local_whisper_device="cuda",
+        local_whisper_compute_type="float16",
+        note_api_key="note-key",
+        note_base_url="https://api.openai.com/v1",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+
+    transcription.transcribe_audio(
+        audio_path,
+        config,
+        tmp_path,
+        progress_callback=lambda step, progress: updates.append((step, progress)),
+    )
+
+    assert updates == [
+        ("字幕生成中：加载 Faster Whisper 模型 small", 36),
+        ("字幕生成中：本地 Faster Whisper 转写中", 38),
+    ]
+
+
 def test_transcribe_audio_uses_bundled_local_model_directory(tmp_path, monkeypatch) -> None:
     audio_path = tmp_path / "audio.mp3"
     audio_path.write_bytes(b"fake audio")
@@ -247,10 +290,11 @@ def test_transcribe_audio_uses_external_worker_when_internal_faster_whisper_is_m
     monkeypatch.setattr(transcription, "FASTER_WHISPER_IMPORT_ERROR", "No module named 'faster_whisper'")
     monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
 
-    def fake_external_worker(audio_path_arg, config_arg, model_root_arg):
+    def fake_external_worker(audio_path_arg, config_arg, model_root_arg, progress_callback=None):
         assert audio_path_arg == audio_path
         assert config_arg.transcription_model == "small"
         assert model_root_arg == tmp_path / "models"
+        assert progress_callback is None
         return TranscriptPayload(text="external text", segments=[TranscriptSegment(start=0, end=1, text="external text")])
 
     monkeypatch.setattr(transcription, "transcribe_with_external_faster_whisper", fake_external_worker)
@@ -308,6 +352,51 @@ def test_external_faster_whisper_worker_forces_utf8_stdout(tmp_path, monkeypatch
     parsed = transcription.transcribe_with_external_faster_whisper(audio_path, config, model_root)
 
     assert parsed.text == "中文正常"
+
+
+def test_external_faster_whisper_worker_reports_progress_before_blocking_run(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"fake audio")
+    model_root = tmp_path / "models"
+    write_model_files(model_root / "small")
+    monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: tmp_path / "worker.py")
+    (tmp_path / "worker.py").write_text("print('worker')", encoding="utf-8")
+
+    def fake_run(*args, **kwargs):
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout='{"text": "中文正常", "segments": [{"start": 0, "end": 1, "text": "中文正常"}]}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(transcription.subprocess, "run", fake_run)
+
+    updates: list[tuple[str, int]] = []
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_api_key="",
+        transcription_base_url="",
+        transcription_model="small",
+        local_whisper_device="cuda",
+        local_whisper_compute_type="float16",
+        note_api_key="note-key",
+        note_base_url="https://api.openai.com/v1",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+
+    parsed = transcription.transcribe_with_external_faster_whisper(
+        audio_path,
+        config,
+        model_root,
+        progress_callback=lambda step, progress: updates.append((step, progress)),
+    )
+
+    assert parsed.text == "中文正常"
+    assert updates == [("字幕生成中：外部 Faster Whisper worker 转写中", 38)]
 
 
 def test_audio_transcriptions_reports_chunk_progress(monkeypatch, tmp_path) -> None:

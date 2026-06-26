@@ -65,20 +65,31 @@ def transcribe_audio(
     if config.transcription_mode == TranscriptionMode.chat_audio:
         payload = transcribe_with_chat_audio(audio_path, config, work_dir, progress_callback=progress_callback)
     elif config.transcription_mode == TranscriptionMode.local_faster_whisper:
-        payload = transcribe_with_faster_whisper(audio_path, config)
+        payload = transcribe_with_faster_whisper(audio_path, config, progress_callback=progress_callback)
     else:
         payload = transcribe_with_audio_endpoint(audio_path, config, work_dir, progress_callback=progress_callback)
     return payload.model_dump()
 
 
-def transcribe_with_faster_whisper(audio_path: Path, config: JobConfig) -> TranscriptPayload:
+def transcribe_with_faster_whisper(
+    audio_path: Path,
+    config: JobConfig,
+    progress_callback: ProgressCallback | None = None,
+) -> TranscriptPayload:
     model_name = config.transcription_model.strip() or "small"
     model_root = get_faster_whisper_model_root()
     model_root.mkdir(parents=True, exist_ok=True)
     model_identifier = resolve_local_faster_whisper_model(model_name, model_root)
+    if progress_callback:
+        progress_callback(f"字幕生成中：加载 Faster Whisper 模型 {model_name}", 36)
     if WhisperModel is None:
         try:
-            return transcribe_with_external_faster_whisper(audio_path, config, model_root)
+            return transcribe_with_external_faster_whisper(
+                audio_path,
+                config,
+                model_root,
+                progress_callback=progress_callback,
+            )
         except Exception as exc:
             detail = f" Import error: {FASTER_WHISPER_IMPORT_ERROR}" if FASTER_WHISPER_IMPORT_ERROR else ""
             raise TranscriptionError(
@@ -96,6 +107,8 @@ def transcribe_with_faster_whisper(audio_path: Path, config: JobConfig) -> Trans
             compute_type=compute_type,
             download_root=str(model_root),
         )
+        if progress_callback:
+            progress_callback("字幕生成中：本地 Faster Whisper 转写中", 38)
         segments_raw, _info = model.transcribe(str(audio_path))
         return faster_whisper_segments_to_payload(segments_raw)
     except Exception as exc:
@@ -106,7 +119,12 @@ def get_faster_whisper_model_root() -> Path:
     return Path(os.getenv("FASTER_WHISPER_MODEL_DIR", str(FASTER_WHISPER_MODEL_ROOT))).expanduser()
 
 
-def transcribe_with_external_faster_whisper(audio_path: Path, config: JobConfig, model_root: Path) -> TranscriptPayload:
+def transcribe_with_external_faster_whisper(
+    audio_path: Path,
+    config: JobConfig,
+    model_root: Path,
+    progress_callback: ProgressCallback | None = None,
+) -> TranscriptPayload:
     python_path = find_external_python()
     if not python_path:
         raise TranscriptionError("External Python was not found on PATH. Install Python 3.10+ or set VIDEO_NOTE_PYTHON_PATH.")
@@ -117,6 +135,8 @@ def transcribe_with_external_faster_whisper(audio_path: Path, config: JobConfig,
 
     model_name = config.transcription_model.strip() or "small"
     device, compute_type = resolve_local_whisper_runtime(config)
+    if progress_callback:
+        progress_callback("字幕生成中：外部 Faster Whisper worker 转写中", 38)
     completed = subprocess.run(
         [
             python_path,
