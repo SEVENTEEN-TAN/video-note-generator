@@ -14,6 +14,8 @@ from .note_versions import (
     load_note_version_index,
     note_version_index_path,
     regenerate_note_version,
+    resolve_job_relative_path,
+    safe_note_version_id,
 )
 from .subtitles import transcript_segments_from_payload, write_subtitle_files
 from .transcription import TranscriptionError, transcribe_audio
@@ -60,6 +62,7 @@ def write_job_metadata(
 
 def create_zip(job_dir: Path) -> Path:
     zip_path = job_dir / "download.zip"
+    tmp_path = job_dir / "download.zip.tmp"
     include_names = [
         "note.md",
         "audio.mp3",
@@ -69,30 +72,39 @@ def create_zip(job_dir: Path) -> Path:
         "transcript.json",
         "metadata.json",
     ]
-    with ZipFile(zip_path, "w", compression=ZIP_DEFLATED) as archive:
-        for name in include_names:
-            file_path = job_dir / name
-            if file_path.exists():
-                archive.write(file_path, arcname=name)
-        frames_dir = job_dir / "frames"
-        if frames_dir.exists():
-            for frame_path in sorted(frames_dir.glob("*.jpg")):
-                archive.write(frame_path, arcname=frame_path.relative_to(job_dir).as_posix())
-        version_index_path = note_version_index_path(job_dir)
-        if version_index_path.exists():
-            archive.write(version_index_path, arcname="notes/versions.json")
-        version_index = load_note_version_index(job_dir)
-        selected_ids = set(version_index.selected_version_ids)
-        for version in version_index.versions:
-            if version.id not in selected_ids:
-                continue
-            note_path = job_dir / version.note_path
-            if note_path.exists():
-                archive.write(note_path, arcname=f"notes/{version.id}/note.md")
-            frame_dir = job_dir / version.frame_dir
-            if frame_dir.exists():
-                for frame_path in sorted(frame_dir.glob("*.jpg")):
-                    archive.write(frame_path, arcname=f"notes/{version.id}/frames/{frame_path.name}")
+    try:
+        with ZipFile(tmp_path, "w", compression=ZIP_DEFLATED) as archive:
+            for name in include_names:
+                file_path = job_dir / name
+                if file_path.exists():
+                    archive.write(file_path, arcname=name)
+            frames_dir = job_dir / "frames"
+            if frames_dir.exists():
+                for frame_path in sorted(frames_dir.glob("*.jpg")):
+                    archive.write(frame_path, arcname=frame_path.relative_to(job_dir).as_posix())
+            version_index_path = note_version_index_path(job_dir)
+            if version_index_path.exists():
+                archive.write(version_index_path, arcname="notes/versions.json")
+            version_index = load_note_version_index(job_dir)
+            selected_ids = set(version_index.selected_version_ids)
+            for version in version_index.versions:
+                if version.id not in selected_ids:
+                    continue
+                try:
+                    archive_version_id = safe_note_version_id(version.id)
+                    note_path = resolve_job_relative_path(job_dir, version.note_path)
+                    frame_dir = resolve_job_relative_path(job_dir, version.frame_dir)
+                except ValueError:
+                    continue
+                if note_path.exists():
+                    archive.write(note_path, arcname=f"notes/{archive_version_id}/note.md")
+                if frame_dir.exists():
+                    for frame_path in sorted(frame_dir.glob("*.jpg")):
+                        archive.write(frame_path, arcname=f"notes/{archive_version_id}/frames/{frame_path.name}")
+        tmp_path.replace(zip_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
     return zip_path
 
 

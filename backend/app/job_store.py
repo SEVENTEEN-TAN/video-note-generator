@@ -6,7 +6,7 @@ from pathlib import Path
 from threading import Lock
 
 from .models import Artifact, JobPublicState, JobStatus, JobSummary
-from .note_versions import load_note_version_index
+from .note_versions import load_note_version_index, resolve_job_relative_path
 
 
 def _now_iso() -> str:
@@ -184,6 +184,10 @@ def _infer_disk_job_status(job_dir: Path, artifacts: list[Artifact], version_ind
     if "note.md" in artifact_paths:
         return JobStatus.succeeded
     for version in version_index.versions:
-        if (job_dir / version.note_path).exists():
+        try:
+            note_path = resolve_job_relative_path(job_dir, version.note_path)
+        except ValueError:
+            continue
+        if note_path.exists():
             return JobStatus.succeeded
     return JobStatus.failed

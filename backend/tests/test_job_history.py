@@ -173,6 +173,36 @@ def test_list_jobs_marks_incomplete_disk_history_as_failed(tmp_path, monkeypatch
     ]
 
 
+def test_list_jobs_ignores_corrupt_note_version_index(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    job_dir = tmp_path / "corrupt-version-job"
+    job_dir.mkdir()
+    (job_dir / "audio.mp3").write_bytes(b"mp3")
+    (job_dir / "metadata.json").write_text(
+        json.dumps(
+            {
+                "job_id": "corrupt-version-job",
+                "created_at": "2026-06-23T00:00:00+00:00",
+                "original_filename": "input.mp4",
+                "title": "Corrupt",
+                "duration_seconds": None,
+            }
+        ),
+        encoding="utf-8",
+    )
+    version_index_path = job_dir / "note_versions" / "versions.json"
+    version_index_path.parent.mkdir(parents=True)
+    version_index_path.write_text("{broken", encoding="utf-8")
+
+    response = TestClient(app, raise_server_exceptions=False).get("/api/jobs")
+
+    assert response.status_code == 200
+    assert response.json()["jobs"][0]["job_id"] == "corrupt-version-job"
+    assert response.json()["jobs"][0]["note_version_count"] == 0
+    assert response.json()["jobs"][0]["status"] == "failed"
+
+
 def test_get_job_loads_disk_history_when_job_is_not_in_memory(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))

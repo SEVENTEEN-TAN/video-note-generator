@@ -156,6 +156,60 @@ def test_create_zip_includes_selected_note_versions_with_relative_frames(tmp_pat
     assert "notes/note_003/note.md" not in names
 
 
+def test_create_zip_ignores_unsafe_note_version_paths_from_disk_index(tmp_path) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    secret = tmp_path / "secret.md"
+    secret.write_text("# secret", encoding="utf-8")
+    (job_dir / "note.md").write_text("# active", encoding="utf-8")
+    index_path = job_dir / "note_versions" / "versions.json"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text(
+        NoteVersionIndex(
+            active_version_id="note_001",
+            selected_version_ids=["note_001"],
+            versions=[make_version("note_001").model_copy(update={"note_path": "../secret.md"})],
+        ).model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+
+    zip_path = create_zip(job_dir)
+
+    with ZipFile(zip_path) as archive:
+        names = set(archive.namelist())
+        payloads = {name: archive.read(name) for name in names}
+
+    assert "note.md" in names
+    assert "notes/note_001/note.md" not in names
+    assert b"# secret" not in payloads.values()
+
+
+def test_create_zip_keeps_existing_zip_when_rebuild_fails(tmp_path, monkeypatch) -> None:
+    job_dir = tmp_path
+    old_zip = job_dir / "download.zip"
+    old_zip.write_bytes(b"old zip")
+    opened_paths = []
+
+    class BrokenZipFile:
+        def __init__(self, path, *_args, **_kwargs) -> None:
+            opened_paths.append(path)
+
+        def __enter__(self):
+            raise RuntimeError("zip writer failed")
+
+        def __exit__(self, *_args) -> bool:
+            return False
+
+    monkeypatch.setattr("backend.app.processor.ZipFile", BrokenZipFile)
+
+    with pytest.raises(RuntimeError):
+        create_zip(job_dir)
+
+    assert old_zip.read_bytes() == b"old zip"
+    assert not (job_dir / "download.zip.tmp").exists()
+    assert opened_paths == [job_dir / "download.zip.tmp"]
+
+
 def test_refresh_artifacts_can_read_disk_job_without_memory_state(tmp_path) -> None:
     outputs_root = tmp_path / "outputs"
     job_id = "disk-only-job"
