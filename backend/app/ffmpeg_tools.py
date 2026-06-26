@@ -125,21 +125,46 @@ def extract_frame(video_path: Path, output_path: Path, timestamp: float, duratio
     if duration and duration > 1:
         safe_time = clamp_seconds(safe_time, 0.25, max(0.25, duration - 0.25))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    run_ffmpeg(
-        [
-            "-y",
-            "-hide_banner",
-            "-ss",
-            f"{safe_time:.3f}",
-            "-i",
-            str(video_path),
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            str(output_path),
-        ]
-    )
-    if not output_path.exists() or output_path.stat().st_size == 0:
-        raise FFmpegError(f"Frame extraction produced no output at {safe_time:.3f}s.")
-    return safe_time
+
+    errors: list[str] = []
+    for candidate_time in _frame_seek_candidates(safe_time):
+        if output_path.exists():
+            output_path.unlink()
+        try:
+            run_ffmpeg(
+                [
+                    "-y",
+                    "-hide_banner",
+                    "-ss",
+                    f"{candidate_time:.3f}",
+                    "-i",
+                    str(video_path),
+                    "-frames:v",
+                    "1",
+                    "-q:v",
+                    "2",
+                    str(output_path),
+                ]
+            )
+        except FFmpegError as exc:
+            errors.append(f"{candidate_time:.3f}s: {exc}")
+            continue
+        if output_path.exists() and output_path.stat().st_size > 0:
+            return candidate_time
+        errors.append(f"{candidate_time:.3f}s: no output")
+
+    attempted = ", ".join(f"{candidate:.3f}s" for candidate in _frame_seek_candidates(safe_time))
+    detail = errors[-1] if errors else "unknown error"
+    raise FFmpegError(f"Frame extraction failed after trying {attempted}. Last error: {detail}")
+
+
+def _frame_seek_candidates(safe_time: float) -> list[float]:
+    candidates = [safe_time]
+    if safe_time > 0:
+        candidates.extend([max(0.0, safe_time - 0.5), 0.0])
+
+    unique: list[float] = []
+    for candidate in candidates:
+        if not any(abs(candidate - existing) < 0.001 for existing in unique):
+            unique.append(candidate)
+    return unique
