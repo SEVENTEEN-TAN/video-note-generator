@@ -21,7 +21,7 @@ from .cuda_dependencies import (
     start_cuda_dependency_install,
 )
 from .ffmpeg_tools import extract_mp3, probe_duration
-from .llm import generate_note_draft
+from .llm import LLMError, generate_note_draft
 from .local_dependencies import (
     LocalTranscriptionDependencyInstallState,
     get_local_dependency_install_state,
@@ -530,7 +530,7 @@ def create_transcript_correction_endpoint(job_id: str, request: TranscriptCorrec
     try:
         preview = create_transcript_correction(job_dir, config, request.instructions)
         return preview.model_copy(update={"job_id": job_id})
-    except (TranscriptCorrectionError, FileNotFoundError, ValueError) as exc:
+    except (LLMError, TranscriptCorrectionError, FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 

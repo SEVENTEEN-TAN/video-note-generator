@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,11 @@ TRANSCRIPT_CORRECTED = "transcript.corrected.json"
 
 class TranscriptCorrectionError(RuntimeError):
     pass
+
+
+MAX_CORRECTED_TEXT_CHARS = 600
+MAX_CORRECTION_EXPANSION_RATIO = 3.0
+MAX_CORRECTION_EXPANSION_CHARS = 80
 
 
 def load_original_segments(job_dir: Path) -> list[TranscriptSegment]:
@@ -167,6 +173,8 @@ def normalize_corrections(
             index = int(item["index"])
         except (TypeError, ValueError) as exc:
             raise TranscriptCorrectionError("Model correction response has an invalid segment index.") from exc
+        if index in by_index:
+            raise TranscriptCorrectionError("Model correction response contains duplicate segment indexes.")
         by_index[index] = item
     corrected: list[TranscriptSegment] = []
     for index, original in enumerate(original_segments):
@@ -174,8 +182,25 @@ def normalize_corrections(
         if item is None:
             raise TranscriptCorrectionError("Model correction response is missing a segment index.")
         corrected_text = str(item.get("text", "")).strip() or original.text
+        validate_corrected_text(original.text, corrected_text)
         corrected.append(TranscriptSegment(start=original.start, end=original.end, text=corrected_text))
     return corrected
+
+
+def validate_corrected_text(original_text: str, corrected_text: str) -> None:
+    if "\n" in corrected_text or "\r" in corrected_text:
+        raise TranscriptCorrectionError("Model correction response must keep each segment on one line.")
+    if re.search(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", corrected_text):
+        raise TranscriptCorrectionError("Model correction response contains control characters.")
+    if len(corrected_text) > MAX_CORRECTED_TEXT_CHARS:
+        raise TranscriptCorrectionError("Model correction response is too long for a subtitle segment.")
+    original_len = max(len(original_text.strip()), 1)
+    expansion_limit = max(
+        int(original_len * MAX_CORRECTION_EXPANSION_RATIO),
+        original_len + MAX_CORRECTION_EXPANSION_CHARS,
+    )
+    if len(corrected_text) > expansion_limit:
+        raise TranscriptCorrectionError("Model correction appears to expand the subtitle instead of correcting it.")
 
 
 def transcript_payload_from_segments(segments: list[TranscriptSegment]) -> dict:

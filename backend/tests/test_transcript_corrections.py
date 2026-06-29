@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import main
 from backend.app.job_store import JobStore
+from backend.app.llm import LLMError
 from backend.app.main import app
 from backend.app.models import Chapter, JobConfig, KeyMoment, NoteDraft, NoteLanguage, NoteStyle, TranscriptionMode
 from backend.app.note_versions import regenerate_note_version
@@ -77,6 +78,32 @@ def test_create_transcript_correction_rejects_missing_segment(tmp_path, monkeypa
     assert not (tmp_path / TRANSCRIPT_CORRECTED_PENDING).exists()
 
 
+def test_create_transcript_correction_rejects_duplicate_segment_indexes(tmp_path, monkeypatch) -> None:
+    write_transcript(tmp_path)
+
+    def fake_correct(_config, _segments, _instructions=""):
+        return [{"index": 0, "text": "Dify 工作流"}, {"index": 0, "text": "Dify 工作流"}]
+
+    monkeypatch.setattr("backend.app.transcript_corrections.correct_transcript_segments", fake_correct)
+
+    with pytest.raises(TranscriptCorrectionError):
+        create_transcript_correction(tmp_path, make_config())
+
+
+def test_create_transcript_correction_rejects_expanded_or_multiline_text(tmp_path, monkeypatch) -> None:
+    write_transcript(tmp_path, text="hello")
+
+    def fake_correct(_config, _segments, _instructions=""):
+        return [{"index": 0, "text": "# Summary\n" + ("expanded " * 40)}]
+
+    monkeypatch.setattr("backend.app.transcript_corrections.correct_transcript_segments", fake_correct)
+
+    with pytest.raises(TranscriptCorrectionError):
+        create_transcript_correction(tmp_path, make_config())
+
+    assert not (tmp_path / TRANSCRIPT_CORRECTED_PENDING).exists()
+
+
 def test_apply_pending_transcript_correction_writes_corrected_transcript_and_subtitles(tmp_path) -> None:
     write_transcript(tmp_path, text="hello")
     (tmp_path / TRANSCRIPT_CORRECTED_PENDING).write_text(
@@ -118,6 +145,29 @@ def test_transcript_correction_endpoint_returns_preview(tmp_path, monkeypatch) -
 
     assert response.status_code == 200
     assert response.json()["changed_count"] == 1
+
+
+def test_transcript_correction_endpoint_returns_controlled_error_when_model_fails(tmp_path, monkeypatch) -> None:
+    job_id = "job-1"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir()
+    write_transcript(job_dir, text="hello")
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+
+    def fail_model(_config, _segments, _instructions=""):
+        raise LLMError("model returned invalid json")
+
+    monkeypatch.setattr("backend.app.transcript_corrections.correct_transcript_segments", fail_model)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        f"/api/jobs/{job_id}/transcript-corrections",
+        json={"note_api_key": "key", "note_base_url": "https://api.openai.com/v1", "note_model": "gpt-5.5"},
+    )
+
+    assert response.status_code == 400
+    assert "model returned invalid json" in response.json()["detail"]
+    assert not (job_dir / TRANSCRIPT_CORRECTED_PENDING).exists()
 
 
 def test_transcript_correction_apply_endpoint_applies_pending_and_queues_regeneration(tmp_path, monkeypatch) -> None:

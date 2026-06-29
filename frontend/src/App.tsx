@@ -387,7 +387,8 @@ export function App() {
     }
   }
 
-  const isBusy = job?.status === "pending" || job?.status === "running" || isSubmitting || isRegenerating;
+  const isTranscriptCorrectionActive = isCorrectingTranscript || isApplyingCorrection || Boolean(correctionPreview);
+  const isBusy = job?.status === "pending" || job?.status === "running" || isSubmitting || isRegenerating || isTranscriptCorrectionActive;
   const isLocalTranscription = transcriptionMode === "local_faster_whisper";
   const runtimeLocalStatus = health?.runtime?.faster_whisper;
   const selectedLocalModelAvailable =
@@ -909,6 +910,7 @@ export function App() {
     if (!job) {
       return;
     }
+    const requestJobId = job.job_id;
     setCorrectionError("");
     if (!noteApiKey.trim()) {
       setCorrectionError("请填写笔记 API Key，再修正字幕。");
@@ -920,7 +922,7 @@ export function App() {
     }
     setIsCorrectingTranscript(true);
     try {
-      const response = await fetch(`/api/jobs/${job.job_id}/transcript-corrections`, {
+      const response = await fetch(`/api/jobs/${requestJobId}/transcript-corrections`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -934,6 +936,9 @@ export function App() {
       if (!response.ok) {
         throw new Error(payload.detail || "字幕修正失败。");
       }
+      if (payload.job_id !== requestJobId) {
+        throw new Error("字幕修正结果与当前任务不匹配。");
+      }
       setCorrectionPreview(payload);
     } catch (error) {
       setCorrectionError(error instanceof Error ? error.message : "字幕修正失败。");
@@ -946,10 +951,15 @@ export function App() {
     if (!job || !correctionPreview) {
       return;
     }
+    const requestJobId = correctionPreview.job_id;
+    if (job.job_id !== requestJobId) {
+      setCorrectionError("当前任务与字幕修正结果不匹配，请重新发起修正。");
+      return;
+    }
     setCorrectionError("");
     setIsApplyingCorrection(true);
     try {
-      const response = await fetch(`/api/jobs/${job.job_id}/transcript-corrections/apply`, {
+      const response = await fetch(`/api/jobs/${requestJobId}/transcript-corrections/apply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -967,14 +977,14 @@ export function App() {
         throw new Error(payload.detail || "采用字幕修正失败。");
       }
       setCorrectionPreview(null);
+      const nextJob = await fetchJob(requestJobId);
       setJob({
-        ...job,
+        ...nextJob,
         status: "running",
         step: "重新生成笔记",
-        progress: Math.max(job.progress, 62),
+        progress: Math.max(nextJob.progress, 62),
         error: null
       });
-      setSubtitlePreview((current) => current);
       await refreshJobHistory();
     } catch (error) {
       setCorrectionError(error instanceof Error ? error.message : "采用字幕修正失败。");
