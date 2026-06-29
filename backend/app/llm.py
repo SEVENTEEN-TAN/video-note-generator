@@ -246,6 +246,22 @@ def call_note_model(config: JobConfig, messages: list[dict], max_tokens: int = 3
     raise LLMError(str(last_error) if last_error else "The model did not return a valid note draft.")
 
 
+def call_json_model(config: JobConfig, messages: list[dict], max_tokens: int = 3000) -> dict:
+    client = make_client(config.note_api_key, config.note_base_url)
+    response = client.chat.completions.create(
+        model=config.note_model,
+        messages=messages,
+        response_format={"type": "json_object"},
+        temperature=0.1,
+        max_tokens=max_tokens,
+    )
+    text = response.choices[0].message.content or ""
+    try:
+        return extract_json(text)
+    except Exception as exc:
+        raise LLMError(f"Model returned invalid correction JSON: {exc}") from exc
+
+
 def generate_note_draft(
     config: JobConfig,
     duration: float | None,

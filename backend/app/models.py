@@ -126,6 +126,38 @@ class TranscriptPayload(BaseModel):
     segments: list[TranscriptSegment] = Field(default_factory=list)
 
 
+class TranscriptCorrectionRequest(BaseModel):
+    note_api_key: str
+    note_base_url: str = "https://api.openai.com/v1"
+    note_model: str = "gpt-5.5"
+    instructions: str = ""
+
+
+class TranscriptCorrectionSegment(BaseModel):
+    index: int
+    start: float
+    end: float
+    original_text: str
+    corrected_text: str
+    changed: bool = False
+
+
+class TranscriptCorrectionPreview(BaseModel):
+    job_id: str = ""
+    changed_count: int
+    segments: list[TranscriptCorrectionSegment] = Field(default_factory=list)
+
+
+class TranscriptCorrectionApplyRequest(BaseModel):
+    note_language: NoteLanguage
+    note_style: NoteStyle = NoteStyle.detailed
+    extras: str = ""
+    note_api_key: str
+    note_base_url: str = "https://api.openai.com/v1"
+    note_model: str = "gpt-5.5"
+    frame_limit: int = Field(default=6, ge=1, le=24)
+
+
 class Chapter(BaseModel):
     title: str
     start_time: float

@@ -10,6 +10,7 @@ from .llm import generate_note_draft
 from .markdown import render_note_markdown
 from .models import JobConfig, NoteDraft, NoteVersion, NoteVersionIndex
 from .subtitles import transcript_segments_from_payload
+from .transcript_corrections import load_preferred_transcript_payload
 
 
 NOTE_VERSIONS_DIR = "note_versions"
@@ -237,10 +238,7 @@ def create_note_version_from_draft(
 
 
 def regenerate_note_version(job_dir: Path, config: JobConfig) -> NoteVersion:
-    transcript_path = job_dir / "transcript.json"
-    if not transcript_path.exists():
-        raise FileNotFoundError("Cannot regenerate notes because transcript.json is missing.")
-    segments = transcript_segments_from_payload(json.loads(transcript_path.read_text(encoding="utf-8")))
+    segments = transcript_segments_from_payload(load_preferred_transcript_payload(job_dir))
     if not segments:
         raise ValueError("Cannot regenerate notes because transcript.json has no usable segments.")
 

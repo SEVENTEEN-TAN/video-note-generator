@@ -46,6 +46,9 @@ from .models import (
     NoteVersionIndex,
     NoteVersionSelection,
     TranscriptionMode,
+    TranscriptCorrectionApplyRequest,
+    TranscriptCorrectionPreview,
+    TranscriptCorrectionRequest,
 )
 from .note_versions import activate_note_version, get_note_version, load_note_version_index, set_note_version_selection
 from .processor import create_zip, process_job, regenerate_note_job, write_job_metadata
@@ -53,6 +56,7 @@ from .runtime_status import get_runtime_status
 from .runtime_paths import get_frontend_dist_dir, get_outputs_root
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
 from .subtitles import transcript_segments_from_payload
+from .transcript_corrections import TranscriptCorrectionError, apply_pending_transcript_correction, create_transcript_correction
 from .transcription import TranscriptionError, get_faster_whisper_model_root, resolve_local_faster_whisper_model, transcribe_audio
 
 OUTPUTS_ROOT = get_outputs_root()
@@ -492,6 +496,83 @@ def regenerate_note_version_endpoint(
         config=config,
         store=store,
     )
+    return {"job_id": job_id, "status": "queued"}
+
+
+@app.post("/api/jobs/{job_id}/transcript-corrections", response_model=TranscriptCorrectionPreview)
+def create_transcript_correction_endpoint(job_id: str, request: TranscriptCorrectionRequest) -> TranscriptCorrectionPreview:
+    job_dir = safe_job_dir(job_id)
+    if not request.note_api_key.strip():
+        raise HTTPException(status_code=400, detail="Note API Key is required.")
+    if not request.note_model.strip():
+        raise HTTPException(status_code=400, detail="Note model is required.")
+
+    metadata = read_metadata(job_dir)
+    try:
+        note_language = NoteLanguage(str(metadata.get("note_language") or "zh"))
+    except ValueError:
+        note_language = NoteLanguage.zh
+    try:
+        note_style = NoteStyle(str(metadata.get("note_style") or "detailed"))
+    except ValueError:
+        note_style = NoteStyle.detailed
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="reuse-transcript",
+        note_api_key=request.note_api_key,
+        note_base_url=request.note_base_url,
+        note_model=request.note_model,
+        note_language=note_language,
+        note_style=note_style,
+        frame_limit=int(metadata.get("frame_limit") or 6),
+        original_filename=str(metadata.get("original_filename") or "video"),
+    )
+    try:
+        preview = create_transcript_correction(job_dir, config, request.instructions)
+        return preview.model_copy(update={"job_id": job_id})
+    except (TranscriptCorrectionError, FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/jobs/{job_id}/transcript-corrections/apply")
+def apply_transcript_correction_endpoint(
+    job_id: str,
+    request: TranscriptCorrectionApplyRequest,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    job_dir = safe_job_dir(job_id)
+    if not (job_dir / "source_video").exists():
+        raise HTTPException(status_code=400, detail="Source video is missing. This job cannot regenerate frames.")
+    if not request.note_api_key.strip():
+        raise HTTPException(status_code=400, detail="Note API Key is required.")
+    if not request.note_model.strip():
+        raise HTTPException(status_code=400, detail="Note model is required.")
+    try:
+        apply_pending_transcript_correction(job_dir)
+    except (TranscriptCorrectionError, FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    metadata = read_metadata(job_dir)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="reuse-transcript",
+        note_api_key=request.note_api_key,
+        note_base_url=request.note_base_url,
+        note_model=request.note_model,
+        note_language=request.note_language,
+        note_style=request.note_style,
+        extras=request.extras,
+        frame_limit=request.frame_limit,
+        original_filename=str(metadata.get("original_filename") or "video"),
+    )
+    background_tasks.add_task(
+        regenerate_note_job,
+        job_id=job_id,
+        job_dir=job_dir,
+        config=config,
+        store=store,
+    )
+    store.refresh_artifacts(job_id)
     return {"job_id": job_id, "status": "queued"}
 
 
