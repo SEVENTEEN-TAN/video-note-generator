@@ -81,6 +81,21 @@ type NoteVersionIndex = {
   versions: NoteVersion[];
 };
 
+type TranscriptCorrectionSegment = {
+  index: number;
+  start: number;
+  end: number;
+  original_text: string;
+  corrected_text: string;
+  changed: boolean;
+};
+
+type TranscriptCorrectionPreview = {
+  job_id: string;
+  changed_count: number;
+  segments: TranscriptCorrectionSegment[];
+};
+
 type HealthState = {
   ok: boolean;
   runtime_ok?: boolean;
@@ -231,6 +246,17 @@ function formatElapsedSeconds(seconds?: number): string {
   return `${minutes} 分 ${restSeconds} 秒`;
 }
 
+function formatSecondsRange(start: number, end: number): string {
+  const format = (value: number) => {
+    const totalSeconds = Math.max(0, Math.floor(value));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
+  };
+  return `${format(start)} - ${format(end)}`;
+}
+
 function formatUpdateTime(value?: string | null): string {
   if (!value) {
     return "暂无";
@@ -295,6 +321,10 @@ export function App() {
   const [isDeletingJobId, setIsDeletingJobId] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [downloadMessage, setDownloadMessage] = useState("");
+  const [correctionPreview, setCorrectionPreview] = useState<TranscriptCorrectionPreview | null>(null);
+  const [correctionError, setCorrectionError] = useState("");
+  const [isCorrectingTranscript, setIsCorrectingTranscript] = useState(false);
+  const [isApplyingCorrection, setIsApplyingCorrection] = useState(false);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
 
   async function pollTaskState<T extends PollableTaskState>(
@@ -393,6 +423,10 @@ export function App() {
     setPreviewVersionId("");
     setVersionError("");
     setDownloadMessage("");
+    setCorrectionPreview(null);
+    setCorrectionError("");
+    setIsCorrectingTranscript(false);
+    setIsApplyingCorrection(false);
     setIsRegenerating(false);
   }
 
@@ -871,6 +905,84 @@ export function App() {
     }
   }
 
+  async function handleCreateTranscriptCorrection() {
+    if (!job) {
+      return;
+    }
+    setCorrectionError("");
+    if (!noteApiKey.trim()) {
+      setCorrectionError("请填写笔记 API Key，再修正字幕。");
+      return;
+    }
+    if (!noteBaseUrl.trim() || !noteModel.trim()) {
+      setCorrectionError("笔记 Base URL 和模型不能为空。");
+      return;
+    }
+    setIsCorrectingTranscript(true);
+    try {
+      const response = await fetch(`/api/jobs/${job.job_id}/transcript-corrections`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          note_api_key: noteApiKey,
+          note_base_url: noteBaseUrl,
+          note_model: noteModel,
+          instructions: extras
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "字幕修正失败。");
+      }
+      setCorrectionPreview(payload);
+    } catch (error) {
+      setCorrectionError(error instanceof Error ? error.message : "字幕修正失败。");
+    } finally {
+      setIsCorrectingTranscript(false);
+    }
+  }
+
+  async function handleApplyTranscriptCorrection() {
+    if (!job || !correctionPreview) {
+      return;
+    }
+    setCorrectionError("");
+    setIsApplyingCorrection(true);
+    try {
+      const response = await fetch(`/api/jobs/${job.job_id}/transcript-corrections/apply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          note_language: noteLanguage,
+          note_style: noteStyle,
+          extras,
+          note_api_key: noteApiKey,
+          note_base_url: noteBaseUrl,
+          note_model: noteModel,
+          frame_limit: frameLimit
+        })
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "采用字幕修正失败。");
+      }
+      setCorrectionPreview(null);
+      setJob({
+        ...job,
+        status: "running",
+        step: "重新生成笔记",
+        progress: Math.max(job.progress, 62),
+        error: null
+      });
+      setSubtitlePreview((current) => current);
+      await refreshJobHistory();
+    } catch (error) {
+      setCorrectionError(error instanceof Error ? error.message : "采用字幕修正失败。");
+    } finally {
+      setIsApplyingCorrection(false);
+    }
+  }
+
   async function handleLoadHistoryJob(jobId: string) {
     setHistoryError("");
     setSubmitError("");
@@ -1158,6 +1270,12 @@ export function App() {
                 {versionError}
               </p>
             )}
+            {correctionError && !correctionPreview && (
+              <p className="inline-error">
+                <AlertTriangle size={15} />
+                {correctionError}
+              </p>
+            )}
             <div className="result-body-scroll">
               <div className="preview-stack">
                 <PreviewBlock
@@ -1167,7 +1285,25 @@ export function App() {
                   empty="完成后显示 note.md 预览"
                   jobId={job?.job_id}
                 />
-                <PreviewBlock title="字幕 Markdown" text={subtitlePreview} empty="字幕生成后显示时间戳预览" jobId={job?.job_id} />
+                <PreviewBlock
+                  title="字幕 Markdown"
+                  titleAction={
+                    job?.artifacts.some((artifact) => artifact.path === "transcript.json") ? (
+                      <button
+                        className="small-button"
+                        disabled={isBusy || isCorrectingTranscript}
+                        onClick={() => void handleCreateTranscriptCorrection()}
+                        type="button"
+                      >
+                        {isCorrectingTranscript ? <Loader2 className="spin" size={15} /> : <Captions size={15} />}
+                        AI 修正字幕
+                      </button>
+                    ) : null
+                  }
+                  text={subtitlePreview}
+                  empty="字幕生成后显示时间戳预览"
+                  jobId={job?.job_id}
+                />
               </div>
 
               <div className="frame-grid" aria-label="关键帧">
@@ -1500,6 +1636,18 @@ export function App() {
           </section>
         </div>
       )}
+      <TranscriptCorrectionModal
+        error={correctionError}
+        isApplying={isApplyingCorrection}
+        onApply={() => void handleApplyTranscriptCorrection()}
+        onClose={() => {
+          if (!isApplyingCorrection) {
+            setCorrectionPreview(null);
+            setCorrectionError("");
+          }
+        }}
+        preview={correctionPreview}
+      />
     </main>
   );
 }
@@ -1783,21 +1931,97 @@ function ArtifactDownloadButton({
 function PreviewBlock({
   assetBasePath,
   title,
+  titleAction,
   text,
   empty,
   jobId
 }: {
   assetBasePath?: string;
   title: string;
+  titleAction?: React.ReactNode;
   text: string;
   empty: string;
   jobId?: string;
 }) {
   return (
     <section className="preview-block">
-      <h3>{title}</h3>
+      <div className="preview-title-row">
+        <h3>{title}</h3>
+        {titleAction}
+      </div>
       {text ? <MarkdownPreview assetBasePath={assetBasePath} markdown={text} jobId={jobId} /> : <p>{empty}</p>}
     </section>
+  );
+}
+
+function TranscriptCorrectionModal({
+  error,
+  isApplying,
+  onApply,
+  onClose,
+  preview
+}: {
+  error: string;
+  isApplying: boolean;
+  onApply: () => void;
+  onClose: () => void;
+  preview: TranscriptCorrectionPreview | null;
+}) {
+  if (!preview) {
+    return null;
+  }
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <section className="settings-modal correction-modal" aria-label="AI 字幕修正对比" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">Transcript correction</p>
+            <h2>AI 字幕修正对比</h2>
+          </div>
+          <button className="icon-button" disabled={isApplying} onClick={onClose} type="button">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="modal-body correction-body">
+          <p className="correction-summary">
+            共 {preview.segments.length} 段，AI 建议修改 {preview.changed_count} 段。采用后会重写字幕文件，并基于修正版生成新的笔记版本。
+          </p>
+          {error && (
+            <p className="inline-error">
+              <AlertTriangle size={15} />
+              {error}
+            </p>
+          )}
+          <div className="correction-diff-grid">
+            <div className="correction-column-title">原始字幕</div>
+            <div className="correction-column-title">AI 修正版</div>
+            {preview.segments.map((segment) => (
+              <div className="correction-row-pair" key={segment.index}>
+                <div className={segment.changed ? "correction-row changed" : "correction-row"}>
+                  <strong>{formatSecondsRange(segment.start, segment.end)}</strong>
+                  <span>{segment.original_text}</span>
+                </div>
+                <div className={segment.changed ? "correction-row changed" : "correction-row"}>
+                  <strong>{formatSecondsRange(segment.start, segment.end)}</strong>
+                  <span>{segment.corrected_text}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="modal-footer">
+          <button className="small-button" disabled={isApplying} onClick={onClose} type="button">
+            取消
+          </button>
+          <button className="small-button strong" disabled={isApplying} onClick={onApply} type="button">
+            {isApplying ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+            采用修正版并重新生成笔记
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 
