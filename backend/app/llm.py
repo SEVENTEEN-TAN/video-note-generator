@@ -5,7 +5,7 @@ import re
 
 from openai import OpenAI
 
-from .models import JobConfig, NoteDraft, NoteStyle, TranscriptSegment
+from .models import Chapter, JobConfig, KeyMoment, NoteDraft, NoteStyle, TranscriptSegment
 from .task_debug_log import TaskDebugLog
 from .time_utils import seconds_to_hhmmss
 
@@ -396,23 +396,77 @@ def generate_chunked_note_draft(
         kwargs = {
             "max_tokens": 2200,
         }
+        debug_context = f"note-chunk-{index}-of-{len(chunks)}"
         if debug_log:
             kwargs["debug_log"] = debug_log
-            kwargs["debug_context"] = f"note-chunk-{index}-of-{len(chunks)}"
-        chunk_drafts.append(
-            call_note_model(
-                config,
-                [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": chunk_prompt},
-                ],
-                **kwargs,
+            kwargs["debug_context"] = debug_context
+        try:
+            chunk_drafts.append(
+                call_note_model(
+                    config,
+                    [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": chunk_prompt},
+                    ],
+                    **kwargs,
+                )
             )
-        )
+        except LLMError as exc:
+            if debug_log:
+                debug_log.event(
+                    "generate_chunked_note_draft",
+                    "fallback_to_transcript_chunk",
+                    context=debug_context,
+                    chunk_index=index,
+                    chunk_count=len(chunks),
+                    segment_count=len(chunk),
+                    error=str(exc),
+                )
+            chunk_drafts.append(fallback_note_draft_from_chunk(index, len(chunks), chunk))
 
     if debug_log:
         return reduce_note_drafts(config, duration, chunk_drafts, system_prompt, debug_log=debug_log)
     return reduce_note_drafts(config, duration, chunk_drafts, system_prompt)
+
+
+def fallback_note_draft_from_chunk(
+    chunk_index: int,
+    chunk_count: int,
+    segments: list[TranscriptSegment],
+) -> NoteDraft:
+    if not segments:
+        return NoteDraft(title=f"Transcript chunk {chunk_index} of {chunk_count}", summary="")
+
+    title = f"Transcript chunk {chunk_index} of {chunk_count}"
+    transcript_lines = render_transcript_lines(segments)
+    summary = "\n".join(transcript_lines)
+    bullets = [segment.text.strip() for segment in segments if segment.text.strip()][:8]
+    start_time = segments[0].start
+    end_time = segments[-1].end
+    return NoteDraft(
+        title=title,
+        summary=summary,
+        chapters=[
+            Chapter(
+                title=title,
+                start_time=start_time,
+                end_time=end_time,
+                bullets=bullets,
+                detail=summary,
+                quote_times=[f"{seconds_to_hhmmss(start_time)} - {seconds_to_hhmmss(end_time)}"],
+            )
+        ],
+        key_moments=[
+            KeyMoment(
+                time=start_time,
+                reason=f"Fallback transcript coverage for chunk {chunk_index}.",
+                chapter_index=0,
+            )
+        ],
+        recommended_frame_count=1,
+        key_takeaways=bullets[:3],
+        action_items=[],
+    )
 
 
 def reduce_note_drafts(

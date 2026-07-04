@@ -215,6 +215,50 @@ def test_reduce_note_drafts_falls_back_to_deterministic_merge_when_model_reduce_
     assert "fallback" in log_text
 
 
+def test_generate_chunked_note_draft_falls_back_when_one_chunk_model_call_fails(tmp_path, monkeypatch) -> None:
+    reduce_prompts: list[str] = []
+
+    def fake_call_note_model(config, messages, **kwargs):
+        context = kwargs.get("debug_context", "")
+        if context == "note-chunk-2-of-3":
+            raise llm.LLMError("Model returned invalid note JSON: truncated")
+        if context == "note-reduce":
+            reduce_prompts.append(messages[-1]["content"])
+            return NoteDraft(title="merged", summary="merged summary")
+        return NoteDraft(
+            title=context,
+            summary=f"summary for {context}",
+            chapters=[Chapter(title=context, start_time=0, end_time=1)],
+            key_moments=[KeyMoment(time=0, reason=context, chapter_index=0)],
+        )
+
+    monkeypatch.setattr(llm, "call_note_model", fake_call_note_model)
+    monkeypatch.setattr(llm, "MAX_CHUNK_TRANSCRIPT_CHARS", 80)
+
+    segments = [
+        TranscriptSegment(start=0, end=1, text="first chunk content"),
+        TranscriptSegment(start=2, end=3, text="second chunk content that must survive fallback"),
+        TranscriptSegment(start=4, end=5, text="third chunk content"),
+    ]
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        note_api_key="note-key",
+        note_language=NoteLanguage.en,
+        original_filename="long.mp4",
+    )
+    debug_log = TaskDebugLog(tmp_path)
+
+    draft = llm.generate_chunked_note_draft(config, duration=5, segments=segments, system_prompt="system", debug_log=debug_log)
+
+    assert draft.title == "merged"
+    assert reduce_prompts
+    assert "second chunk content that must survive fallback" in reduce_prompts[0]
+    log_text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    assert "generate_chunked_note_draft" in log_text
+    assert "fallback" in log_text
+    assert "note-chunk-2-of-3" in log_text
+
+
 def test_parse_note_draft_strips_replacement_characters() -> None:
     draft = parse_note_draft(
         '{"title":"展��AI大��型","summary":"sum","chapters":[],"key_moments":[{"time":12.0,"reason":"展��AI大��型课程官网","chapter_index":0}],"key_takeaways":[],"action_items":[],"markdown_body":"展��AI大��型"}'
