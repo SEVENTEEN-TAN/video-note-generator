@@ -49,3 +49,20 @@ def test_model_download_api_rejects_invalid_model_name() -> None:
     response = client.post("/api/models/faster-whisper/download", json={"model_name": "../secret"})
 
     assert response.status_code == 422
+
+
+def test_model_download_state_uses_saved_model_directory(tmp_path, monkeypatch) -> None:
+    from backend.app.settings import save_user_settings
+
+    settings_path = tmp_path / "settings.json"
+    model_root = tmp_path / "settings-models"
+    monkeypatch.setenv("VIDEO_NOTE_SETTINGS_FILE", str(settings_path))
+    monkeypatch.delenv("FASTER_WHISPER_MODEL_DIR", raising=False)
+    save_user_settings({"faster_whisper_model_dir": str(model_root)})
+    write_model_files(model_root / "small")
+    model_downloads.clear_model_download_states()
+
+    state = model_downloads.get_model_download_state("small")
+
+    assert state.status == "succeeded"
+    assert state.model_root == str(model_root)

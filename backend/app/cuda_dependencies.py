@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .install_tasks import PackageInstallController, PackageInstallState
+from .runtime_config import get_python_package_install_args
 from .transcription import find_external_python
 
 CUDA_DEPENDENCY_PACKAGES = ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
@@ -14,6 +15,7 @@ _controller = PackageInstallController(
     packages=CUDA_DEPENDENCY_PACKAGES,
     failure_message="CUDA dependency installation failed.",
     python_finder=find_external_python,
+    install_args_provider=get_python_package_install_args,
 )
 
 

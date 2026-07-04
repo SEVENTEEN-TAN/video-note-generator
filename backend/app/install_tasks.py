@@ -23,10 +23,12 @@ class PackageInstallController:
         packages: Sequence[str],
         failure_message: str,
         python_finder: Callable[[], str | None] | None = None,
+        install_args_provider: Callable[[], Sequence[str]] | None = None,
     ) -> None:
         self._packages = tuple(packages)
         self._failure_message = failure_message
         self._python_finder = python_finder
+        self._install_args_provider = install_args_provider
         self._state = PackageInstallState()
         self._lock = threading.Lock()
 
@@ -74,12 +76,14 @@ class PackageInstallController:
             )
 
     def install_packages(self, python_path: str) -> None:
+        install_args = list(self._install_args_provider() if self._install_args_provider else [])
         completed = subprocess.run(
             [
                 python_path,
                 "-m",
                 "pip",
                 "install",
+                *install_args,
                 *self._packages,
             ],
             capture_output=True,

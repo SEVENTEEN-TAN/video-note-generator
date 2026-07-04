@@ -138,3 +138,57 @@ def test_runtime_status_reports_external_cuda_runtime_error(tmp_path, monkeypatc
     assert status["faster_whisper"]["cuda_device_count"] == 1
     assert status["faster_whisper"]["cuda_source"] == "external"
     assert "cublas64_12.dll" in status["faster_whisper"]["cuda_error"]
+
+
+def test_runtime_status_reports_configured_path_sources(tmp_path, monkeypatch) -> None:
+    from backend.app.settings import save_user_settings
+
+    settings_path = tmp_path / "settings.json"
+    python_path = tmp_path / "Python310" / "python.exe"
+    worker_path = tmp_path / "worker.py"
+    model_root = tmp_path / "custom-models"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("fake python", encoding="utf-8")
+    worker_path.write_text("print('worker')", encoding="utf-8")
+    write_model_files(model_root / "small")
+
+    monkeypatch.setenv("VIDEO_NOTE_SETTINGS_FILE", str(settings_path))
+    monkeypatch.delenv("VIDEO_NOTE_PYTHON_PATH", raising=False)
+    monkeypatch.delenv("FASTER_WHISPER_MODEL_DIR", raising=False)
+    save_user_settings(
+        {
+            "external_python_path": str(python_path),
+            "faster_whisper_model_dir": str(model_root),
+            "python_package_install_mode": "user",
+        }
+    )
+    monkeypatch.setattr(runtime_status, "get_ffmpeg_path", lambda: "C:/ffmpeg/bin/ffmpeg.exe")
+    monkeypatch.setattr(transcription, "WhisperModel", None)
+    monkeypatch.setattr(transcription, "FASTER_WHISPER_IMPORT_ERROR", "No module named 'faster_whisper'")
+    monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: worker_path)
+    monkeypatch.setattr(
+        runtime_status,
+        "get_external_runtime_status",
+        lambda *_args: {
+            "python_path": str(python_path),
+            "faster_whisper_available": True,
+            "faster_whisper_error": "",
+            "ctranslate2_available": True,
+            "ctranslate2_version": "4.5.0",
+            "cuda_device_count": None,
+            "cuda_runtime_available": False,
+            "cuda_error": "",
+            "cuda_dll_dirs": [],
+            "source": "external",
+        },
+    )
+
+    status = runtime_status.get_runtime_status()
+
+    assert status["faster_whisper"]["external_python_path"] == str(python_path)
+    assert status["faster_whisper"]["external_python_source"] == "settings"
+    assert status["faster_whisper"]["external_python_error"] == ""
+    assert status["faster_whisper"]["python_package_install_mode"] == "user"
+    assert status["local_models"]["root"] == str(model_root)
+    assert status["local_models"]["root_source"] == "settings"
+    assert status["local_models"]["models"] == ["small"]

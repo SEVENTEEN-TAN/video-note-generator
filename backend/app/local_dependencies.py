@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .install_tasks import PackageInstallController, PackageInstallState
+from .runtime_config import get_python_package_install_args
 from .transcription import find_external_python
 
 LOCAL_TRANSCRIPTION_DEPENDENCY_PACKAGES = (
@@ -22,6 +23,7 @@ _controller = PackageInstallController(
     packages=LOCAL_TRANSCRIPTION_DEPENDENCY_PACKAGES,
     failure_message="Local transcription dependency installation failed.",
     python_finder=find_external_python,
+    install_args_provider=get_python_package_install_args,
 )
 
 

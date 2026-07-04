@@ -5,7 +5,6 @@ import importlib
 import json
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from collections.abc import Callable
@@ -14,13 +13,13 @@ from openai import OpenAI
 
 from .ffmpeg_tools import probe_duration, split_audio
 from .models import JobConfig, TranscriptPayload, TranscriptSegment, TranscriptionMode
-from .runtime_paths import get_bundle_root, get_model_root
+from .runtime_config import get_configured_external_python, get_configured_model_root
+from .runtime_paths import get_bundle_root
 from .time_utils import seconds_to_hhmmss
 
 MAX_TRANSCRIPTION_FILE_BYTES = 24 * 1024 * 1024
 STANDARD_TRANSCRIPTION_CHUNK_SECONDS = 600
 CHAT_AUDIO_CHUNK_SECONDS = 120
-FASTER_WHISPER_MODEL_ROOT = get_model_root()
 REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json")
 FASTER_WHISPER_VOCABULARY_FILES = ("vocabulary.txt", "vocabulary.json")
 ProgressCallback = Callable[[str, int], None]
@@ -116,7 +115,7 @@ def transcribe_with_faster_whisper(
 
 
 def get_faster_whisper_model_root() -> Path:
-    return Path(os.getenv("FASTER_WHISPER_MODEL_DIR", str(FASTER_WHISPER_MODEL_ROOT))).expanduser()
+    return get_configured_model_root().as_path()
 
 
 def transcribe_with_external_faster_whisper(
@@ -168,14 +167,10 @@ def transcribe_with_external_faster_whisper(
 
 
 def find_external_python() -> str | None:
-    override = os.getenv("VIDEO_NOTE_PYTHON_PATH", "").strip()
-    if override:
-        return override
-    for executable in ("python", "python3", "py"):
-        path = shutil.which(executable)
-        if path:
-            return path
-    return None
+    configured = get_configured_external_python()
+    if configured.error:
+        return None
+    return configured.value or None
 
 
 def external_worker_env() -> dict[str, str]:

@@ -28,3 +28,23 @@ def test_package_install_controller_allows_retry_after_terminal_state() -> None:
     assert state.status == "pending"
     assert state.error == ""
     assert should_enqueue is True
+
+
+def test_package_install_controller_passes_install_args_before_packages(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    controller = PackageInstallController(
+        packages=PACKAGES,
+        failure_message="install failed",
+        python_finder=lambda: "python",
+        install_args_provider=lambda: ["--user"],
+    )
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("backend.app.install_tasks.subprocess.run", fake_run)
+
+    controller.run()
+
+    assert calls == [["python", "-m", "pip", "install", "--user", "demo-package"]]

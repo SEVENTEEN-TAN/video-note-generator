@@ -6,7 +6,7 @@ import subprocess
 
 from . import transcription
 from .ffmpeg_tools import get_ffmpeg_path
-from .runtime_paths import get_model_root
+from .runtime_config import get_configured_external_python, get_configured_model_root, get_python_package_install_mode
 from .settings import get_settings_path
 
 
@@ -106,6 +106,7 @@ def build_faster_whisper_install_hint(
 def get_runtime_status() -> dict:
     ffmpeg_path = get_ffmpeg_path()
     internal_faster_whisper_available = transcription.WhisperModel is not None
+    external_python = get_configured_external_python()
     external_python_path = transcription.find_external_python()
     external_worker_path = transcription.get_local_whisper_worker_path()
     external_worker_available = bool(external_python_path) and external_worker_path.exists()
@@ -118,7 +119,8 @@ def get_runtime_status() -> dict:
     faster_whisper_available = internal_faster_whisper_available or worker_ready
     internal_cuda_status = get_internal_cuda_status()
     cuda_status = choose_cuda_status(internal_cuda_status, external_runtime)
-    model_root = get_model_root()
+    model_root_config = get_configured_model_root()
+    model_root = model_root_config.as_path()
     local_models = transcription.discover_local_faster_whisper_models(model_root)
     model_available = len(local_models) > 0
     ready_for_cpu = faster_whisper_available and model_available
@@ -143,6 +145,9 @@ def get_runtime_status() -> dict:
             "internal_import_error": "" if internal_faster_whisper_available else transcription.FASTER_WHISPER_IMPORT_ERROR,
             "python_available": python_available,
             "external_python_path": external_python_path,
+            "external_python_source": external_python.source,
+            "external_python_error": external_python.error,
+            "python_package_install_mode": get_python_package_install_mode(),
             "external_worker_path": str(external_worker_path),
             "external_worker_available": external_worker_available,
             "worker_ready": worker_ready,
@@ -164,6 +169,7 @@ def get_runtime_status() -> dict:
         },
         "local_models": {
             "root": str(model_root),
+            "root_source": model_root_config.source,
             "models": local_models,
             "hint": "Put Faster Whisper model folders here for local transcription. The app validates local files before starting a job and will not rely on a first-run network download.",
         },
