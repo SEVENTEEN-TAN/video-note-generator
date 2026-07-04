@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -11,6 +11,7 @@ from .models import NoteLanguage, NoteStyle, TranscriptionMode
 from .runtime_paths import get_app_data_root
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
+PythonPackageInstallMode = Literal["default", "user"]
 
 
 class UserSettings(BaseModel):
@@ -22,6 +23,9 @@ class UserSettings(BaseModel):
     transcription_model: str = "small"
     local_whisper_device: str = "cpu"
     local_whisper_compute_type: str = "int8"
+    external_python_path: str = ""
+    faster_whisper_model_dir: str = ""
+    python_package_install_mode: PythonPackageInstallMode = "default"
     note_api_key: str = ""
     note_base_url: str = OPENAI_BASE_URL
     note_model: str = "gpt-5.5"
@@ -36,6 +40,8 @@ class UserSettings(BaseModel):
         "transcription_model",
         "local_whisper_device",
         "local_whisper_compute_type",
+        "external_python_path",
+        "faster_whisper_model_dir",
         "note_api_key",
         "note_base_url",
         "note_model",
@@ -76,6 +82,9 @@ class UserSettingsUpdate(BaseModel):
     transcription_model: str | None = None
     local_whisper_device: str | None = None
     local_whisper_compute_type: str | None = None
+    external_python_path: str | None = None
+    faster_whisper_model_dir: str | None = None
+    python_package_install_mode: PythonPackageInstallMode | None = None
     note_api_key: str | None = None
     note_base_url: str | None = None
     note_model: str | None = None
@@ -90,6 +99,8 @@ class UserSettingsUpdate(BaseModel):
         "transcription_model",
         "local_whisper_device",
         "local_whisper_compute_type",
+        "external_python_path",
+        "faster_whisper_model_dir",
         "note_api_key",
         "note_base_url",
         "note_model",

@@ -58,3 +58,31 @@ def test_clear_user_settings_removes_file_and_returns_defaults(tmp_path, monkeyp
     assert cleared.transcription_model == "small"
     assert cleared.local_whisper_device == "cpu"
     assert cleared.local_whisper_compute_type == "int8"
+
+
+def test_user_settings_roundtrip_persists_runtime_path_overrides(tmp_path, monkeypatch) -> None:
+    settings_path = tmp_path / "settings.json"
+    python_path = tmp_path / "Python310" / "python.exe"
+    model_dir = tmp_path / "custom-models"
+    python_path.parent.mkdir(parents=True)
+    python_path.write_text("fake python", encoding="utf-8")
+    monkeypatch.setenv("VIDEO_NOTE_SETTINGS_FILE", str(settings_path))
+
+    saved = save_user_settings(
+        {
+            "external_python_path": str(python_path),
+            "faster_whisper_model_dir": str(model_dir),
+            "python_package_install_mode": "user",
+        }
+    )
+
+    loaded = load_user_settings()
+    payload = json.loads(settings_path.read_text(encoding="utf-8"))
+
+    assert saved.external_python_path == str(python_path)
+    assert saved.faster_whisper_model_dir == str(model_dir)
+    assert saved.python_package_install_mode == "user"
+    assert loaded == saved
+    assert payload["external_python_path"] == str(python_path)
+    assert payload["faster_whisper_model_dir"] == str(model_dir)
+    assert payload["python_package_install_mode"] == "user"
