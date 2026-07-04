@@ -10,6 +10,7 @@ from .llm import generate_note_draft
 from .markdown import render_note_markdown
 from .models import JobConfig, NoteDraft, NoteVersion, NoteVersionIndex
 from .subtitles import transcript_segments_from_payload
+from .task_debug_log import TaskDebugLog
 from .transcript_corrections import load_preferred_transcript_payload
 
 
@@ -237,7 +238,7 @@ def create_note_version_from_draft(
     return version
 
 
-def regenerate_note_version(job_dir: Path, config: JobConfig) -> NoteVersion:
+def regenerate_note_version(job_dir: Path, config: JobConfig, debug_log: TaskDebugLog | None = None) -> NoteVersion:
     segments = transcript_segments_from_payload(load_preferred_transcript_payload(job_dir))
     if not segments:
         raise ValueError("Cannot regenerate notes because transcript.json has no usable segments.")
@@ -245,7 +246,10 @@ def regenerate_note_version(job_dir: Path, config: JobConfig) -> NoteVersion:
     metadata = _read_metadata(job_dir)
     duration = metadata.get("duration_seconds")
     video_path = find_source_video(job_dir)
-    draft = generate_note_draft(config, float(duration) if duration is not None else None, segments)
+    if debug_log:
+        draft = generate_note_draft(config, float(duration) if duration is not None else None, segments, debug_log=debug_log)
+    else:
+        draft = generate_note_draft(config, float(duration) if duration is not None else None, segments)
     return create_note_version_from_draft(
         job_dir=job_dir,
         video_path=video_path,

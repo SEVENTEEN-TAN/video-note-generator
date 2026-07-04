@@ -6,6 +6,7 @@ import re
 from openai import OpenAI
 
 from .models import JobConfig, NoteDraft, NoteStyle, TranscriptSegment
+from .task_debug_log import TaskDebugLog
 from .time_utils import seconds_to_hhmmss
 
 
@@ -216,11 +217,60 @@ def make_client(api_key: str, base_url: str) -> OpenAI:
     return OpenAI(api_key=api_key)
 
 
-def call_note_model(config: JobConfig, messages: list[dict], max_tokens: int = 3000) -> NoteDraft:
+def _safe_debug_context(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", value.strip()).strip("-")
+    return safe or "note"
+
+
+def _find_json_decode_error(exc: BaseException) -> json.JSONDecodeError | None:
+    current: BaseException | None = exc
+    seen: set[int] = set()
+    while current and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, json.JSONDecodeError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
+
+
+def _json_error_details(text: str, exc: BaseException) -> dict:
+    decode_error = _find_json_decode_error(exc)
+    if not decode_error:
+        return {}
+    start = max(0, decode_error.pos - 300)
+    end = min(len(text), decode_error.pos + 300)
+    return {
+        "json_error_message": decode_error.msg,
+        "json_error_line": decode_error.lineno,
+        "json_error_column": decode_error.colno,
+        "json_error_char": decode_error.pos,
+        "error_context": text[start:end],
+    }
+
+
+def call_note_model(
+    config: JobConfig,
+    messages: list[dict],
+    max_tokens: int = 3000,
+    debug_log: TaskDebugLog | None = None,
+    debug_context: str = "note",
+) -> NoteDraft:
     client = make_client(config.note_api_key, config.note_base_url)
     last_error: Exception | None = None
     working_messages = list(messages)
-    for _attempt in range(2):
+    for attempt in range(1, 3):
+        if debug_log:
+            debug_log.event(
+                "note_model_call",
+                "requesting",
+                context=debug_context,
+                attempt=attempt,
+                note_base_url=config.note_base_url,
+                note_model=config.note_model,
+                message_count=len(working_messages),
+                message_chars=sum(len(str(message.get("content") or "")) for message in working_messages),
+                max_tokens=max_tokens,
+            )
         response = client.chat.completions.create(
             model=config.note_model,
             messages=working_messages,
@@ -229,10 +279,33 @@ def call_note_model(config: JobConfig, messages: list[dict], max_tokens: int = 3
             max_tokens=max_tokens,
         )
         text = response.choices[0].message.content or ""
+        response_file = ""
+        if debug_log:
+            response_file = f"{_safe_debug_context(debug_context)}-model-response-attempt-{attempt}.txt"
+            debug_log.write_debug_text(response_file, text)
+            debug_log.event(
+                "note_model_call",
+                "response_received",
+                context=debug_context,
+                attempt=attempt,
+                response_file=f"debug/{response_file}",
+                response_length=len(text),
+            )
         try:
             return parse_note_draft(text)
         except LLMError as exc:
             last_error = exc
+            if debug_log:
+                debug_log.event(
+                    "note_model_call",
+                    "invalid_json",
+                    context=debug_context,
+                    attempt=attempt,
+                    response_file=f"debug/{response_file}" if response_file else "",
+                    response_length=len(text),
+                    error=str(exc),
+                    **_json_error_details(text, exc),
+                )
             working_messages.append({"role": "assistant", "content": text})
             working_messages.append(
                 {
@@ -243,6 +316,8 @@ def call_note_model(config: JobConfig, messages: list[dict], max_tokens: int = 3
                     ),
                 }
             )
+    if debug_log:
+        debug_log.event("note_model_call", "failed", context=debug_context, error=str(last_error or "unknown"))
     raise LLMError(str(last_error) if last_error else "The model did not return a valid note draft.")
 
 
@@ -266,6 +341,7 @@ def generate_note_draft(
     config: JobConfig,
     duration: float | None,
     segments: list[TranscriptSegment],
+    debug_log: TaskDebugLog | None = None,
 ) -> NoteDraft:
     system_prompt = (
         "You are a professional video content editor, course note writer, and knowledge management expert. "
@@ -282,12 +358,16 @@ def generate_note_draft(
         extras=config.extras,
     )
     if len(user_prompt) > MAX_SINGLE_PROMPT_CHARS or estimate_prompt_tokens(user_prompt) > MAX_SINGLE_PROMPT_CHARS // 4:
+        if debug_log:
+            return generate_chunked_note_draft(config, duration, segments, system_prompt, debug_log=debug_log)
         return generate_chunked_note_draft(config, duration, segments, system_prompt)
 
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
+    if debug_log:
+        return call_note_model(config, messages, debug_log=debug_log, debug_context="note")
     return call_note_model(config, messages)
 
 
@@ -296,6 +376,7 @@ def generate_chunked_note_draft(
     duration: float | None,
     segments: list[TranscriptSegment],
     system_prompt: str,
+    debug_log: TaskDebugLog | None = None,
 ) -> NoteDraft:
     chunk_drafts: list[NoteDraft] = []
     chunks = chunk_segments(segments, MAX_CHUNK_TRANSCRIPT_CHARS)
@@ -311,6 +392,12 @@ def generate_chunked_note_draft(
             note_style=config.note_style.value,
             extras=config.extras,
         )
+        kwargs = {
+            "max_tokens": 2200,
+        }
+        if debug_log:
+            kwargs["debug_log"] = debug_log
+            kwargs["debug_context"] = f"note-chunk-{index}-of-{len(chunks)}"
         chunk_drafts.append(
             call_note_model(
                 config,
@@ -318,10 +405,12 @@ def generate_chunked_note_draft(
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": chunk_prompt},
                 ],
-                max_tokens=2200,
+                **kwargs,
             )
         )
 
+    if debug_log:
+        return reduce_note_drafts(config, duration, chunk_drafts, system_prompt, debug_log=debug_log)
     return reduce_note_drafts(config, duration, chunk_drafts, system_prompt)
 
 
@@ -330,17 +419,22 @@ def reduce_note_drafts(
     duration: float | None,
     partials: list[NoteDraft],
     system_prompt: str,
+    debug_log: TaskDebugLog | None = None,
 ) -> NoteDraft:
     reduce_prompt = build_reduce_prompt(config, duration, partials)
     if len(reduce_prompt) > MAX_REDUCE_PROMPT_CHARS or estimate_prompt_tokens(reduce_prompt) > MAX_REDUCE_PROMPT_CHARS // 4:
         reduce_prompt = build_reduce_prompt(config, duration, partials, compact=True)
+    kwargs = {"max_tokens": 3600}
+    if debug_log:
+        kwargs["debug_log"] = debug_log
+        kwargs["debug_context"] = "note-reduce"
     return call_note_model(
         config,
         [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": reduce_prompt},
         ],
-        max_tokens=3600,
+        **kwargs,
     )
 
 

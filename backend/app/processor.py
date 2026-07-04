@@ -18,11 +18,37 @@ from .note_versions import (
     safe_note_version_id,
 )
 from .subtitles import transcript_segments_from_payload, write_subtitle_files
+from .task_debug_log import TaskDebugLog
 from .transcription import TranscriptionError, transcribe_audio
 
 
 class ProcessingError(RuntimeError):
     pass
+
+
+def _config_debug_summary(config: JobConfig) -> dict:
+    return {
+        "original_filename": config.original_filename,
+        "transcription_mode": config.transcription_mode.value,
+        "transcription_base_url": config.transcription_base_url,
+        "transcription_model": config.transcription_model,
+        "local_whisper_device": config.local_whisper_device,
+        "local_whisper_compute_type": config.local_whisper_compute_type,
+        "note_base_url": config.note_base_url,
+        "note_model": config.note_model,
+        "note_language": config.note_language.value,
+        "note_style": config.note_style.value,
+        "extras_present": bool(config.extras),
+        "extras_length": len(config.extras),
+        "frame_limit": config.frame_limit,
+    }
+
+
+def _file_size(path: Path) -> int | None:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return None
 
 
 def write_job_metadata(
@@ -71,6 +97,7 @@ def create_zip(job_dir: Path) -> Path:
         "subtitles.md",
         "transcript.json",
         "metadata.json",
+        "debug.log",
     ]
     try:
         with ZipFile(tmp_path, "w", compression=ZIP_DEFLATED) as archive:
@@ -86,6 +113,10 @@ def create_zip(job_dir: Path) -> Path:
             version_index = load_note_version_index(job_dir)
             if version_index_path.exists() or version_index.versions:
                 archive.writestr("notes/versions.json", version_index.model_dump_json(indent=2))
+            debug_dir = job_dir / "debug"
+            if debug_dir.exists():
+                for debug_path in sorted(path for path in debug_dir.rglob("*") if path.is_file()):
+                    archive.write(debug_path, arcname=debug_path.relative_to(job_dir).as_posix())
             selected_ids = set(version_index.selected_version_ids)
             for version in version_index.versions:
                 if version.id not in selected_ids:
@@ -116,34 +147,70 @@ def process_job(
     config: JobConfig,
     store: JobStore,
 ) -> None:
+    debug_log = TaskDebugLog(job_dir)
+    debug_log.event(
+        "process_job",
+        "started",
+        job_id=job_id,
+        job_dir=str(job_dir),
+        video_path=str(video_path),
+        video_size_bytes=_file_size(video_path),
+        config=_config_debug_summary(config),
+    )
     try:
+        debug_log.event("probe_duration", "starting", video_path=str(video_path))
         store.update(job_id, status=JobStatus.running, step="解析视频", progress=5)
         duration = probe_duration(video_path)
+        debug_log.event("probe_duration", "succeeded", duration_seconds=duration)
 
         store.update(job_id, step="音频分离", progress=15)
         audio_path = job_dir / "audio.mp3"
+        debug_log.event("extract_mp3", "starting", audio_path=str(audio_path))
         extract_mp3(video_path, audio_path)
+        debug_log.event("extract_mp3", "succeeded", audio_size_bytes=_file_size(audio_path))
         store.refresh_artifacts(job_id)
 
         store.update(job_id, step="字幕生成", progress=35)
+        debug_log.event("transcribe_audio", "starting", audio_path=str(audio_path))
         transcript_payload = transcribe_audio(
             audio_path,
             config,
             job_dir,
             progress_callback=lambda step, progress: store.update(job_id, step=step, progress=progress),
         )
-        (job_dir / "transcript.json").write_text(
+        transcript_path = job_dir / "transcript.json"
+        debug_log.event(
+            "transcribe_audio",
+            "succeeded",
+            text_length=len(str(transcript_payload.get("text") or "")),
+            raw_segment_count=len(transcript_payload.get("segments") or []),
+        )
+        debug_log.event("write_transcript", "starting", transcript_path=str(transcript_path))
+        transcript_path.write_text(
             json.dumps(transcript_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        debug_log.event("write_transcript", "succeeded", transcript_size_bytes=_file_size(transcript_path))
         segments = transcript_segments_from_payload(transcript_payload)
         if not segments:
             raise ProcessingError("Transcription returned no usable text segments.")
+        debug_log.event("write_subtitles", "starting", segment_count=len(segments))
         write_subtitle_files(segments, job_dir)
+        debug_log.event("write_subtitles", "succeeded", segment_count=len(segments))
         store.refresh_artifacts(job_id)
 
         store.update(job_id, step="笔记生成", progress=60)
-        draft = generate_note_draft(config, duration, segments)
+        debug_log.event("generate_note_draft", "starting", segment_count=len(segments))
+        draft = generate_note_draft(config, duration, segments, debug_log=debug_log)
+        debug_log.event(
+            "generate_note_draft",
+            "succeeded",
+            title=draft.title,
+            chapter_count=len(draft.chapters),
+            key_moment_count=len(draft.key_moments),
+            recommended_frame_count=draft.recommended_frame_count,
+        )
+        debug_log.event("write_metadata", "starting", title=draft.title, duration_seconds=duration)
         write_job_metadata(
             job_id=job_id,
             job_dir=job_dir,
@@ -151,8 +218,10 @@ def process_job(
             title=draft.title,
             duration=duration,
         )
+        debug_log.event("write_metadata", "succeeded", metadata_size_bytes=_file_size(job_dir / "metadata.json"))
 
         store.update(job_id, step="关键帧抽取", progress=78)
+        debug_log.event("create_note_version", "starting", version_id="note_001")
         create_note_version_from_draft(
             job_dir=job_dir,
             video_path=video_path,
@@ -161,9 +230,13 @@ def process_job(
             config=config,
             version_id="note_001",
         )
+        frame_dir = job_dir / "note_versions" / "note_001" / "frames"
+        frame_count = len(list(frame_dir.glob("*.jpg"))) if frame_dir.exists() else 0
+        debug_log.event("create_note_version", "succeeded", version_id="note_001", frame_count=frame_count)
         store.refresh_artifacts(job_id)
 
         store.update(job_id, step="Markdown 输出", progress=90)
+        debug_log.event("write_metadata", "starting", title=draft.title, duration_seconds=duration)
         write_job_metadata(
             job_id=job_id,
             job_dir=job_dir,
@@ -171,10 +244,15 @@ def process_job(
             title=draft.title,
             duration=duration,
         )
-        create_zip(job_dir)
+        debug_log.event("write_metadata", "succeeded", metadata_size_bytes=_file_size(job_dir / "metadata.json"))
+        debug_log.event("create_zip", "starting")
+        zip_path = create_zip(job_dir)
+        debug_log.event("create_zip", "succeeded", zip_path=str(zip_path), zip_size_bytes=_file_size(zip_path))
         store.refresh_artifacts(job_id)
         store.update(job_id, status=JobStatus.succeeded, step="完成", progress=100)
+        debug_log.event("process_job", "succeeded")
     except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
+        debug_log.exception("process_job", "failed", exc)
         store.refresh_artifacts(job_id)
         store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
 
@@ -186,15 +264,29 @@ def regenerate_note_job(
     config: JobConfig,
     store: JobStore,
 ) -> None:
+    debug_log = TaskDebugLog(job_dir)
+    debug_log.event(
+        "regenerate_note_job",
+        "started",
+        job_id=job_id,
+        job_dir=str(job_dir),
+        config=_config_debug_summary(config),
+    )
     try:
         store.update(job_id, status=JobStatus.running, step="重新生成笔记", progress=62, error="")
-        regenerate_note_version(job_dir, config)
+        debug_log.event("regenerate_note_version", "starting")
+        regenerate_note_version(job_dir, config, debug_log=debug_log)
+        debug_log.event("regenerate_note_version", "succeeded")
         store.refresh_artifacts(job_id)
         store.update(job_id, step="更新 ZIP", progress=92)
-        create_zip(job_dir)
+        debug_log.event("create_zip", "starting")
+        zip_path = create_zip(job_dir)
+        debug_log.event("create_zip", "succeeded", zip_path=str(zip_path), zip_size_bytes=_file_size(zip_path))
         store.refresh_artifacts(job_id)
         store.update(job_id, status=JobStatus.succeeded, step="完成", progress=100)
+        debug_log.event("regenerate_note_job", "succeeded")
     except (FFmpegError, LLMError, ProcessingError, Exception) as exc:
+        debug_log.exception("regenerate_note_job", "failed", exc)
         store.refresh_artifacts(job_id)
         store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
 

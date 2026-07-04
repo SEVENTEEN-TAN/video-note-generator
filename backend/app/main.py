@@ -56,6 +56,7 @@ from .runtime_status import get_runtime_status
 from .runtime_paths import get_frontend_dist_dir, get_outputs_root
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
 from .subtitles import transcript_segments_from_payload
+from .task_debug_log import TaskDebugLog
 from .transcript_corrections import TranscriptCorrectionError, apply_pending_transcript_correction, create_transcript_correction
 from .transcription import TranscriptionError, get_faster_whisper_model_root, resolve_local_faster_whisper_model, transcribe_audio
 
@@ -335,6 +336,19 @@ async def create_job(
             config=config,
             title=config.original_filename,
             duration=None,
+        )
+        TaskDebugLog(job_dir).event(
+            "create_job",
+            "job files created",
+            job_id=job_id,
+            original_filename=config.original_filename,
+            video_path=str(video_path),
+            video_size_bytes=video_path.stat().st_size,
+            transcription_mode=config.transcription_mode.value,
+            transcription_model=config.transcription_model,
+            note_model=config.note_model,
+            note_base_url=config.note_base_url,
+            frame_limit=config.frame_limit,
         )
     except OSError as exc:
         shutil.rmtree(job_dir, ignore_errors=True)
