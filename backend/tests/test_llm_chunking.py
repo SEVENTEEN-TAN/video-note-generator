@@ -7,7 +7,8 @@ from backend.app.llm import (
     estimate_prompt_tokens,
     parse_note_draft,
 )
-from backend.app.models import JobConfig, NoteDraft, NoteLanguage, NoteStyle, TranscriptSegment, TranscriptionMode
+from backend.app.models import Chapter, JobConfig, KeyMoment, NoteDraft, NoteLanguage, NoteStyle, TranscriptSegment, TranscriptionMode
+from backend.app.task_debug_log import TaskDebugLog
 
 
 def test_chunk_segments_splits_without_dropping_segments() -> None:
@@ -159,6 +160,59 @@ def test_reduce_prompt_compacts_when_full_reduce_is_too_large(monkeypatch) -> No
 
     assert captured_prompts
     assert "m" * 100 not in captured_prompts[-1]
+
+
+def test_reduce_note_drafts_falls_back_to_deterministic_merge_when_model_reduce_fails(tmp_path, monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_call_note_model(config, messages, **kwargs):
+        calls.append(kwargs.get("debug_context", ""))
+        raise llm.LLMError("Model returned invalid note JSON: truncated")
+
+    monkeypatch.setattr(llm, "call_note_model", fake_call_note_model)
+
+    partials = [
+        NoteDraft(
+            title="Chunk one",
+            summary="Opening summary.",
+            chapters=[Chapter(title="Opening", start_time=0, end_time=10, bullets=["First point"], detail="First detail")],
+            key_moments=[KeyMoment(time=1, reason="Opening frame", chapter_index=0)],
+            key_takeaways=["Shared takeaway", "First takeaway"],
+            action_items=["Review the opening"],
+        ),
+        NoteDraft(
+            title="Chunk two",
+            summary="Closing summary.",
+            chapters=[Chapter(title="Closing", start_time=11, end_time=20, bullets=["Second point"], detail="Second detail")],
+            key_moments=[KeyMoment(time=12, reason="Closing frame", chapter_index=0)],
+            key_takeaways=["Shared takeaway", "Second takeaway"],
+            action_items=["Review the opening", "Review the closing"],
+        ),
+    ]
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        note_api_key="note-key",
+        note_language=NoteLanguage.en,
+        original_filename="long.mp4",
+        frame_limit=2,
+    )
+    debug_log = TaskDebugLog(tmp_path)
+
+    draft = llm.reduce_note_drafts(config, duration=20, partials=partials, system_prompt="system", debug_log=debug_log)
+
+    assert calls == ["note-reduce"]
+    assert draft.title == "Chunk one"
+    assert "Opening summary." in draft.summary
+    assert "Closing summary." in draft.summary
+    assert [chapter.title for chapter in draft.chapters] == ["Opening", "Closing"]
+    assert [moment.time for moment in draft.key_moments] == [1, 12]
+    assert draft.recommended_frame_count == 2
+    assert draft.key_takeaways == ["Shared takeaway", "First takeaway", "Second takeaway"]
+    assert draft.action_items == ["Review the opening", "Review the closing"]
+
+    log_text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    assert "reduce_note_drafts" in log_text
+    assert "fallback" in log_text
 
 
 def test_parse_note_draft_strips_replacement_characters() -> None:

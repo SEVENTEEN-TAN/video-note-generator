@@ -18,6 +18,7 @@ MAX_SINGLE_PROMPT_CHARS = 24_000
 MAX_CHUNK_TRANSCRIPT_CHARS = 12_000
 MAX_REDUCE_PROMPT_CHARS = 24_000
 LARGE_TRANSCRIPT_GAP_SECONDS = 45
+MAX_FALLBACK_LIST_ITEMS = 24
 
 
 def estimate_prompt_tokens(text: str) -> int:
@@ -428,14 +429,89 @@ def reduce_note_drafts(
     if debug_log:
         kwargs["debug_log"] = debug_log
         kwargs["debug_context"] = "note-reduce"
-    return call_note_model(
-        config,
-        [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": reduce_prompt},
-        ],
-        **kwargs,
+    try:
+        return call_note_model(
+            config,
+            [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": reduce_prompt},
+            ],
+            **kwargs,
+        )
+    except LLMError as exc:
+        if debug_log:
+            debug_log.event(
+                "reduce_note_drafts",
+                "fallback_to_deterministic_merge",
+                partial_count=len(partials),
+                error=str(exc),
+            )
+        return merge_partial_note_drafts(config, partials)
+
+
+def merge_partial_note_drafts(config: JobConfig, partials: list[NoteDraft]) -> NoteDraft:
+    frame_limit = max(1, min(config.frame_limit, 12))
+    if not partials:
+        return NoteDraft(
+            title=config.original_filename,
+            summary="",
+            recommended_frame_count=1,
+        )
+
+    chapters = []
+    key_moments = []
+    summaries: list[str] = []
+    takeaways: list[str] = []
+    action_items: list[str] = []
+    markdown_parts: list[str] = []
+
+    for draft in partials:
+        if draft.summary.strip():
+            summaries.append(draft.summary.strip())
+        chapter_offset = len(chapters)
+        chapters.extend(draft.chapters)
+        for moment in draft.key_moments:
+            if len(key_moments) >= frame_limit:
+                break
+            chapter_index = moment.chapter_index
+            if chapter_index is not None:
+                chapter_index += chapter_offset
+            key_moments.append(moment.model_copy(update={"chapter_index": chapter_index}))
+        takeaways.extend(draft.key_takeaways)
+        action_items.extend(draft.action_items)
+        if draft.markdown_body.strip():
+            markdown_parts.append(draft.markdown_body.strip())
+
+    title = next((draft.title.strip() for draft in partials if draft.title.strip()), config.original_filename)
+    summary = "\n\n".join(_dedupe_text(summaries))
+    recommended_frame_count = min(max(len(key_moments), 1), frame_limit)
+    return NoteDraft(
+        title=title,
+        summary=summary,
+        chapters=chapters,
+        key_moments=key_moments,
+        recommended_frame_count=recommended_frame_count,
+        key_takeaways=_dedupe_text(takeaways, MAX_FALLBACK_LIST_ITEMS),
+        action_items=_dedupe_text(action_items, MAX_FALLBACK_LIST_ITEMS),
+        markdown_body="\n\n".join(_dedupe_text(markdown_parts)),
     )
+
+
+def _dedupe_text(items: list[str], limit: int | None = None) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        cleaned = item.strip()
+        if not cleaned:
+            continue
+        fingerprint = re.sub(r"\s+", " ", cleaned).casefold()
+        if fingerprint in seen:
+            continue
+        seen.add(fingerprint)
+        result.append(cleaned)
+        if limit is not None and len(result) >= limit:
+            break
+    return result
 
 
 def build_chunk_prompt(
