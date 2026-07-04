@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
-SENSITIVE_KEY_PARTS = ("api_key", "authorization", "password", "secret", "token")
+SENSITIVE_KEY_PARTS = ("api_key", "authorization", "password", "secret")
 
 
 class TaskDebugLog:
@@ -51,7 +51,7 @@ class TaskDebugLog:
 
 
 def _redact(value: Any, key: str = "") -> Any:
-    if key and any(part in key.lower() for part in SENSITIVE_KEY_PARTS):
+    if key and _is_sensitive_key(key):
         return "[REDACTED]"
     if isinstance(value, dict):
         return {str(item_key): _redact(item_value, str(item_key)) for item_key, item_value in value.items()}
@@ -60,6 +60,13 @@ def _redact(value: Any, key: str = "") -> Any:
     if isinstance(value, tuple):
         return [_redact(item) for item in value]
     return value
+
+
+def _is_sensitive_key(key: str) -> bool:
+    normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).lower().replace("-", "_")
+    if any(part in normalized for part in SENSITIVE_KEY_PARTS):
+        return True
+    return normalized == "token" or normalized.endswith("_token") or normalized.startswith("token_")
 
 
 def _safe_relative_filename(filename: str) -> Path:
