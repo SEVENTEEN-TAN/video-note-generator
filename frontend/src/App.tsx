@@ -32,7 +32,7 @@ type JobStatus = "pending" | "running" | "succeeded" | "failed";
 type Artifact = {
   label: string;
   path: string;
-  kind: "audio" | "subtitle" | "markdown" | "image" | "json" | "zip";
+  kind: "audio" | "subtitle" | "markdown" | "image" | "json" | "zip" | "log";
   asset_url: string;
 };
 
@@ -1270,6 +1270,7 @@ export function App() {
                 <DownloadLink job={job} artifactPath="note.md" label="Markdown" onDownloadError={setDownloadMessage} />
                 <DownloadLink job={job} artifactPath="subtitles.srt" label="SRT" onDownloadError={setDownloadMessage} />
                 <DownloadLink job={job} artifactPath="audio.mp3" label="MP3" onDownloadError={setDownloadMessage} />
+                <DownloadLink job={job} artifactPath="debug.log" label="调试日志" onDownloadError={setDownloadMessage} />
                 {job?.artifacts.some((artifact) => artifact.path === "download.zip") && job && (
                   <ArtifactDownloadButton
                     className="small-button strong"

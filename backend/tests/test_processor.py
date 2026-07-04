@@ -12,6 +12,21 @@ from backend.app.job_store import JobStore
 from backend.app.models import Chapter, JobConfig, JobStatus, KeyMoment, NoteDraft, NoteLanguage
 
 
+def test_create_zip_includes_debug_logs(tmp_path) -> None:
+    job_dir = tmp_path / "job"
+    (job_dir / "debug").mkdir(parents=True)
+    (job_dir / "note.md").write_text("# note", encoding="utf-8")
+    (job_dir / "debug.log").write_text("pipeline log", encoding="utf-8")
+    (job_dir / "debug" / "note-model-response-attempt-1.txt").write_text("bad json", encoding="utf-8")
+
+    zip_path = processor.create_zip(job_dir)
+
+    with ZipFile(zip_path) as archive:
+        names = set(archive.namelist())
+    assert "debug.log" in names
+    assert "debug/note-model-response-attempt-1.txt" in names
+
+
 def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> None:
     job_id = "many-segments-job"
     outputs_root = tmp_path / "outputs"
@@ -81,6 +96,21 @@ def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> 
     assert (job_dir / "subtitles.md").exists()
     assert "第 299 段字幕" in (job_dir / "subtitles.md").read_text(encoding="utf-8-sig")
     assert (job_dir / "download.zip").exists()
+    debug_text = (job_dir / "debug.log").read_text(encoding="utf-8")
+    for stage in [
+        "process_job",
+        "probe_duration",
+        "extract_mp3",
+        "transcribe_audio",
+        "write_transcript",
+        "write_subtitles",
+        "generate_note_draft",
+        "create_note_version",
+        "create_zip",
+    ]:
+        assert stage in debug_text
+    assert "secret-transcription-key" not in debug_text
+    assert "secret-note-key" not in debug_text
 
 
 def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, monkeypatch) -> None:
@@ -258,3 +288,7 @@ def test_process_job_persists_draft_title_before_frame_failure(tmp_path, monkeyp
     assert metadata["original_filename"] == "input.mp4"
     assert "secret-transcription-key" not in (job_dir / "metadata.json").read_text(encoding="utf-8")
     assert store.list_history()[0].title == "梯度消失问题讲解"
+    debug_text = (job_dir / "debug.log").read_text(encoding="utf-8")
+    assert "create_note_version" in debug_text
+    assert "frame failed" in debug_text
+    assert "traceback" in debug_text

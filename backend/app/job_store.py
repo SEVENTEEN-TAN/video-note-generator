@@ -80,6 +80,7 @@ class JobStore:
             ("transcript.json", "转写 JSON", "json"),
             ("note.md", "视频笔记 Markdown", "markdown"),
             ("metadata.json", "任务元数据", "json"),
+            ("debug.log", "调试日志", "log"),
             ("download.zip", "完整结果 ZIP", "zip"),
         ]
         for path, label, kind in candidates:
@@ -93,6 +94,13 @@ class JobStore:
                 rel = frame_path.relative_to(job_dir).as_posix()
                 artifacts.append(
                     Artifact(label=frame_path.stem, path=rel, kind="image", asset_url=f"/api/jobs/{job_id}/assets/{rel}")
+                )
+        debug_dir = job_dir / "debug"
+        if debug_dir.exists():
+            for debug_path in sorted(path for path in debug_dir.rglob("*") if path.is_file()):
+                rel = debug_path.relative_to(job_dir).as_posix()
+                artifacts.append(
+                    Artifact(label=debug_path.name, path=rel, kind="log", asset_url=f"/api/jobs/{job_id}/assets/{rel}")
                 )
         with self._lock:
             state = self._jobs.get(job_id)

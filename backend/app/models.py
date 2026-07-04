@@ -222,7 +222,7 @@ class NoteVersionSelection(BaseModel):
 class Artifact(BaseModel):
     label: str
     path: str
-    kind: Literal["audio", "subtitle", "markdown", "image", "json", "zip"]
+    kind: Literal["audio", "subtitle", "markdown", "image", "json", "zip", "log"]
     asset_url: str
 
 
