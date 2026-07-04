@@ -654,6 +654,36 @@ textarea:focus {
   justify-self: start;
 }
 
+.advanced-path-box {
+  background: #f8faf9;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 11px;
+}
+
+.advanced-path-box > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.advanced-path-box strong {
+  color: #263335;
+  font-size: 13px;
+}
+
+.advanced-path-box span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.advanced-path-box .field {
+  margin-top: 0;
+}
+
 .error-box {
   background: #fff4ed;
   border: 1px solid #f2c0a8;

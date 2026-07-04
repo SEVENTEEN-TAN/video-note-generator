@@ -25,6 +25,8 @@ type NoteStyle = "minimal" | "detailed" | "tutorial" | "academic" | "task_orient
 type TranscriptionMode = "audio_transcriptions" | "chat_audio" | "local_faster_whisper";
 type LocalWhisperDevice = "auto" | "cpu" | "cuda";
 type LocalWhisperComputeType = "default" | "int8" | "int8_float16" | "float16" | "float32";
+type RuntimePathSource = "environment" | "settings" | "default" | "missing";
+type PythonPackageInstallMode = "default" | "user";
 type JobStatus = "pending" | "running" | "succeeded" | "failed";
 
 type Artifact = {
@@ -117,6 +119,9 @@ type RuntimeState = {
     internal_import_error: string;
     python_available: boolean;
     external_python_path?: string | null;
+    external_python_source: RuntimePathSource;
+    external_python_error: string;
+    python_package_install_mode: PythonPackageInstallMode;
     external_worker_path: string;
     external_worker_available: boolean;
     worker_ready: boolean;
@@ -138,6 +143,7 @@ type RuntimeState = {
   };
   local_models: {
     root: string;
+    root_source: RuntimePathSource;
     models: string[];
     hint: string;
   };
@@ -154,6 +160,9 @@ type UserSettings = {
   transcription_model: string;
   local_whisper_device: LocalWhisperDevice;
   local_whisper_compute_type: LocalWhisperComputeType;
+  external_python_path: string;
+  faster_whisper_model_dir: string;
+  python_package_install_mode: PythonPackageInstallMode;
   note_api_key: string;
   note_base_url: string;
   note_model: string;
@@ -282,6 +291,18 @@ function formatVersionDetails(version: NoteVersion): string {
   return `${style} · ${createdAt} · ${version.note_model}`;
 }
 
+function formatRuntimeSource(source?: RuntimePathSource): string {
+  if (source === "environment") return "环境变量";
+  if (source === "settings") return "本地设置";
+  if (source === "default") return "默认检测";
+  return "未找到";
+}
+
+function formatInstallMode(mode?: PythonPackageInstallMode): string {
+  if (mode === "user") return "用户目录 (--user)";
+  return "默认 pip 安装";
+}
+
 export function App() {
   const [transcriptionApiKey, setTranscriptionApiKey] = useState("");
   const [transcriptionMode, setTranscriptionMode] = useState<TranscriptionMode>("local_faster_whisper");
@@ -289,6 +310,9 @@ export function App() {
   const [transcriptionModel, setTranscriptionModel] = useState("small");
   const [localWhisperDevice, setLocalWhisperDevice] = useState<LocalWhisperDevice>("cpu");
   const [localWhisperComputeType, setLocalWhisperComputeType] = useState<LocalWhisperComputeType>("int8");
+  const [externalPythonPath, setExternalPythonPath] = useState("");
+  const [fasterWhisperModelDir, setFasterWhisperModelDir] = useState("");
+  const [pythonPackageInstallMode, setPythonPackageInstallMode] = useState<PythonPackageInstallMode>("default");
   const [noteApiKey, setNoteApiKey] = useState("");
   const [noteBaseUrl, setNoteBaseUrl] = useState(OPENAI_BASE_URL);
   const [noteModel, setNoteModel] = useState("gpt-5.5");
@@ -794,6 +818,9 @@ export function App() {
       transcription_model: transcriptionModel,
       local_whisper_device: localWhisperDevice,
       local_whisper_compute_type: localWhisperComputeType,
+      external_python_path: externalPythonPath,
+      faster_whisper_model_dir: fasterWhisperModelDir,
+      python_package_install_mode: pythonPackageInstallMode,
       note_api_key: noteApiKey,
       note_base_url: noteBaseUrl,
       note_model: noteModel,
@@ -811,6 +838,9 @@ export function App() {
     setTranscriptionModel(settings.transcription_model);
     setLocalWhisperDevice(settings.local_whisper_device ?? "cpu");
     setLocalWhisperComputeType(settings.local_whisper_compute_type ?? "int8");
+    setExternalPythonPath(settings.external_python_path ?? "");
+    setFasterWhisperModelDir(settings.faster_whisper_model_dir ?? "");
+    setPythonPackageInstallMode(settings.python_package_install_mode ?? "default");
     setNoteApiKey(settings.note_api_key);
     setNoteBaseUrl(settings.note_base_url);
     setNoteModel(settings.note_model);
@@ -834,6 +864,7 @@ export function App() {
         throw new Error(payload.detail || "设置保存失败。");
       }
       applySettings(payload);
+      await refreshHealth();
       setSettingsMessage("设置已保存到本地配置文件。");
     } catch (error) {
       setSettingsMessage(error instanceof Error ? error.message : "设置保存失败。");
@@ -852,6 +883,7 @@ export function App() {
         throw new Error(payload.detail || "设置清除失败。");
       }
       applySettings(payload);
+      await refreshHealth();
       setSettingsMessage("本地设置已清除。");
     } catch (error) {
       setSettingsMessage(error instanceof Error ? error.message : "设置清除失败。");
@@ -1453,6 +1485,57 @@ export function App() {
                         </select>
                       </label>
                     </div>
+                    <div className="advanced-path-box">
+                      <div>
+                        <strong>高级本地路径</strong>
+                        <span>环境变量优先于这里保存的值；留空时使用默认自动检测。</span>
+                      </div>
+                      <label className="field">
+                        <span className="field-label">外部 Python 路径</span>
+                        <input
+                          placeholder="例如 C:\\Users\\me\\AppData\\Local\\Programs\\Python\\Python310\\python.exe"
+                          value={externalPythonPath}
+                          onChange={(event) => setExternalPythonPath(event.target.value)}
+                        />
+                      </label>
+                      <label className="field">
+                        <span className="field-label">Faster Whisper 模型目录</span>
+                        <input
+                          placeholder="例如 D:\\models\\faster-whisper"
+                          value={fasterWhisperModelDir}
+                          onChange={(event) => setFasterWhisperModelDir(event.target.value)}
+                        />
+                      </label>
+                      <label className="field">
+                        <span className="field-label">pip 安装模式</span>
+                        <select
+                          value={pythonPackageInstallMode}
+                          onChange={(event) => setPythonPackageInstallMode(event.target.value as PythonPackageInstallMode)}
+                        >
+                          <option value="default">默认 pip 安装</option>
+                          <option value="user">用户目录 (--user)</option>
+                        </select>
+                      </label>
+                      {health?.runtime && (
+                        <p className="field-help">
+                          当前 Python：{health.runtime.faster_whisper.external_python_path || "未找到"} · 来源：
+                          {formatRuntimeSource(health.runtime.faster_whisper.external_python_source)} · pip：
+                          {formatInstallMode(health.runtime.faster_whisper.python_package_install_mode)}
+                        </p>
+                      )}
+                      {health?.runtime?.faster_whisper.external_python_error && (
+                        <p className="inline-warning">
+                          <AlertTriangle size={15} />
+                          {health.runtime.faster_whisper.external_python_error}
+                        </p>
+                      )}
+                      {health?.runtime && (
+                        <p className="field-help">
+                          当前模型目录：{health.runtime.local_models.root} · 来源：
+                          {formatRuntimeSource(health.runtime.local_models.root_source)}
+                        </p>
+                      )}
+                    </div>
                     <p className={localWhisperDevice === "cuda" && !health?.runtime?.faster_whisper.cuda_available ? "inline-warning" : "field-help"}>
                       {localWhisperDevice === "cuda"
                         ? health?.runtime?.faster_whisper.ready_for_cuda
@@ -1472,7 +1555,11 @@ export function App() {
                         </p>
                         <button
                           className="small-button strong"
-                          disabled={localDependencyInstall?.status === "pending" || localDependencyInstall?.status === "running"}
+                          disabled={
+                            Boolean(health?.runtime?.faster_whisper.external_python_error) ||
+                            localDependencyInstall?.status === "pending" ||
+                            localDependencyInstall?.status === "running"
+                          }
                           onClick={handleInstallLocalDependencies}
                           type="button"
                         >
@@ -1502,7 +1589,11 @@ export function App() {
                         </p>
                         <button
                           className="small-button strong"
-                          disabled={cudaInstall?.status === "pending" || cudaInstall?.status === "running"}
+                          disabled={
+                            Boolean(health?.runtime?.faster_whisper.external_python_error) ||
+                            cudaInstall?.status === "pending" ||
+                            cudaInstall?.status === "running"
+                          }
                           onClick={handleInstallCudaDependencies}
                           type="button"
                         >
@@ -1757,21 +1848,25 @@ function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
     : !runtime.faster_whisper.python_available
       ? runtime.faster_whisper.install_hint
       : runtime.faster_whisper.worker_ready
-        ? `外部 Python worker：${runtime.faster_whisper.external_python_path ?? "已发现"}`
+        ? `外部 Python worker：${runtime.faster_whisper.external_python_path ?? "已发现"} · ${formatRuntimeSource(runtime.faster_whisper.external_python_source)}`
         : runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint;
   const cudaDetail = runtime.faster_whisper.cuda_available
     ? `CTranslate2 检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备 · ${runtime.faster_whisper.cuda_source ?? "runtime"}`
     : runtime.faster_whisper.cuda_error
       ? `检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备，但 CUDA 推理运行库不可用：${runtime.faster_whisper.cuda_error}`
       : runtime.faster_whisper.cuda_runtime_hint || "未检测到 CUDA 设备；CPU 模式仍可使用";
-  const pythonDetail = !runtime.faster_whisper.python_available
-    ? "未检测到外部 Python 3.10+，本地转写无法启用"
-    : runtime.faster_whisper.worker_ready
-      ? `${runtime.faster_whisper.external_python_path ?? "外部 Python"} · 已具备本地转写依赖`
-      : runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint;
+  const pythonSource = formatRuntimeSource(runtime.faster_whisper.external_python_source);
+  const modelSource = formatRuntimeSource(runtime.local_models.root_source);
+  const pythonDetail = runtime.faster_whisper.external_python_error
+    ? runtime.faster_whisper.external_python_error
+    : !runtime.faster_whisper.python_available
+      ? "未检测到外部 Python 3.10+，本地转写无法启用"
+      : runtime.faster_whisper.worker_ready
+        ? `${runtime.faster_whisper.external_python_path ?? "外部 Python"} · ${pythonSource} · ${formatInstallMode(runtime.faster_whisper.python_package_install_mode)}`
+        : `${runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint} · ${pythonSource}`;
   const modelDetail = runtime.faster_whisper.model_available
-    ? `${runtime.local_models.models.join(", ")} · ${runtime.local_models.root}`
-    : `未发现已缓存模型 · ${runtime.local_models.root}`;
+    ? `${runtime.local_models.models.join(", ")} · ${runtime.local_models.root} · ${modelSource}`
+    : `未发现已缓存模型 · ${runtime.local_models.root} · ${modelSource}`;
 
   return (
     <section className="runtime-card" aria-label="运行环境检测">
