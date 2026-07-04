@@ -45,8 +45,27 @@ try {
         Write-Host "Skipping bundled Faster Whisper model. Use -BundleSmallModel to include it."
     }
 
+    $FinalExe = Join-Path $Root "dist/VideoNoteGenerator/VideoNoteGenerator.exe"
+    $FinalInternalDir = Join-Path $Root "dist/VideoNoteGenerator/_internal"
+    if (-not (Test-Path $FinalExe)) {
+        throw "Desktop build did not produce expected executable: $FinalExe"
+    }
+    if (-not (Test-Path $FinalInternalDir)) {
+        throw "Desktop build did not produce expected internal dependency directory: $FinalInternalDir"
+    }
+    $FinalPythonDll = Get-ChildItem -LiteralPath $FinalInternalDir -Filter "python*.dll"
+    if (-not $FinalPythonDll) {
+        throw "Desktop build did not produce a bundled Python DLL under: $FinalInternalDir"
+    }
+
+    $IntermediateExe = Join-Path $Root "build/VideoNoteGenerator/VideoNoteGenerator.exe"
+    if (Test-Path $IntermediateExe) {
+        Remove-Item -LiteralPath $IntermediateExe -Force
+    }
+
     Write-Host ""
-    Write-Host "Desktop app built at: dist/VideoNoteGenerator/VideoNoteGenerator.exe"
+    Write-Host "Desktop app built at: $FinalExe"
+    Write-Host "Run the app from dist/VideoNoteGenerator, not from the PyInstaller build work directory."
 }
 finally {
     Pop-Location
