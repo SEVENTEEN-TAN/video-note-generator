@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import re
 import subprocess
@@ -125,7 +125,7 @@ def download_faster_whisper_model(model_name: str, model_root: Path) -> None:
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=external_worker_env(),
+        env=external_worker_env(model_root=model_root),
     )
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "Model download failed."

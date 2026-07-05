@@ -1,5 +1,6 @@
-import subprocess
+﻿import subprocess
 from types import SimpleNamespace
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -443,3 +444,77 @@ def test_audio_transcriptions_reports_chunk_progress(monkeypatch, tmp_path) -> N
         ("字幕生成中：第 1/2 段转写中", 35),
         ("字幕生成中：第 2/2 段转写中", 47),
     ]
+
+
+def test_external_worker_env_injects_configured_model_root(monkeypatch) -> None:
+    monkeypatch.delenv("FASTER_WHISPER_MODEL_DIR", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
+    monkeypatch.setenv("VIDEO_NOTE_MARKER", "keep-me")
+
+    env = transcription.external_worker_env(model_root=Path("D:/custom/models"))
+
+    expected = str(Path("D:/custom/models"))
+    assert env["FASTER_WHISPER_MODEL_DIR"] == expected
+    assert env["VIDEO_NOTE_MARKER"] == "keep-me"
+    assert env["PYTHONIOENCODING"].lower() == "utf-8"
+
+
+def test_external_worker_env_preserves_existing_huggingface_cache(monkeypatch) -> None:
+    monkeypatch.setenv("HUGGINGFACE_HUB_CACHE", "C:/already/here")
+
+    env = transcription.external_worker_env(model_root=Path("D:/custom/models"))
+
+    assert env["HUGGINGFACE_HUB_CACHE"] == "C:/already/here"
+    expected = str(Path("D:/custom/models"))
+
+
+def test_external_worker_env_without_model_root_is_backward_compatible(monkeypatch) -> None:
+    monkeypatch.delenv("FASTER_WHISPER_MODEL_DIR", raising=False)
+    monkeypatch.delenv("HUGGINGFACE_HUB_CACHE", raising=False)
+
+    env = transcription.external_worker_env()
+
+    assert env["PYTHONIOENCODING"].lower() == "utf-8"
+    assert "FASTER_WHISPER_MODEL_DIR" not in env
+    assert "HUGGINGFACE_HUB_CACHE" not in env
+
+
+def test_external_faster_whisper_worker_passes_resolved_model_root_to_env(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"fake audio")
+    model_root = tmp_path / "settings-models"
+    write_model_files(model_root / "small")
+    monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: tmp_path / "worker.py")
+    (tmp_path / "worker.py").write_text("print('worker')", encoding="utf-8")
+    monkeypatch.delenv("FASTER_WHISPER_MODEL_DIR", raising=False)
+
+    captured_env = {}
+
+    def fake_run(*args, **kwargs):
+        captured_env.update(kwargs.get("env") or {})
+        return subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout='{"text": "ok", "segments": [{"start": 0, "end": 1, "text": "ok"}]}',
+            stderr="",
+        )
+
+    monkeypatch.setattr(transcription.subprocess, "run", fake_run)
+
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_api_key="",
+        transcription_base_url="",
+        transcription_model="small",
+        note_api_key="note-key",
+        note_base_url="https://api.openai.com/v1",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+
+    transcription.transcribe_with_external_faster_whisper(audio_path, config, model_root)
+
+    assert captured_env["FASTER_WHISPER_MODEL_DIR"] == str(model_root)
+    assert captured_env["HUGGINGFACE_HUB_CACHE"] == str(model_root)

@@ -155,7 +155,7 @@ def transcribe_with_external_faster_whisper(
         text=True,
         encoding="utf-8",
         errors="replace",
-        env=external_worker_env(),
+        env=external_worker_env(model_root=model_root),
     )
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "External Faster Whisper worker failed."
@@ -173,8 +173,13 @@ def find_external_python() -> str | None:
     return configured.value or None
 
 
-def external_worker_env() -> dict[str, str]:
-    return {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+def external_worker_env(model_root: Path | None = None) -> dict[str, str]:
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    if model_root is not None:
+        model_root_str = str(model_root)
+        env.setdefault("FASTER_WHISPER_MODEL_DIR", model_root_str)
+        env.setdefault("HUGGINGFACE_HUB_CACHE", model_root_str)
+    return env
 
 
 def get_local_whisper_worker_path() -> Path:
