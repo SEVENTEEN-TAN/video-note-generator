@@ -267,3 +267,95 @@ def test_parse_note_draft_strips_replacement_characters() -> None:
     assert "�" not in draft.title
     assert "�" not in draft.key_moments[0].reason
     assert "�" not in draft.markdown_body
+
+
+
+def test_generate_chunked_note_draft_binary_splits_on_moderation_failure(tmp_path, monkeypatch) -> None:
+    """When a chunk fails, it should binary-split and retry each half."""
+    call_log: list[tuple[str, list[TranscriptSegment]]] = []
+
+    def fake_call_note_model(config, messages, **kwargs):
+        context = kwargs.get("debug_context", "")
+        if context == "note-reduce":
+            return NoteDraft(title="merged", summary="merged")
+        # Inspect the prompt to figure out which segments were passed.
+        prompt_text = messages[-1]["content"]
+        # Fail only the first call to a large chunk; succeed on the split halves.
+        if "trigger moderation" in prompt_text:
+            call_log.append((context, []))
+            raise llm.LLMError("Error code: 400 - content_policy_violation")
+        call_log.append((context, []))
+        return NoteDraft(
+            title=context,
+            summary=f"summary for {context}",
+            chapters=[Chapter(title=context, start_time=0, end_time=1)],
+            key_moments=[KeyMoment(time=0, reason=context, chapter_index=0)],
+        )
+
+    monkeypatch.setattr(llm, "call_note_model", fake_call_note_model)
+    monkeypatch.setattr(llm, "MAX_CHUNK_TRANSCRIPT_CHARS", 2000)
+    monkeypatch.setattr(llm, "MIN_CHUNK_SEGMENTS_FOR_BINARY_RETRY", 3)
+
+    segments = [
+        TranscriptSegment(start=i, end=i + 1, text="trigger moderation" if i == 0 else f"clean line {i}")
+        for i in range(12)
+    ]
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        note_api_key="note-key",
+        note_language=NoteLanguage.en,
+        original_filename="long.mp4",
+    )
+    debug_log = TaskDebugLog(tmp_path)
+
+    draft = llm.generate_chunked_note_draft(
+        config,
+        duration=12,
+        segments=segments,
+        system_prompt="system",
+        debug_log=debug_log,
+    )
+
+    assert draft.title == "merged"
+    # The initial chunk call should have happened, plus retry calls.
+    assert len(call_log) >= 2
+    log_text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    assert "binary_split_retry" in log_text
+
+
+def test_generate_chunked_note_draft_skips_after_minimum_size(tmp_path, monkeypatch) -> None:
+    """When a chunk is too small to split, it should skip instead of retrying."""
+    def fake_call_note_model(config, messages, **kwargs):
+        context = kwargs.get("debug_context", "")
+        if context == "note-reduce":
+            return NoteDraft(title="merged", summary="merged")
+        raise llm.LLMError("content_policy_violation")
+
+    monkeypatch.setattr(llm, "call_note_model", fake_call_note_model)
+    monkeypatch.setattr(llm, "MAX_CHUNK_TRANSCRIPT_CHARS", 200)
+    monkeypatch.setattr(llm, "MIN_CHUNK_SEGMENTS_FOR_BINARY_RETRY", 3)
+
+    segments = [
+        TranscriptSegment(start=i, end=i + 1, text=f"line {i}")
+        for i in range(4)
+    ]
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        note_api_key="note-key",
+        note_language=NoteLanguage.en,
+        original_filename="long.mp4",
+    )
+    debug_log = TaskDebugLog(tmp_path)
+
+    draft = llm.generate_chunked_note_draft(
+        config,
+        duration=4,
+        segments=segments,
+        system_prompt="system",
+        debug_log=debug_log,
+    )
+
+    assert draft.title == "merged"
+    log_text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    assert "fallback_to_skipped_chunk" in log_text
+    assert "binary_split_retry" not in log_text

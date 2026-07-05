@@ -18,6 +18,7 @@ MAX_SINGLE_PROMPT_CHARS = 24_000
 MAX_CHUNK_TRANSCRIPT_CHARS = 12_000
 MAX_REDUCE_PROMPT_CHARS = 24_000
 LARGE_TRANSCRIPT_GAP_SECONDS = 45
+MIN_CHUNK_SEGMENTS_FOR_BINARY_RETRY = 6
 MAX_FALLBACK_LIST_ITEMS = 24
 
 
@@ -379,54 +380,115 @@ def generate_chunked_note_draft(
     system_prompt: str,
     debug_log: TaskDebugLog | None = None,
 ) -> NoteDraft:
-    chunk_drafts: list[NoteDraft] = []
     chunks = chunk_segments(segments, MAX_CHUNK_TRANSCRIPT_CHARS)
+    chunk_drafts: list[NoteDraft] = []
     for index, chunk in enumerate(chunks, start=1):
+        chunk_drafts.extend(
+            _transcribe_note_chunk_with_retry(
+                config=config,
+                duration=duration,
+                system_prompt=system_prompt,
+                chunk=chunk,
+                chunk_index=index,
+                chunk_count=len(chunks),
+                debug_log=debug_log,
+            )
+        )
+    if debug_log:
+        return reduce_note_drafts(config, duration, chunk_drafts, system_prompt, debug_log=debug_log)
+    return reduce_note_drafts(config, duration, chunk_drafts, system_prompt)
+
+
+def _transcribe_note_chunk_with_retry(
+    *,
+    config: JobConfig,
+    duration: float | None,
+    system_prompt: str,
+    chunk: list[TranscriptSegment],
+    chunk_index: int,
+    chunk_count: int,
+    debug_log: TaskDebugLog | None = None,
+) -> list[NoteDraft]:
+    """Transcribe one chunk; on failure, binary-split and retry each half.
+
+    Content moderation rejections are often triggered by a few sentences.
+    Splitting the chunk into halves lets the clean half through while
+    keeping the offending half isolated.
+    """
+    debug_context = f"note-chunk-{chunk_index}-of-{chunk_count}"
+    kwargs: dict[str, object] = {"max_tokens": 2200}
+    if debug_log:
+        kwargs["debug_log"] = debug_log
+        kwargs["debug_context"] = debug_context
+    try:
         chunk_prompt = build_chunk_prompt(
             config.original_filename,
             duration,
             config.note_language.value,
             config.frame_limit,
-            index,
-            len(chunks),
+            chunk_index,
+            chunk_count,
             chunk,
             note_style=config.note_style.value,
             extras=config.extras,
         )
-        kwargs = {
-            "max_tokens": 2200,
-        }
-        debug_context = f"note-chunk-{index}-of-{len(chunks)}"
-        if debug_log:
-            kwargs["debug_log"] = debug_log
-            kwargs["debug_context"] = debug_context
-        try:
-            chunk_drafts.append(
-                call_note_model(
-                    config,
-                    [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": chunk_prompt},
-                    ],
-                    **kwargs,
-                )
+        return [
+            call_note_model(
+                config,
+                [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": chunk_prompt},
+                ],
+                **kwargs,
             )
-        except LLMError as exc:
+        ]
+    except LLMError as exc:
+        if len(chunk) >= MIN_CHUNK_SEGMENTS_FOR_BINARY_RETRY * 2:
             if debug_log:
                 debug_log.event(
                     "generate_chunked_note_draft",
-                    "fallback_to_transcript_chunk",
+                    "binary_split_retry",
                     context=debug_context,
-                    chunk_index=index,
-                    chunk_count=len(chunks),
                     segment_count=len(chunk),
                     error=str(exc),
                 )
-            chunk_drafts.append(fallback_note_draft_from_chunk(index, len(chunks), chunk))
-
-    if debug_log:
-        return reduce_note_drafts(config, duration, chunk_drafts, system_prompt, debug_log=debug_log)
-    return reduce_note_drafts(config, duration, chunk_drafts, system_prompt)
+            midpoint = len(chunk) // 2
+            left = chunk[:midpoint]
+            right = chunk[midpoint:]
+            results: list[NoteDraft] = []
+            results.extend(
+                _transcribe_note_chunk_with_retry(
+                    config=config,
+                    duration=duration,
+                    system_prompt=system_prompt,
+                    chunk=left,
+                    chunk_index=chunk_index,
+                    chunk_count=chunk_count,
+                    debug_log=debug_log,
+                )
+            )
+            results.extend(
+                _transcribe_note_chunk_with_retry(
+                    config=config,
+                    duration=duration,
+                    system_prompt=system_prompt,
+                    chunk=right,
+                    chunk_index=chunk_index,
+                    chunk_count=chunk_count,
+                    debug_log=debug_log,
+                )
+            )
+            return results
+        if debug_log:
+            debug_log.event(
+                "generate_chunked_note_draft",
+                "fallback_to_skipped_chunk",
+                context=debug_context,
+                chunk_index=chunk_index,
+                segment_count=len(chunk),
+                error=str(exc),
+            )
+        return [fallback_note_draft_from_chunk(chunk_index, chunk_count, chunk)]
 
 
 def fallback_note_draft_from_chunk(
