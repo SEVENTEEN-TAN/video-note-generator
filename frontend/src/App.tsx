@@ -1,4 +1,4 @@
-import {
+﻿import {
   AlertTriangle,
   Captions,
   CheckCircle2,
@@ -20,288 +20,47 @@ import {
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, Dispatch, SetStateAction } from "react";
 
-type NoteLanguage = "zh" | "en" | "follow";
-type NoteStyle = "minimal" | "detailed" | "tutorial" | "academic" | "task_oriented" | "meeting_minutes";
-type TranscriptionMode = "audio_transcriptions" | "chat_audio" | "local_faster_whisper";
-type LocalWhisperDevice = "auto" | "cpu" | "cuda";
-type LocalWhisperComputeType = "default" | "int8" | "int8_float16" | "float16" | "float32";
-type RuntimePathSource = "environment" | "settings" | "default" | "missing";
-type PythonPackageInstallMode = "default" | "user";
-type JobStatus = "pending" | "running" | "succeeded" | "failed";
-
-type Artifact = {
-  label: string;
-  path: string;
-  kind: "audio" | "subtitle" | "markdown" | "image" | "json" | "zip" | "log";
-  asset_url: string;
-};
-
-type JobState = {
-  job_id: string;
-  status: JobStatus;
-  step: string;
-  progress: number;
-  error?: string | null;
-  artifacts: Artifact[];
-  step_started_at?: string | null;
-  updated_at?: string | null;
-  stage_elapsed_seconds?: number;
-};
-
-type JobSummary = {
-  job_id: string;
-  title: string;
-  original_filename: string;
-  created_at?: string | null;
-  status: JobStatus;
-  duration_seconds?: number | null;
-  artifact_count: number;
-  note_version_count: number;
-  active_version_id?: string | null;
-};
-
-type NoteVersion = {
-  id: string;
-  label: string;
-  created_at: string;
-  note_style: NoteStyle;
-  note_language: string;
-  note_model: string;
-  note_base_url: string;
-  frame_limit: number;
-  note_path: string;
-  frame_dir: string;
-  selected: boolean;
-  active: boolean;
-  extras_present: boolean;
-  extras_length: number;
-};
-
-type NoteVersionIndex = {
-  active_version_id?: string | null;
-  selected_version_ids: string[];
-  versions: NoteVersion[];
-};
-
-type TranscriptCorrectionSegment = {
-  index: number;
-  start: number;
-  end: number;
-  original_text: string;
-  corrected_text: string;
-  changed: boolean;
-};
-
-type TranscriptCorrectionPreview = {
-  job_id: string;
-  changed_count: number;
-  segments: TranscriptCorrectionSegment[];
-};
-
-type HealthState = {
-  ok: boolean;
-  runtime_ok?: boolean;
-  ffmpeg_available: boolean;
-  ffmpeg_path?: string | null;
-  runtime?: RuntimeState;
-};
-
-type RuntimeState = {
-  ok: boolean;
-  ffmpeg: {
-    available: boolean;
-    path?: string | null;
-    install_hint: string;
-  };
-  faster_whisper: {
-    available: boolean;
-    internal_available: boolean;
-    internal_import_error: string;
-    python_available: boolean;
-    external_python_path?: string | null;
-    external_python_source: RuntimePathSource;
-    external_python_error: string;
-    python_package_install_mode: PythonPackageInstallMode;
-    external_worker_path: string;
-    external_worker_available: boolean;
-    worker_ready: boolean;
-    worker_error: string;
-    ctranslate2_available: boolean;
-    ctranslate2_version: string;
-    cuda_available: boolean;
-    cuda_device_count?: number | null;
-    cuda_runtime_available?: boolean;
-    cuda_error?: string;
-    cuda_source?: string;
-    cuda_runtime_hint?: string;
-    cuda_dll_dirs: string[];
-    import_error: string;
-    install_hint: string;
-    model_available: boolean;
-    ready_for_cpu: boolean;
-    ready_for_cuda: boolean;
-  };
-  local_models: {
-    root: string;
-    root_source: RuntimePathSource;
-    models: string[];
-    hint: string;
-  };
-  settings: {
-    path: string;
-    warning: string;
-  };
-};
-
-type UserSettings = {
-  transcription_mode: TranscriptionMode;
-  transcription_api_key: string;
-  transcription_base_url: string;
-  transcription_model: string;
-  local_whisper_device: LocalWhisperDevice;
-  local_whisper_compute_type: LocalWhisperComputeType;
-  external_python_path: string;
-  faster_whisper_model_dir: string;
-  python_package_install_mode: PythonPackageInstallMode;
-  note_api_key: string;
-  note_base_url: string;
-  note_model: string;
-  note_language: NoteLanguage;
-  note_style: NoteStyle;
-  extras: string;
-  frame_limit: number;
-};
-
-type LocalDependencyInstallState = {
-  status: "idle" | "pending" | "running" | "succeeded" | "failed";
-  progress: number;
-  error: string;
-  python_path: string;
-};
-
-type PollableTaskState = {
-  status: "idle" | "pending" | "running" | "succeeded" | "failed";
-};
-
-type ModelDownloadState = {
-  model_name: string;
-  status: "idle" | "pending" | "running" | "succeeded" | "failed";
-  progress: number;
-  error: string;
-  model_root: string;
-};
-
-type CudaDependencyInstallState = {
-  status: "idle" | "pending" | "running" | "succeeded" | "failed";
-  progress: number;
-  error: string;
-  python_path: string;
-};
-
-type MarkdownBlock =
-  | { type: "heading"; level: number; text: string }
-  | { type: "list"; ordered: boolean; items: string[] }
-  | { type: "paragraph"; text: string }
-  | { type: "image"; alt: string; src: string };
-
-type PreviewImage = {
-  label: string;
-  path: string;
-  asset_url: string;
-};
-
-declare global {
-  interface Window {
-    pywebview?: {
-      api?: {
-        save_file?: (suggestedName: string, sourceUrl: string) => Promise<{ ok: boolean; path?: string; reason?: string }>;
-      };
-    };
-  }
-}
-
-const OPENAI_BASE_URL = "https://api.openai.com/v1";
-const QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
-
-const statusText: Record<JobStatus, string> = {
-  pending: "等待",
-  running: "处理中",
-  succeeded: "完成",
-  failed: "失败"
-};
-
-const noteStyleOptions: Array<{ value: NoteStyle; label: string }> = [
-  { value: "minimal", label: "minimal（极简）" },
-  { value: "detailed", label: "detailed（详细）" },
-  { value: "tutorial", label: "tutorial（教程）" },
-  { value: "academic", label: "academic（学术）" },
-  { value: "task_oriented", label: "task_oriented（任务导向）" },
-  { value: "meeting_minutes", label: "meeting_minutes（会议纪要）" }
-];
-
-function formatElapsedSeconds(seconds?: number): string {
-  if (!seconds || seconds < 1) {
-    return "少于 1 秒";
-  }
-
-  const totalSeconds = Math.floor(seconds);
-  const minutes = Math.floor(totalSeconds / 60);
-  const restSeconds = totalSeconds % 60;
-
-  if (minutes === 0) {
-    return `${restSeconds} 秒`;
-  }
-
-  return `${minutes} 分 ${restSeconds} 秒`;
-}
-
-function formatSecondsRange(start: number, end: number): string {
-  const format = (value: number) => {
-    const totalSeconds = Math.max(0, Math.floor(value));
-    const hours = Math.floor(totalSeconds / 3600);
-    const minutes = Math.floor((totalSeconds % 3600) / 60);
-    const seconds = totalSeconds % 60;
-    return [hours, minutes, seconds].map((part) => String(part).padStart(2, "0")).join(":");
-  };
-  return `${format(start)} - ${format(end)}`;
-}
-
-function formatUpdateTime(value?: string | null): string {
-  if (!value) {
-    return "暂无";
-  }
-
-  return new Date(value).toLocaleTimeString();
-}
-
-function formatHistoryTime(value?: string | null): string {
-  if (!value) {
-    return "未知时间";
-  }
-  return new Date(value).toLocaleString();
-}
-
-function formatVersionOption(version: NoteVersion): string {
-  return version.id;
-}
-
-function formatVersionDetails(version: NoteVersion): string {
-  const createdAt = formatHistoryTime(version.created_at);
-  const style = noteStyleOptions.find((option) => option.value === version.note_style)?.label ?? version.note_style;
-  return `${style} · ${createdAt} · ${version.note_model}`;
-}
-
-function formatRuntimeSource(source?: RuntimePathSource): string {
-  if (source === "environment") return "环境变量";
-  if (source === "settings") return "本地设置";
-  if (source === "default") return "默认检测";
-  return "未找到";
-}
-
-function formatInstallMode(mode?: PythonPackageInstallMode): string {
-  if (mode === "user") return "用户目录 (--user)";
-  return "默认 pip 安装";
-}
+import type {
+  Artifact,
+  CudaDependencyInstallState,
+  HealthState,
+  JobState,
+  JobStatus,
+  JobSummary,
+  LocalDependencyInstallState,
+  LocalWhisperComputeType,
+  LocalWhisperDevice,
+  ModelDownloadState,
+  NoteLanguage,
+  NoteStyle,
+  NoteVersion,
+  NoteVersionIndex,
+  PollableTaskState,
+  PythonPackageInstallMode,
+  PreviewImage,
+  RuntimeState,
+  TranscriptCorrectionPreview,
+  TranscriptionMode,
+  UserSettings
+} from "./types";
+import { OPENAI_BASE_URL, QWEN_BASE_URL, noteStyleOptions, statusText } from "./constants";
+import {
+  formatHistoryTime,
+  formatInstallMode,
+  formatRuntimeSource,
+  formatSecondsRange,
+  formatVersionDetails,
+  formatVersionOption
+} from "./format";
+import {
+  downloadArtifact,
+  deriveDownloadFilename,
+  fetchJob,
+  fetchJobHistory,
+  fetchNoteVersions,
+  readResponseError
+} from "./api";
+import { extractMarkdownImages, parseMarkdown, resolvePreviewAssetUrl } from "./markdown";
 
 export function App() {
   const [transcriptionApiKey, setTranscriptionApiKey] = useState("");
@@ -1754,80 +1513,6 @@ export function App() {
   );
 }
 
-async function fetchJob(jobId: string): Promise<JobState> {
-  const response = await fetch(`/api/jobs/${jobId}`);
-  if (!response.ok) {
-    throw new Error(await readResponseError(response, "任务状态读取失败。"));
-  }
-  return response.json();
-}
-
-async function fetchJobHistory(): Promise<{ jobs: JobSummary[] }> {
-  const response = await fetch("/api/jobs");
-  if (!response.ok) {
-    throw new Error(await readResponseError(response, "历史任务读取失败。"));
-  }
-  return response.json();
-}
-
-async function readResponseError(response: Response, fallback: string): Promise<string> {
-  const contentType = response.headers.get("content-type") ?? "";
-  try {
-    if (contentType.includes("application/json")) {
-      const payload = (await response.json()) as { detail?: string };
-      return payload.detail || fallback;
-    }
-    const text = (await response.text()).trim();
-    return text || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function isDesktopDownloadAvailable() {
-  return typeof window !== "undefined" && typeof window.pywebview?.api?.save_file === "function";
-}
-
-function buildAbsoluteUrl(path: string) {
-  return new URL(path, window.location.origin).toString();
-}
-
-function deriveDownloadFilename(path: string, fallbackLabel: string) {
-  const lastSegment = path.split("/").filter(Boolean).at(-1);
-  return lastSegment || fallbackLabel;
-}
-
-async function triggerBrowserDownload(url: string, filename: string) {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`下载失败：${response.status}`);
-  }
-  const blob = await response.blob();
-  const objectUrl = window.URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = objectUrl;
-  link.download = filename;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.URL.revokeObjectURL(objectUrl);
-}
-
-async function downloadArtifact(url: string, filename: string) {
-  if (isDesktopDownloadAvailable()) {
-    return window.pywebview!.api!.save_file!(filename, buildAbsoluteUrl(url));
-  }
-  await triggerBrowserDownload(url, filename);
-  return { ok: true };
-}
-
-async function fetchNoteVersions(jobId: string): Promise<NoteVersionIndex> {
-  const response = await fetch(`/api/jobs/${jobId}/note-versions`);
-  if (!response.ok) {
-    throw new Error("笔记版本读取失败。");
-  }
-  return response.json();
-}
 
 function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
   if (!runtime) {
@@ -2173,91 +1858,3 @@ function MarkdownHeading({ level, text }: { level: number; text: string }) {
   return <h6>{text}</h6>;
 }
 
-function parseMarkdown(markdown: string): MarkdownBlock[] {
-  const blocks: MarkdownBlock[] = [];
-  let paragraph: string[] = [];
-  let list: Extract<MarkdownBlock, { type: "list" }> | null = null;
-
-  const flushParagraph = () => {
-    if (paragraph.length > 0) {
-      blocks.push({ type: "paragraph", text: paragraph.join(" ") });
-      paragraph = [];
-    }
-  };
-  const flushList = () => {
-    if (list) {
-      blocks.push(list);
-      list = null;
-    }
-  };
-
-  for (const line of markdown.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      flushParagraph();
-      flushList();
-      continue;
-    }
-
-    const heading = /^(#{1,6})\s+(.+)$/.exec(trimmed);
-    const image = /^!\[([^\]]*)\]\(([^)]+)\)$/.exec(trimmed);
-    const unordered = /^[-*]\s+(.+)$/.exec(trimmed);
-    const ordered = /^\d+[.)]\s+(.+)$/.exec(trimmed);
-
-    if (heading) {
-      flushParagraph();
-      flushList();
-      blocks.push({ type: "heading", level: heading[1].length, text: heading[2].trim() });
-    } else if (image) {
-      flushParagraph();
-      flushList();
-      blocks.push({ type: "image", alt: image[1].trim(), src: image[2].trim() });
-    } else if (unordered || ordered) {
-      flushParagraph();
-      const isOrdered = Boolean(ordered);
-      if (!list || list.ordered !== isOrdered) {
-        flushList();
-        list = { type: "list", ordered: isOrdered, items: [] };
-      }
-      list.items.push((ordered?.[1] ?? unordered?.[1] ?? "").trim());
-    } else {
-      flushList();
-      paragraph.push(trimmed);
-    }
-  }
-
-  flushParagraph();
-  flushList();
-  return blocks;
-}
-
-function extractMarkdownImages(markdown: string, jobId?: string, assetBasePath?: string): PreviewImage[] {
-  if (!jobId) {
-    return [];
-  }
-  return parseMarkdown(markdown)
-    .filter((block): block is Extract<MarkdownBlock, { type: "image" }> => block.type === "image")
-    .map((block, index) => ({
-      label: block.alt || `frame_${index + 1}`,
-      path: `${assetBasePath ? `${assetBasePath}/` : ""}${block.src}`.replace(/\\/g, "/"),
-      asset_url: resolvePreviewAssetUrl(block.src, jobId, assetBasePath)
-    }))
-    .filter((image) => image.asset_url);
-}
-
-function resolvePreviewAssetUrl(path: string, jobId?: string, assetBasePath?: string) {
-  const value = path.trim().replace(/^["']|["']$/g, "");
-  if (!jobId || !value || /^(?:[a-z][a-z\d+.-]*:|\/\/|\/)/i.test(value)) {
-    return "";
-  }
-  const normalizedPath = assetBasePath ? `${assetBasePath.replace(/\/$/, "")}/${value}` : value;
-  const segments = normalizedPath
-    .replace(/\\/g, "/")
-    .replace(/^\.?\//, "")
-    .split("/")
-    .filter((segment) => segment && segment !== "." && segment !== "..");
-  if (segments.length === 0) {
-    return "";
-  }
-  return `/api/jobs/${encodeURIComponent(jobId)}/assets/${segments.map(encodeURIComponent).join("/")}`;
-}
