@@ -8,8 +8,9 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 from .ffmpeg_tools import FFmpegError, extract_mp3, probe_duration
 from .job_store import JobStore
-from .llm import LLMError, generate_note_draft
+from .llm import LLMError, generate_chunked_note_draft_with_chunks, generate_note_draft
 from .models import JobConfig, JobStatus
+from .note_chunks import save_note_chunks
 from .note_versions import (
     create_note_version_from_draft,
     load_note_version_index,
@@ -252,7 +253,16 @@ def continue_job_to_notes(
 
         store.update(job_id, status=JobStatus.running, step="????", progress=60, error="")
         debug_log.event("generate_note_draft", "starting", segment_count=len(segments))
-        draft = generate_note_draft(config, duration, segments, debug_log=debug_log)
+        system_prompt = (
+            "You are a professional video content editor, course note writer, and knowledge management expert. "
+            "You must write only from the transcript. Do not invent facts. "
+            "Return strict JSON only. Preserve timestamps for chapter navigation and frame extraction."
+        )
+        draft, chunk_segs, chunk_drafts = generate_chunked_note_draft_with_chunks(
+            config, duration, segments, system_prompt, debug_log=debug_log
+        )
+        save_note_chunks(job_dir, segments, chunk_segs, chunk_drafts)
+        debug_log.event("save_note_chunks", "succeeded", chunk_count=len(chunk_segs))
         debug_log.event(
             "generate_note_draft",
             "succeeded",

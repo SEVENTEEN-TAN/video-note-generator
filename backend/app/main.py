@@ -51,6 +51,11 @@ from .models import (
     TranscriptCorrectionPreview,
     TranscriptCorrectionRequest,
 )
+from .note_chunks import (
+    load_note_chunk_index,
+    load_chunk_draft,
+    regenerate_chunk_and_reduce,
+)
 from .note_versions import activate_note_version, get_note_version, load_note_version_index, set_note_version_selection
 from .processor import (
     continue_job_to_notes,
@@ -592,6 +597,105 @@ def download_zip(job_id: str) -> FileResponse:
     if not file_path.exists():
         raise HTTPException(status_code=404, detail="ZIP is not ready.")
     return FileResponse(file_path, filename=f"video-note-{job_id}.zip")
+
+
+@app.get("/api/jobs/{job_id}/note-chunks")
+def list_note_chunks(job_id: str) -> dict:
+    job_dir = safe_job_dir(job_id)
+    index = load_note_chunk_index(job_dir)
+    if not index:
+        return {"chunks": [], "total_segments": 0}
+    return index.model_dump(mode="json")
+
+
+@app.post("/api/jobs/{job_id}/note-chunks/{chunk_id}/regenerate")
+def regenerate_note_chunk(
+    job_id: str,
+    chunk_id: str,
+    background_tasks: BackgroundTasks,
+    note_api_key: Annotated[str, Form()],
+    note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
+    note_model: Annotated[str, Form()] = "gpt-5.5",
+    note_language: Annotated[NoteLanguage, Form()] = NoteLanguage.zh,
+    note_style: Annotated[NoteStyle, Form()] = NoteStyle.detailed,
+    extras: Annotated[str, Form()] = "",
+    frame_limit: Annotated[int, Form()] = 6,
+) -> dict:
+    job_dir = safe_job_dir(job_id)
+    index = load_note_chunk_index(job_dir)
+    if not index:
+        raise HTTPException(status_code=400, detail="Note chunks not found. Generate notes first.")
+    meta = next((m for m in index.chunks if m.id == chunk_id), None)
+    if not meta:
+        raise HTTPException(status_code=404, detail=f"Chunk '{chunk_id}' not found.")
+    if not note_api_key.strip():
+        raise HTTPException(status_code=400, detail="Note API Key is required.")
+
+    metadata = read_metadata(job_dir)
+    original_filename = str(metadata.get("original_filename") or "video")
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="reuse-transcript",
+        note_api_key=note_api_key,
+        note_base_url=note_base_url,
+        note_model=note_model,
+        note_language=note_language,
+        note_style=note_style,
+        extras=extras,
+        frame_limit=frame_limit,
+        original_filename=original_filename,
+    )
+    store.update(job_id, status=JobStatus.running, step="重新生成笔记块", progress=70, error="")
+    background_tasks.add_task(
+        _regenerate_chunk_job,
+        job_id=job_id,
+        job_dir=job_dir,
+        config=config,
+        chunk_id=chunk_id,
+    )
+    return {"job_id": job_id, "status": "running"}
+
+
+def _regenerate_chunk_job(job_id: str, job_dir: Path, config: JobConfig, chunk_id: str) -> None:
+    from .processor import create_zip, write_job_metadata, SUBTITLES_PENDING_MARKER
+    from .note_versions import regenerate_note_version_from_draft
+    from .task_debug_log import TaskDebugLog
+    from .llm import reduce_note_drafts
+    from .subtitles import transcript_segments_from_payload
+    import json as _json
+
+    debug_log = TaskDebugLog(job_dir)
+    try:
+        metadata = _json.loads((job_dir / "metadata.json").read_text(encoding="utf-8"))
+        duration = metadata.get("duration_seconds")
+        transcript_payload = _json.loads((job_dir / "transcript.json").read_text(encoding="utf-8"))
+        segments = transcript_segments_from_payload(transcript_payload)
+        system_prompt = (
+            "You are a professional video content editor, course note writer, and knowledge management expert. "
+            "You must write only from the transcript. Do not invent facts. "
+            "Return strict JSON only. Preserve timestamps for chapter navigation and frame extraction."
+        )
+        debug_log.event("regenerate_note_chunk", "starting", chunk_id=chunk_id)
+        draft = regenerate_chunk_and_reduce(job_dir, config, duration, segments, chunk_id, system_prompt)
+        debug_log.event("regenerate_note_chunk", "succeeded", chunk_id=chunk_id)
+        write_job_metadata(job_id=job_id, job_dir=job_dir, config=config, title=draft.title, duration=duration)
+        # Rebuild the active note version with the new draft
+        from .note_versions import load_note_version_index, activate_note_version
+        version_index = load_note_version_index(job_dir)
+        if version_index.active_version_id:
+            version_dir = job_dir / "note_versions" / version_index.active_version_id
+            version_dir.mkdir(parents=True, exist_ok=True)
+            (version_dir / "note.md").write_text(
+                draft.markdown_body or draft.summary,
+                encoding="utf-8-sig",
+            )
+        create_zip(job_dir)
+        store.refresh_artifacts(job_id)
+        store.update(job_id, status=JobStatus.succeeded, step="完成", progress=100)
+    except Exception as exc:
+        debug_log.exception("regenerate_note_chunk", "failed", exc)
+        store.refresh_artifacts(job_id)
+        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
 
 
 @app.get("/api/jobs/{job_id}/note-versions", response_model=NoteVersionIndex)

@@ -1608,3 +1608,64 @@ textarea:focus {
   color: var(--text-muted, #999);
   font-size: 12px;
 }
+
+.chunk-manager {
+  margin: 12px 0 0;
+}
+
+.chunk-manager > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 4px 0;
+}
+
+.chunk-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.chunk-item {
+  align-items: center;
+  border-radius: 6px;
+  border: 1px solid #e2e8f0;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 8px 10px;
+}
+
+.chunk-item.skipped {
+  background: #fff7ed;
+  border-color: #fed7aa;
+}
+
+.chunk-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.chunk-item-info strong {
+  font-size: 13px;
+}
+
+.chunk-time {
+  color: var(--text-muted, #888);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chunk-title {
+  color: var(--text-primary, #333);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

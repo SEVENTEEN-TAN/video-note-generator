@@ -34,6 +34,8 @@ import type {
   NoteLanguage,
   NoteStyle,
   NoteVersion,
+  NoteChunkIndex,
+  NoteChunkMeta,
   NoteVersionIndex,
   PollableTaskState,
   PythonPackageInstallMode,
@@ -114,6 +116,8 @@ export function App() {
   const [isConfirmingSubtitles, setIsConfirmingSubtitles] = useState(false);
   const [isRegeneratingSubtitles, setIsRegeneratingSubtitles] = useState(false);
   const [subtitleGateError, setSubtitleGateError] = useState("");
+  const [noteChunks, setNoteChunks] = useState<NoteChunkIndex | null>(null);
+  const [regeneratingChunkId, setRegeneratingChunkId] = useState("");
   const videoInputRef = useRef<HTMLInputElement | null>(null);
 
   async function pollTaskState<T extends PollableTaskState>(
@@ -391,6 +395,30 @@ export function App() {
       cancelled = true;
     };
   }, [job, previewVersionId]);
+
+
+  useEffect(() => {
+    if (!job || job.status !== "succeeded") {
+      setNoteChunks(null);
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/jobs/${job.job_id}/note-chunks`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload: NoteChunkIndex | null) => {
+        if (!cancelled) {
+          setNoteChunks(payload);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setNoteChunks(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.job_id, job?.status]);
 
   function handleVideoChange(event: ChangeEvent<HTMLInputElement>) {
     const selectedVideo = event.target.files?.[0] ?? null;
@@ -793,6 +821,35 @@ export function App() {
     }
   }
 
+  async function handleRegenerateNoteChunk(chunkId: string) {
+    if (!job || !noteChunks) {
+      return;
+    }
+    const requestJobId = job.job_id;
+    setRegeneratingChunkId(chunkId);
+    try {
+      const formData = new FormData();
+      formData.append("note_api_key", noteApiKey);
+      formData.append("note_base_url", noteBaseUrl);
+      formData.append("note_model", noteModel);
+      formData.append("note_language", noteLanguage);
+      formData.append("note_style", noteStyle);
+      formData.append("extras", extras);
+      formData.append("frame_limit", String(frameLimit));
+      const response = await fetch(`/api/jobs/${requestJobId}/note-chunks/${chunkId}/regenerate`, {
+        method: "POST",
+        body: formData
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "重新生成笔记块失败。");
+      }
+      setJob({ ...job, status: "running", step: "重新生成笔记块", progress: 70, error: null });
+    } catch {
+      setRegeneratingChunkId("");
+    }
+  }
+
   async function handleConfirmSubtitles() {
     if (!job) {
       return;
@@ -1126,6 +1183,35 @@ export function App() {
               </div>
               {previewVersion && <span className="result-version-summary">{formatVersionDetails(previewVersion)}</span>}
             </div>
+            {noteChunks && noteChunks.chunks.length > 1 && (
+              <details className="chunk-manager" aria-label="笔记分段管理">
+                <summary>
+                  <Captions size={15} />
+                  <span>笔记分段（{noteChunks.chunks.length} 块）</span>
+                </summary>
+                <div className="chunk-list">
+                  {noteChunks.chunks.map((chunk: NoteChunkMeta) => (
+                    <div className={`chunk-item ${chunk.status}`} key={chunk.id}>
+                      <div className="chunk-item-info">
+                        <strong>{chunk.label}</strong>
+                        <span className="chunk-time">{formatSecondsRange(chunk.start_time, chunk.end_time)}</span>
+                        {chunk.title && <span className="chunk-title">{chunk.title}</span>}
+                        {chunk.status === "skipped" && <span className="mini-badge warn">已跳过</span>}
+                      </div>
+                      <button
+                        className="small-button"
+                        disabled={isBusy || regeneratingChunkId === chunk.id}
+                        onClick={() => void handleRegenerateNoteChunk(chunk.id)}
+                        type="button"
+                      >
+                        {regeneratingChunkId === chunk.id ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+                        重生成
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
             <div className="download-row">
               <div className="download-actions">
                 <DownloadLink job={job} artifactPath="note.md" label="Markdown" onDownloadError={setDownloadMessage} />

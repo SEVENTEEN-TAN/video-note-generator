@@ -402,6 +402,37 @@ def generate_chunked_note_draft(
 
 
 
+def generate_chunked_note_draft_with_chunks(
+    config: JobConfig,
+    duration: float | None,
+    segments: list[TranscriptSegment],
+    system_prompt: str,
+    debug_log: TaskDebugLog | None = None,
+) -> tuple[NoteDraft, list[list[TranscriptSegment]], list[NoteDraft]]:
+    """Like generate_chunked_note_draft but also returns chunk segments and drafts."""
+    chunks = chunk_segments(segments, MAX_CHUNK_TRANSCRIPT_CHARS)
+    chunk_drafts: list[NoteDraft] = []
+    for index, chunk in enumerate(chunks, start=1):
+        prior_context = _build_prior_context(chunk_drafts)
+        chunk_drafts.extend(
+            _transcribe_note_chunk_with_retry(
+                config=config,
+                duration=duration,
+                system_prompt=system_prompt,
+                chunk=chunk,
+                chunk_index=index,
+                chunk_count=len(chunks),
+                prior_context=prior_context,
+                debug_log=debug_log,
+            )
+        )
+    if debug_log:
+        reduced = reduce_note_drafts(config, duration, chunk_drafts, system_prompt, debug_log=debug_log)
+    else:
+        reduced = reduce_note_drafts(config, duration, chunk_drafts, system_prompt)
+    return reduced, chunks, chunk_drafts
+
+
 def _build_prior_context(completed_drafts: list[NoteDraft]) -> str:
     """Build a compact summary of earlier chunk outputs for context continuity."""
     if not completed_drafts:

@@ -199,3 +199,21 @@ declare global {
     };
   }
 }
+
+export type NoteChunkMeta = {
+  id: string;
+  index: number;
+  total: number;
+  label: string;
+  start_time: number;
+  end_time: number;
+  segment_start: number;
+  segment_end: number;
+  status: string;
+  title: string;
+};
+
+export type NoteChunkIndex = {
+  chunks: NoteChunkMeta[];
+  total_segments: number;
+};

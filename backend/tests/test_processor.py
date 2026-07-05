@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import codecs
 import json
@@ -50,8 +50,8 @@ def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> 
     )
     monkeypatch.setattr(
         processor,
-        "generate_note_draft",
-        lambda *_args, **_kwargs: NoteDraft(
+        "generate_chunked_note_draft_with_chunks",
+        lambda *_args, **_kwargs: (NoteDraft(
             title="长视频",
             summary="summary",
             chapters=[],
@@ -59,7 +59,7 @@ def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> 
             key_takeaways=[],
             action_items=[],
             markdown_body="",
-        ),
+        ), [], [])
     )
     monkeypatch.setattr(
         processor,
@@ -157,8 +157,8 @@ def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, mo
     def fake_transcribe_audio(*args, **kwargs) -> dict:
         return {"text": "hello world", "segments": [{"start": 0, "end": 1, "text": "hello world"}]}
 
-    def fake_generate_note_draft(*args, **kwargs) -> NoteDraft:
-        return NoteDraft(
+    def fake_generate_note_draft(*args, **kwargs):
+        return (NoteDraft(
             title="Mock Note",
             summary="Mock summary",
             chapters=[
@@ -171,10 +171,10 @@ def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, mo
                 )
             ],
             key_moments=[KeyMoment(time=0.5, reason="Opening frame", chapter_index=0)],
-        )
+        ), [], [])
 
     monkeypatch.setattr(processor, "transcribe_audio", fake_transcribe_audio)
-    monkeypatch.setattr(processor, "generate_note_draft", fake_generate_note_draft)
+    monkeypatch.setattr(processor, "generate_chunked_note_draft_with_chunks", fake_generate_note_draft)
 
     store = JobStore(outputs_root)
     store.create(job_id)
@@ -255,8 +255,8 @@ def test_process_job_persists_draft_title_before_frame_failure(tmp_path, monkeyp
     )
     monkeypatch.setattr(
         processor,
-        "generate_note_draft",
-        lambda *_args, **_kwargs: NoteDraft(
+        "generate_chunked_note_draft_with_chunks",
+        lambda *_args, **_kwargs: (NoteDraft(
             title="梯度消失问题讲解",
             summary="summary",
             chapters=[],
@@ -264,7 +264,7 @@ def test_process_job_persists_draft_title_before_frame_failure(tmp_path, monkeyp
             key_takeaways=[],
             action_items=[],
             markdown_body="",
-        ),
+        ), [], [])
     )
     monkeypatch.setattr(
         processor,
