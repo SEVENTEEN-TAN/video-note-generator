@@ -40,6 +40,7 @@ import type {
   PreviewImage,
   RuntimeState,
   TranscriptCorrectionPreview,
+  TranscriptionLanguage,
   TranscriptionMode,
   UserSettings
 } from "./types";
@@ -67,6 +68,7 @@ export function App() {
   const [transcriptionMode, setTranscriptionMode] = useState<TranscriptionMode>("local_faster_whisper");
   const [transcriptionBaseUrl, setTranscriptionBaseUrl] = useState(OPENAI_BASE_URL);
   const [transcriptionModel, setTranscriptionModel] = useState("small");
+  const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>("auto");
   const [localWhisperDevice, setLocalWhisperDevice] = useState<LocalWhisperDevice>("cpu");
   const [localWhisperComputeType, setLocalWhisperComputeType] = useState<LocalWhisperComputeType>("int8");
   const [externalPythonPath, setExternalPythonPath] = useState("");
@@ -450,6 +452,7 @@ export function App() {
     const formData = new FormData();
     formData.append("video", video);
     formData.append("transcription_mode", transcriptionMode);
+    formData.append("transcription_language", transcriptionLanguage);
     formData.append("transcription_api_key", isLocalTranscription ? "" : transcriptionApiKey);
     formData.append("transcription_base_url", isLocalTranscription ? "" : transcriptionBaseUrl);
     formData.append("transcription_model", transcriptionModel);
@@ -575,6 +578,7 @@ export function App() {
   function collectSettings(): UserSettings {
     return {
       transcription_mode: transcriptionMode,
+      transcription_language: transcriptionLanguage,
       transcription_api_key: transcriptionApiKey,
       transcription_base_url: transcriptionBaseUrl,
       transcription_model: transcriptionModel,
@@ -595,6 +599,7 @@ export function App() {
 
   function applySettings(settings: UserSettings) {
     setTranscriptionMode(settings.transcription_mode);
+    setTranscriptionLanguage(settings.transcription_language ?? "auto");
     setTranscriptionApiKey(settings.transcription_api_key);
     setTranscriptionBaseUrl(settings.transcription_base_url);
     setTranscriptionModel(settings.transcription_model);
@@ -852,6 +857,7 @@ export function App() {
     try {
       const formData = new FormData();
       formData.append("transcription_mode", transcriptionMode);
+      formData.append("transcription_language", transcriptionLanguage);
       formData.append("transcription_api_key", isLocal ? "" : transcriptionApiKey);
       formData.append("transcription_base_url", isLocal ? "" : transcriptionBaseUrl);
       formData.append("transcription_model", transcriptionModel);
@@ -1327,6 +1333,15 @@ export function App() {
                     <option value="local_faster_whisper">本地 Faster Whisper</option>
                     <option value="audio_transcriptions">Audio Transcriptions 端点</option>
                     <option value="chat_audio">Chat 多模态音频兜底</option>
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span className="field-label">字幕语言</span>
+                  <select value={transcriptionLanguage} onChange={(event) => setTranscriptionLanguage(event.target.value as TranscriptionLanguage)}>
+                    <option value="auto">自动检测</option>
+                    <option value="zh">中文</option>
+                    <option value="en">English</option>
                   </select>
                 </label>
 

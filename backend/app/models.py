@@ -50,6 +50,12 @@ class LocalWhisperComputeType(str, Enum):
     float32 = "float32"
 
 
+class TranscriptionLanguage(str, Enum):
+    auto = "auto"
+    zh = "zh"
+    en = "en"
+
+
 class JobConfig(BaseModel):
     transcription_mode: TranscriptionMode = TranscriptionMode.audio_transcriptions
     transcription_api_key: str = ""
@@ -57,6 +63,7 @@ class JobConfig(BaseModel):
     transcription_model: str = "whisper-1"
     local_whisper_device: LocalWhisperDevice | str = ""
     local_whisper_compute_type: LocalWhisperComputeType | str = ""
+    transcription_language: TranscriptionLanguage | str = TranscriptionLanguage.auto
     note_api_key: str
     note_base_url: str = "https://api.openai.com/v1"
     note_model: str = "gpt-5.5"
@@ -96,6 +103,18 @@ class JobConfig(BaseModel):
     def validate_local_whisper_compute_type(cls, value: str) -> str:
         if value not in {"", "default", "int8", "int8_float16", "float16", "float32"}:
             raise ValueError("local_whisper_compute_type is not supported.")
+        return value
+
+    @field_validator("transcription_language")
+    @classmethod
+    def normalize_transcription_language(cls, value: TranscriptionLanguage | str) -> str:
+        return str(value.value if isinstance(value, Enum) else value).strip()
+
+    @field_validator("transcription_language")
+    @classmethod
+    def validate_transcription_language(cls, value: str) -> str:
+        if value not in {"auto", "zh", "en"}:
+            raise ValueError("transcription_language must be auto, zh, or en.")
         return value
 
     @field_validator("extras")

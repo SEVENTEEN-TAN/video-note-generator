@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import ctypes
@@ -22,6 +22,7 @@ def main() -> int:
     parser.add_argument("--model-root", default="")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--compute-type", default="int8")
+    parser.add_argument("--language", default="")
     args = parser.parse_args()
 
     try:
@@ -49,7 +50,8 @@ def main() -> int:
             compute_type=args.compute_type,
             download_root=str(model_root),
         )
-        segments_raw, _info = model.transcribe(args.audio)
+        language = (args.language or "").strip() or None
+        segments_raw, _info = model.transcribe(args.audio, language=language)
         segments = []
         full_text_parts = []
         for item in segments_raw:

@@ -1,6 +1,7 @@
 export type NoteLanguage = "zh" | "en" | "follow";
 export type NoteStyle = "minimal" | "detailed" | "tutorial" | "academic" | "task_oriented" | "meeting_minutes";
 export type TranscriptionMode = "audio_transcriptions" | "chat_audio" | "local_faster_whisper";
+export type TranscriptionLanguage = "auto" | "zh" | "en";
 export type LocalWhisperDevice = "auto" | "cpu" | "cuda";
 export type LocalWhisperComputeType = "default" | "int8" | "int8_float16" | "float16" | "float32";
 export type RuntimePathSource = "environment" | "settings" | "default" | "missing";
@@ -133,6 +134,7 @@ export type HealthState = {
 
 export type UserSettings = {
   transcription_mode: TranscriptionMode;
+  transcription_language: TranscriptionLanguage;
   transcription_api_key: string;
   transcription_base_url: string;
   transcription_model: string;

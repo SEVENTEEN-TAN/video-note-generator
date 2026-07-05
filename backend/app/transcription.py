@@ -108,7 +108,8 @@ def transcribe_with_faster_whisper(
         )
         if progress_callback:
             progress_callback("字幕生成中：本地 Faster Whisper 转写中", 38)
-        segments_raw, _info = model.transcribe(str(audio_path))
+        language = resolve_transcription_language(config)
+        segments_raw, _info = model.transcribe(str(audio_path), language=language or None)
         return faster_whisper_segments_to_payload(segments_raw)
     except Exception as exc:
         raise TranscriptionError(f"Local Faster Whisper transcription failed: {exc}") from exc
@@ -150,6 +151,8 @@ def transcribe_with_external_faster_whisper(
             device,
             "--compute-type",
             compute_type,
+            "--language",
+            resolve_transcription_language(config),
         ],
         capture_output=True,
         text=True,
@@ -201,6 +204,10 @@ def resolve_local_whisper_runtime(config: JobConfig) -> tuple[str, str]:
     if compute_type == "default":
         compute_type = "int8"
     return device, compute_type
+
+def resolve_transcription_language(config: JobConfig) -> str:
+    value = str(config.transcription_language or "").strip()
+    return "" if value in {"", "auto"} else value
 
 
 def resolve_local_faster_whisper_model(model_name: str, model_root: Path) -> str:
@@ -326,12 +333,16 @@ def transcribe_with_audio_endpoint(
 def call_audio_endpoint(audio_path: Path, config: JobConfig) -> dict:
     client = make_client(config.transcription_api_key, config.transcription_base_url)
     with audio_path.open("rb") as audio_file:
-        response = client.audio.transcriptions.create(
-            model=config.transcription_model,
-            file=audio_file,
-            response_format="verbose_json",
-            timestamp_granularities=["segment"],
-        )
+        language = resolve_transcription_language(config)
+        kwargs: dict[str, object] = {
+            "model": config.transcription_model,
+            "file": audio_file,
+            "response_format": "verbose_json",
+            "timestamp_granularities": ["segment"],
+        }
+        if language:
+            kwargs["language"] = language
+        response = client.audio.transcriptions.create(**kwargs)
     return dump_openai_model(response)
 
 
@@ -350,7 +361,7 @@ def transcribe_with_chat_audio(
         if progress_callback:
             progress = 35 + int((index - 1) / max(chunk_count, 1) * 25)
             progress_callback(f"字幕生成中：第 {index}/{chunk_count} 段音频理解中", progress)
-        payload = call_chat_audio_transcription(client, chunk, config.transcription_model, offset)
+        payload = call_chat_audio_transcription(client, chunk, config.transcription_model, offset, config)
         for segment in payload.segments:
             merged_segments.append(segment)
         offset += probe_duration(chunk) or CHAT_AUDIO_CHUNK_SECONDS
@@ -365,8 +376,12 @@ def call_chat_audio_transcription(
     chunk_path: Path,
     model: str,
     offset_seconds: float,
+    config: JobConfig,
 ) -> TranscriptPayload:
     audio_b64 = base64.b64encode(chunk_path.read_bytes()).decode("ascii")
+    transcription_language = resolve_transcription_language(config)
+    language_hint = f" — the spoken language is {transcription_language}" if transcription_language else ""
+
     prompt = f"""
 Transcribe this audio chunk. Return strict JSON only.
 The audio chunk starts at absolute video time {offset_seconds:.3f} seconds ({seconds_to_hhmmss(offset_seconds)}).
@@ -379,7 +394,7 @@ Return this shape:
 Rules:
 - Use absolute timestamps in seconds, not timestamps relative to the chunk.
 - If there is no speech, return one segment with start={offset_seconds:.3f}, end={offset_seconds:.3f}, text="No speech detected."
-- Do not translate. Preserve spoken language.
+- Do not translate. Preserve the spoken language{language_hint}.
 """.strip()
     response = None
     last_error: Exception | None = None

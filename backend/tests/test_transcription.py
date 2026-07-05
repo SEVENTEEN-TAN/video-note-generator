@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app import local_whisper_worker, transcription
-from backend.app.models import JobConfig, NoteLanguage, TranscriptPayload, TranscriptSegment, TranscriptionMode
+from backend.app.models import JobConfig, NoteLanguage, TranscriptPayload, TranscriptSegment, TranscriptionLanguage, TranscriptionMode
 from backend.app.transcription import (
     faster_whisper_segments_to_payload,
     parse_chat_audio_payload,
@@ -104,7 +104,7 @@ def test_transcribe_audio_dispatches_local_faster_whisper(tmp_path, monkeypatch)
             assert kwargs["device"] == "cuda"
             assert kwargs["compute_type"] == "float16"
 
-        def transcribe(self, file_path):
+        def transcribe(self, file_path, **_kwargs):
             assert file_path == str(audio_path)
             return [SimpleNamespace(start=0, end=1, text="local text")], SimpleNamespace(language="zh")
 
@@ -140,7 +140,7 @@ def test_transcribe_audio_reports_progress_for_internal_local_faster_whisper(tmp
         def __init__(self, *_args, **_kwargs):
             pass
 
-        def transcribe(self, _file_path):
+        def transcribe(self, _file_path, **_kwargs):
             return [SimpleNamespace(start=0, end=1, text="local text")], SimpleNamespace(language="zh")
 
     monkeypatch.setattr(transcription, "WhisperModel", FakeWhisperModel)
@@ -185,7 +185,7 @@ def test_transcribe_audio_uses_bundled_local_model_directory(tmp_path, monkeypat
             assert model_name == str(bundled_model)
             assert kwargs["download_root"] == str(tmp_path / "models")
 
-        def transcribe(self, file_path):
+        def transcribe(self, file_path, **_kwargs):
             assert file_path == str(audio_path)
             return [SimpleNamespace(start=0, end=1, text="bundled text")], SimpleNamespace(language="zh")
 
@@ -518,3 +518,79 @@ def test_external_faster_whisper_worker_passes_resolved_model_root_to_env(tmp_pa
 
     assert captured_env["FASTER_WHISPER_MODEL_DIR"] == str(model_root)
     assert captured_env["HUGGINGFACE_HUB_CACHE"] == str(model_root)
+
+
+
+def test_transcribe_with_faster_whisper_passes_explicit_language(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"fake audio")
+    write_model_files(tmp_path / "models" / "small")
+
+    captured: dict[str, object] = {}
+
+    class FakeWhisperModel:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def transcribe(self, _file_path, language=None):
+            captured["language"] = language
+            return [SimpleNamespace(start=0, end=1, text="zh text")], SimpleNamespace(language="zh")
+
+    monkeypatch.setattr(transcription, "WhisperModel", FakeWhisperModel)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
+
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_api_key="",
+        transcription_base_url="",
+        transcription_model="small",
+        transcription_language=TranscriptionLanguage.zh,
+        note_api_key="note-key",
+        note_base_url="https://api.openai.com/v1",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+
+    parsed = transcription.transcribe_with_faster_whisper(audio_path, config)
+
+    assert parsed.text == "zh text"
+    assert captured["language"] == "zh"
+
+
+def test_transcribe_with_faster_whisper_omits_language_for_auto(tmp_path, monkeypatch) -> None:
+    from types import SimpleNamespace
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"fake audio")
+    write_model_files(tmp_path / "models" / "small")
+
+    captured: dict[str, object] = {}
+
+    class FakeWhisperModel:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def transcribe(self, _file_path, language=None):
+            captured["language"] = language
+            return [SimpleNamespace(start=0, end=1, text="auto text")], SimpleNamespace(language="zh")
+
+    monkeypatch.setattr(transcription, "WhisperModel", FakeWhisperModel)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
+
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_api_key="",
+        transcription_base_url="",
+        transcription_model="small",
+        transcription_language=TranscriptionLanguage.auto,
+        note_api_key="note-key",
+        note_base_url="https://api.openai.com/v1",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+
+    transcription.transcribe_with_faster_whisper(audio_path, config)
+
+    assert captured["language"] is None
