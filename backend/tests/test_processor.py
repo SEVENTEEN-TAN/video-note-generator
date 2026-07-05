@@ -81,7 +81,14 @@ def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> 
         original_filename="input.mp4",
     )
 
-    processor.process_job(
+    processor.process_transcription_job(
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        config=config,
+        store=store,
+    )
+    processor.continue_job_to_notes(
         job_id=job_id,
         job_dir=job_dir,
         video_path=video_path,
@@ -183,7 +190,14 @@ def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, mo
         original_filename="input.mp4",
     )
 
-    processor.process_job(
+    processor.process_transcription_job(
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        config=config,
+        store=store,
+    )
+    processor.continue_job_to_notes(
         job_id=job_id,
         job_dir=job_dir,
         video_path=video_path,
@@ -272,7 +286,14 @@ def test_process_job_persists_draft_title_before_frame_failure(tmp_path, monkeyp
         original_filename="input.mp4",
     )
 
-    processor.process_job(
+    processor.process_transcription_job(
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        config=config,
+        store=store,
+    )
+    processor.continue_job_to_notes(
         job_id=job_id,
         job_dir=job_dir,
         video_path=video_path,
@@ -292,3 +313,105 @@ def test_process_job_persists_draft_title_before_frame_failure(tmp_path, monkeyp
     assert "create_note_version" in debug_text
     assert "frame failed" in debug_text
     assert "traceback" in debug_text
+
+
+
+def test_phase_one_pauses_for_subtitle_confirmation(tmp_path, monkeypatch) -> None:
+    job_id = "pause-job"
+    outputs_root = tmp_path / "outputs"
+    job_dir = outputs_root / job_id
+    source_dir = job_dir / "source_video"
+    source_dir.mkdir(parents=True)
+    video_path = source_dir / "input.mp4"
+    video_path.write_bytes(b"video")
+
+    monkeypatch.setattr(processor, "probe_duration", lambda _path: 10.0)
+    monkeypatch.setattr(processor, "extract_mp3", lambda _video, audio: audio.write_bytes(b"audio"))
+    monkeypatch.setattr(
+        processor,
+        "transcribe_audio",
+        lambda *_args, **_kwargs: {"text": "hello", "segments": [{"start": 0, "end": 1, "text": "hello"}]},
+    )
+
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    config = JobConfig(
+        transcription_api_key="secret",
+        transcription_base_url="https://api.openai.com/v1",
+        transcription_model="whisper-1",
+        note_api_key="note-key",
+        note_base_url="https://api.openai.com/v1",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        frame_limit=1,
+        original_filename="input.mp4",
+    )
+
+    processor.process_transcription_job(
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        config=config,
+        store=store,
+    )
+
+    state = store.get(job_id)
+    assert state is not None
+    assert state.status == JobStatus.awaiting_subtitle_confirmation
+    assert (job_dir / "subtitles.md").exists()
+    assert (job_dir / "subtitles.pending").exists()
+    assert not (job_dir / "note.md").exists()
+    # phase 2 must not have run yet
+    assert not (job_dir / "download.zip").exists()
+
+
+def test_regenerate_subtitles_removes_old_notes_and_pauses_again(tmp_path, monkeypatch) -> None:
+    job_id = "regen-job"
+    outputs_root = tmp_path / "outputs"
+    job_dir = outputs_root / job_id
+    source_dir = job_dir / "source_video"
+    source_dir.mkdir(parents=True)
+    video_path = source_dir / "input.mp4"
+    video_path.write_bytes(b"video")
+
+    monkeypatch.setattr(processor, "probe_duration", lambda _path: 10.0)
+    monkeypatch.setattr(processor, "extract_mp3", lambda _video, audio: audio.write_bytes(b"audio"))
+    monkeypatch.setattr(
+        processor,
+        "transcribe_audio",
+        lambda *_args, **_kwargs: {"text": "hello", "segments": [{"start": 0, "end": 1, "text": "hello"}]},
+    )
+
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    config = JobConfig(
+        transcription_api_key="secret",
+        transcription_base_url="https://api.openai.com/v1",
+        transcription_model="whisper-1",
+        note_api_key="note-key",
+        note_base_url="https://api.openai.com/v1",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        frame_limit=1,
+        original_filename="input.mp4",
+    )
+
+    # Seed a previously completed note to prove regenerate clears it.
+    (job_dir / "note.md").write_text("# old note", encoding="utf-8")
+    (job_dir / "download.zip").write_bytes(b"old zip")
+    (job_dir / "subtitles.pending").write_text("1", encoding="utf-8")
+
+    processor.regenerate_subtitles_job(
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        config=config,
+        store=store,
+    )
+
+    state = store.get(job_id)
+    assert state is not None
+    assert state.status == JobStatus.awaiting_subtitle_confirmation
+    assert (job_dir / "subtitles.pending").exists()
+    assert not (job_dir / "note.md").exists()
+    assert not (job_dir / "download.zip").exists()

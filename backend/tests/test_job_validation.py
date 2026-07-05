@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import os
 
@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from backend.app import main
 from backend.app.job_store import JobStore
 from backend.app.main import app
-from backend.app.models import Chapter, KeyMoment, NoteDraft
+from backend.app.models import Chapter, JobStatus, KeyMoment, NoteDraft
 
 
 def test_create_job_rejects_missing_local_faster_whisper_model(tmp_path, monkeypatch) -> None:
@@ -317,7 +317,7 @@ def test_create_job_keeps_previous_output_dirs(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))
-    monkeypatch.setattr(main, "process_job", lambda **_kwargs: None)
+    monkeypatch.setattr(main, "process_transcription_job", lambda **_kwargs: None)
 
     response = TestClient(app).post(
         "/api/jobs",
@@ -343,7 +343,7 @@ def test_create_job_keeps_previous_output_dirs(tmp_path, monkeypatch) -> None:
 def test_create_job_seeds_history_title_from_uploaded_filename(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))
-    monkeypatch.setattr(main, "process_job", lambda **_kwargs: None)
+    monkeypatch.setattr(main, "process_transcription_job", lambda **_kwargs: None)
 
     response = TestClient(app).post(
         "/api/jobs",
@@ -372,3 +372,118 @@ def test_create_job_seeds_history_title_from_uploaded_filename(tmp_path, monkeyp
     assert jobs[0]["job_id"] == job_id
     assert jobs[0]["title"] == "02_梯度消失问题.mp4"
     assert jobs[0]["original_filename"] == "02_梯度消失问题.mp4"
+
+
+
+def _seed_awaiting_job(tmp_path, job_id: str = "awaiting-job") -> Path:
+    from backend.app.job_store import JobStore
+
+    outputs_root = tmp_path
+    job_dir = outputs_root / job_id
+    (job_dir / "source_video").mkdir(parents=True)
+    (job_dir / "source_video" / "input.mp4").write_bytes(b"video")
+    (job_dir / "transcript.json").write_text(
+        '{"text": "hello", "segments": [{"start": 0, "end": 1, "text": "hello"}]}',
+        encoding="utf-8",
+    )
+    (job_dir / "subtitles.md").write_text("00:00:00 - 00:00:01 hello", encoding="utf-8")
+    (job_dir / "subtitles.pending").write_text("1", encoding="utf-8")
+    (job_dir / "metadata.json").write_text(
+        '{"job_id": "awaiting-job", "original_filename": "input.mp4", "duration_seconds": 10}',
+        encoding="utf-8",
+    )
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    store.update(job_id, status=JobStatus.awaiting_subtitle_confirmation, step="wait", progress=40)
+    return job_dir
+
+
+def test_confirm_subtitles_rejects_non_awaiting_job(tmp_path, monkeypatch) -> None:
+    from backend.app import main
+    from backend.app.job_store import JobStore
+
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    job_id = "succeeded-job"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "note.md").write_text("# note", encoding="utf-8")
+
+    response = TestClient(app).post(
+        f"/api/jobs/{job_id}/subtitles/confirm",
+        data={
+            "note_api_key": "key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+        },
+    )
+
+    assert response.status_code == 404 or response.status_code == 409
+
+
+def test_confirm_subtitles_requires_note_api_key(tmp_path, monkeypatch) -> None:
+    from backend.app import main
+
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", __import__("backend.app.job_store", fromlist=["JobStore"]).JobStore(tmp_path))
+    _seed_awaiting_job(tmp_path)
+
+    response = TestClient(app).post(
+        "/api/jobs/awaiting-job/subtitles/confirm",
+        data={
+            "note_api_key": "",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Note API Key" in response.json()["detail"]
+
+
+def test_regenerate_subtitles_rejects_non_awaiting_job(tmp_path, monkeypatch) -> None:
+    from backend.app import main
+    from backend.app.job_store import JobStore
+
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    job_id = "done-job"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "note.md").write_text("# note", encoding="utf-8")
+
+    response = TestClient(app).post(
+        f"/api/jobs/{job_id}/subtitles/regenerate",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "k",
+            "transcription_base_url": "https://api.openai.com/v1",
+            "transcription_model": "whisper-1",
+        },
+    )
+
+    assert response.status_code in (404, 409)
+
+
+def test_regenerate_subtitles_requires_remote_api_key(tmp_path, monkeypatch) -> None:
+    from backend.app import main
+    from backend.app.job_store import JobStore
+
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    _seed_awaiting_job(tmp_path)
+
+    response = TestClient(app).post(
+        "/api/jobs/awaiting-job/subtitles/regenerate",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "",
+            "transcription_base_url": "https://api.openai.com/v1",
+            "transcription_model": "whisper-1",
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Transcription API Key" in response.json()["detail"]

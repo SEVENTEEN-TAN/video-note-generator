@@ -108,6 +108,9 @@ export function App() {
   const [correctionError, setCorrectionError] = useState("");
   const [isCorrectingTranscript, setIsCorrectingTranscript] = useState(false);
   const [isApplyingCorrection, setIsApplyingCorrection] = useState(false);
+  const [isConfirmingSubtitles, setIsConfirmingSubtitles] = useState(false);
+  const [isRegeneratingSubtitles, setIsRegeneratingSubtitles] = useState(false);
+  const [subtitleGateError, setSubtitleGateError] = useState("");
   const videoInputRef = useRef<HTMLInputElement | null>(null);
 
   async function pollTaskState<T extends PollableTaskState>(
@@ -171,7 +174,7 @@ export function App() {
   }
 
   const isTranscriptCorrectionActive = isCorrectingTranscript || isApplyingCorrection || Boolean(correctionPreview);
-  const isBusy = job?.status === "pending" || job?.status === "running" || isSubmitting || isRegenerating || isTranscriptCorrectionActive;
+  const isBusy = job?.status === "pending" || job?.status === "running" || isSubmitting || isRegenerating || isConfirmingSubtitles || isRegeneratingSubtitles || isTranscriptCorrectionActive;
   const isLocalTranscription = transcriptionMode === "local_faster_whisper";
   const runtimeLocalStatus = health?.runtime?.faster_whisper;
   const selectedLocalModelAvailable =
@@ -784,6 +787,98 @@ export function App() {
     }
   }
 
+  async function handleConfirmSubtitles() {
+    if (!job) {
+      return;
+    }
+    const requestJobId = job.job_id;
+    setSubtitleGateError("");
+    if (!noteApiKey.trim()) {
+      setSubtitleGateError("请填写笔记生成 API Key，再继续生成笔记。");
+      return;
+    }
+    if (!noteModel.trim()) {
+      setSubtitleGateError("笔记生成模型不能为空。");
+      return;
+    }
+    setIsConfirmingSubtitles(true);
+    try {
+      const formData = new FormData();
+      formData.append("note_api_key", noteApiKey);
+      formData.append("note_base_url", noteBaseUrl);
+      formData.append("note_model", noteModel);
+      formData.append("note_language", noteLanguage);
+      formData.append("note_style", noteStyle);
+      formData.append("extras", extras);
+      formData.append("frame_limit", String(frameLimit));
+      const response = await fetch(`/api/jobs/${requestJobId}/subtitles/confirm`, {
+        method: "POST",
+        body: formData
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "字幕确认失败，请重试。");
+      }
+      setJob({
+        ...job,
+        status: "running",
+        step: "笔记生成",
+        progress: Math.max(job.progress, 60),
+        error: null
+      });
+    } catch (error) {
+      setSubtitleGateError(error instanceof Error ? error.message : "字幕确认失败，请重试。");
+    } finally {
+      setIsConfirmingSubtitles(false);
+    }
+  }
+
+  async function handleRegenerateSubtitles() {
+    if (!job) {
+      return;
+    }
+    const requestJobId = job.job_id;
+    const isLocal = transcriptionMode === "local_faster_whisper";
+    setSubtitleGateError("");
+    if (!isLocal && !transcriptionApiKey.trim()) {
+      setSubtitleGateError("请填写字幕转写 API Key，再重新生成字幕。");
+      return;
+    }
+    if (!transcriptionModel.trim()) {
+      setSubtitleGateError("字幕转写模型不能为空。");
+      return;
+    }
+    setIsRegeneratingSubtitles(true);
+    try {
+      const formData = new FormData();
+      formData.append("transcription_mode", transcriptionMode);
+      formData.append("transcription_api_key", isLocal ? "" : transcriptionApiKey);
+      formData.append("transcription_base_url", isLocal ? "" : transcriptionBaseUrl);
+      formData.append("transcription_model", transcriptionModel);
+      formData.append("local_whisper_device", isLocal ? localWhisperDevice : "");
+      formData.append("local_whisper_compute_type", isLocal ? localWhisperComputeType : "");
+      const response = await fetch(`/api/jobs/${requestJobId}/subtitles/regenerate`, {
+        method: "POST",
+        body: formData
+      });
+      const payload = await response.json();
+      if (!response.ok) {
+        throw new Error(payload.detail || "重新生成字幕失败，请重试。");
+      }
+      setJob({
+        ...job,
+        status: "running",
+        step: "字幕生成",
+        progress: 30,
+        error: null
+      });
+    } catch (error) {
+      setSubtitleGateError(error instanceof Error ? error.message : "重新生成字幕失败，请重试。");
+    } finally {
+      setIsRegeneratingSubtitles(false);
+    }
+  }
+
   async function handleLoadHistoryJob(jobId: string) {
     setHistoryError("");
     setSubmitError("");
@@ -1060,6 +1155,43 @@ export function App() {
                 </button>
               </div>
             </div>
+            {job?.status === "awaiting_subtitle_confirmation" && (
+              <div className="subtitle-gate" aria-label="字幕确认">
+                <div className="subtitle-gate-head">
+                  <Captions size={18} />
+                  <div>
+                    <strong>字幕已生成，请确认质量</strong>
+                    <span>确认无误后将继续生成笔记；如不满意可重新生成字幕。</span>
+                  </div>
+                </div>
+                {subtitleGateError && (
+                  <p className="inline-error">
+                    <AlertTriangle size={15} />
+                    {subtitleGateError}
+                  </p>
+                )}
+                <div className="subtitle-gate-actions">
+                  <button
+                    className="small-button"
+                    disabled={isRegeneratingSubtitles}
+                    onClick={() => void handleRegenerateSubtitles()}
+                    type="button"
+                  >
+                    {isRegeneratingSubtitles ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+                    重新生成字幕
+                  </button>
+                  <button
+                    className="small-button strong"
+                    disabled={isConfirmingSubtitles}
+                    onClick={() => void handleConfirmSubtitles()}
+                    type="button"
+                  >
+                    {isConfirmingSubtitles ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+                    确认字幕并生成笔记
+                  </button>
+                </div>
+              </div>
+            )}
             {downloadMessage && (
               <p className="inline-warning">
                 <AlertTriangle size={15} />

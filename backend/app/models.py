@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class JobStatus(str, Enum):
     pending = "pending"
     running = "running"
+    awaiting_subtitle_confirmation = "awaiting_subtitle_confirmation"
     succeeded = "succeeded"
     failed = "failed"
 

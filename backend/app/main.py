@@ -51,7 +51,14 @@ from .models import (
     TranscriptCorrectionRequest,
 )
 from .note_versions import activate_note_version, get_note_version, load_note_version_index, set_note_version_selection
-from .processor import create_zip, process_job, regenerate_note_job, write_job_metadata
+from .processor import (
+    continue_job_to_notes,
+    create_zip,
+    process_transcription_job,
+    regenerate_note_job,
+    regenerate_subtitles_job,
+    write_job_metadata,
+)
 from .runtime_status import get_runtime_status
 from .runtime_paths import get_frontend_dist_dir, get_outputs_root
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
@@ -381,7 +388,7 @@ async def create_job(
     sync_store_outputs_root()
     store.create(job_id)
     background_tasks.add_task(
-        process_job,
+        process_transcription_job,
         job_id=job_id,
         job_dir=job_dir,
         video_path=video_path,
@@ -389,6 +396,127 @@ async def create_job(
         store=store,
     )
     return {"job_id": job_id}
+
+
+@app.post("/api/jobs/{job_id}/subtitles/confirm")
+def confirm_subtitles(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    note_language: Annotated[NoteLanguage, Form()],
+    note_style: Annotated[NoteStyle, Form()] = NoteStyle.detailed,
+    extras: Annotated[str, Form()] = "",
+    note_api_key: Annotated[str, Form()] = "",
+    note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
+    note_model: Annotated[str, Form()] = "gpt-5.5",
+    frame_limit: Annotated[int, Form()] = 6,
+) -> dict:
+    sync_store_outputs_root()
+    state = store.get(job_id) or store.load_from_disk(job_id)
+    if not state:
+        safe_job_dir(job_id)
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if state.status != JobStatus.awaiting_subtitle_confirmation:
+        raise HTTPException(status_code=409, detail="Subtitles are not awaiting confirmation.")
+    job_dir = safe_job_dir(job_id)
+    if not (job_dir / "transcript.json").exists() or not (job_dir / "source_video").exists():
+        raise HTTPException(status_code=400, detail="Transcript or source video is missing.")
+    if not note_api_key.strip():
+        raise HTTPException(status_code=400, detail="Note API Key is required.")
+    if not note_model.strip():
+        raise HTTPException(status_code=400, detail="Note model is required.")
+    if frame_limit < 1 or frame_limit > 24:
+        raise HTTPException(status_code=400, detail="frame_limit must be between 1 and 24.")
+    metadata = read_metadata(job_dir)
+    original_filename = str(metadata.get("original_filename") or "video")
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="reuse-transcript",
+        note_api_key=note_api_key,
+        note_base_url=note_base_url,
+        note_model=note_model,
+        note_language=note_language,
+        note_style=note_style,
+        extras=extras,
+        frame_limit=frame_limit,
+        original_filename=original_filename,
+    )
+    store.update(job_id, status=JobStatus.running, step="笔记生成", progress=60, error="")
+    background_tasks.add_task(
+        continue_job_to_notes,
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=_job_source_video_path(job_dir),
+        config=config,
+        store=store,
+    )
+    return {"job_id": job_id, "status": "running"}
+
+
+@app.post("/api/jobs/{job_id}/subtitles/regenerate")
+def regenerate_subtitles(
+    job_id: str,
+    background_tasks: BackgroundTasks,
+    transcription_mode: Annotated[TranscriptionMode, Form()] = TranscriptionMode.audio_transcriptions,
+    transcription_api_key: Annotated[str, Form()] = "",
+    transcription_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
+    transcription_model: Annotated[str, Form()] = "whisper-1",
+    local_whisper_device: Annotated[str, Form()] = "",
+    local_whisper_compute_type: Annotated[str, Form()] = "",
+) -> dict:
+    sync_store_outputs_root()
+    state = store.get(job_id) or store.load_from_disk(job_id)
+    if not state:
+        safe_job_dir(job_id)
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if state.status != JobStatus.awaiting_subtitle_confirmation:
+        raise HTTPException(status_code=409, detail="Subtitles are not awaiting confirmation.")
+    job_dir = safe_job_dir(job_id)
+    if not (job_dir / "source_video").exists():
+        raise HTTPException(status_code=400, detail="Source video is missing. Subtitles cannot be regenerated.")
+    uses_remote_transcription = transcription_mode != TranscriptionMode.local_faster_whisper
+    if uses_remote_transcription and not transcription_api_key.strip():
+        raise HTTPException(status_code=400, detail="Transcription API Key is required.")
+    if uses_remote_transcription and not transcription_base_url.strip():
+        raise HTTPException(status_code=400, detail="Transcription Base URL is required.")
+    if not transcription_model.strip():
+        raise HTTPException(status_code=400, detail="Transcription model is required.")
+    try:
+        config = JobConfig(
+            transcription_mode=transcription_mode,
+            transcription_api_key=transcription_api_key,
+            transcription_base_url=transcription_base_url,
+            transcription_model=transcription_model,
+            local_whisper_device=local_whisper_device,
+            local_whisper_compute_type=local_whisper_compute_type,
+            note_api_key="placeholder",
+            note_base_url="https://api.openai.com/v1",
+            note_model="placeholder",
+            note_language=NoteLanguage.zh,
+            note_style=NoteStyle.detailed,
+            extras="",
+            frame_limit=6,
+            original_filename=str(read_metadata(job_dir).get("original_filename") or "video"),
+        )
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if config.transcription_mode == TranscriptionMode.local_faster_whisper:
+        ensure_local_transcription_ready(config)
+    store.update(job_id, status=JobStatus.running, step="字幕生成", progress=30, error="")
+    background_tasks.add_task(
+        regenerate_subtitles_job,
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=_job_source_video_path(job_dir),
+        config=config,
+        store=store,
+    )
+    return {"job_id": job_id, "status": "running"}
+
+
+def _job_source_video_path(job_dir: Path) -> Path:
+    source_dir = job_dir / "source_video"
+    candidates = sorted(source_dir.glob("input.*")) if source_dir.exists() else []
+    return candidates[0] if candidates else source_dir / "input.mp4"
 
 
 @app.get("/api/jobs", response_model=JobHistory)

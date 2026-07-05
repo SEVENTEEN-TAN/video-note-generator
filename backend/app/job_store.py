@@ -121,9 +121,19 @@ class JobStore:
         state = JobPublicState(
             job_id=job_id,
             status=status,
-            step="已从历史记录载入" if status == JobStatus.succeeded else "历史任务不完整",
+            step=(
+                "已从历史记录载入"
+                if status == JobStatus.succeeded
+                else "等待确认字幕"
+                if status == JobStatus.awaiting_subtitle_confirmation
+                else "历史任务不完整"
+            ),
             progress=100,
-            error=None if status == JobStatus.succeeded else "历史任务缺少完整笔记输出，可能在上次生成中断。",
+            error=(
+                None
+                if status in (JobStatus.succeeded, JobStatus.awaiting_subtitle_confirmation)
+                else "历史任务缺少完整笔记输出，可能在上次生成中断。"
+            ),
             artifacts=artifacts,
             step_started_at=timestamp,
             updated_at=timestamp,
@@ -191,6 +201,8 @@ def _infer_disk_job_status(job_dir: Path, artifacts: list[Artifact], version_ind
     artifact_paths = {artifact.path for artifact in artifacts}
     if "note.md" in artifact_paths:
         return JobStatus.succeeded
+    if "subtitles.md" in artifact_paths and (job_dir / "subtitles.pending").exists():
+        return JobStatus.awaiting_subtitle_confirmation
     for version in version_index.versions:
         try:
             note_path = resolve_job_relative_path(job_dir, version.note_path)

@@ -1,4 +1,4 @@
-import type { JobStatus, NoteStyle } from "./types";
+﻿import type { JobStatus, NoteStyle } from "./types";
 
 export const OPENAI_BASE_URL = "https://api.openai.com/v1";
 export const QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
@@ -6,6 +6,7 @@ export const QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 export const statusText: Record<JobStatus, string> = {
   pending: "等待",
   running: "处理中",
+  awaiting_subtitle_confirmation: "待确认字幕",
   succeeded: "完成",
   failed: "失败"
 };

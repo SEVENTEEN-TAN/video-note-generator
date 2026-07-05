@@ -1,6 +1,7 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -24,6 +25,9 @@ from .transcription import TranscriptionError, transcribe_audio
 
 class ProcessingError(RuntimeError):
     pass
+
+
+SUBTITLES_PENDING_MARKER = "subtitles.pending"
 
 
 def _config_debug_summary(config: JobConfig) -> dict:
@@ -139,7 +143,7 @@ def create_zip(job_dir: Path) -> Path:
     return zip_path
 
 
-def process_job(
+def process_transcription_job(
     *,
     job_id: str,
     job_dir: Path,
@@ -149,7 +153,7 @@ def process_job(
 ) -> None:
     debug_log = TaskDebugLog(job_dir)
     debug_log.event(
-        "process_job",
+        "process_transcription_job",
         "started",
         job_id=job_id,
         job_dir=str(job_dir),
@@ -159,18 +163,18 @@ def process_job(
     )
     try:
         debug_log.event("probe_duration", "starting", video_path=str(video_path))
-        store.update(job_id, status=JobStatus.running, step="解析视频", progress=5)
+        store.update(job_id, status=JobStatus.running, step="????", progress=5)
         duration = probe_duration(video_path)
         debug_log.event("probe_duration", "succeeded", duration_seconds=duration)
 
-        store.update(job_id, step="音频分离", progress=15)
+        store.update(job_id, step="????", progress=15)
         audio_path = job_dir / "audio.mp3"
         debug_log.event("extract_mp3", "starting", audio_path=str(audio_path))
         extract_mp3(video_path, audio_path)
         debug_log.event("extract_mp3", "succeeded", audio_size_bytes=_file_size(audio_path))
         store.refresh_artifacts(job_id)
 
-        store.update(job_id, step="字幕生成", progress=35)
+        store.update(job_id, step="????", progress=35)
         debug_log.event("transcribe_audio", "starting", audio_path=str(audio_path))
         transcript_payload = transcribe_audio(
             audio_path,
@@ -197,9 +201,56 @@ def process_job(
         debug_log.event("write_subtitles", "starting", segment_count=len(segments))
         write_subtitle_files(segments, job_dir)
         debug_log.event("write_subtitles", "succeeded", segment_count=len(segments))
+        # Persist duration so the note phase can resume without re-probing the video.
+        write_job_metadata(
+            job_id=job_id,
+            job_dir=job_dir,
+            config=config,
+            title=config.original_filename,
+            duration=duration,
+        )
+        (job_dir / SUBTITLES_PENDING_MARKER).write_text("1", encoding="utf-8")
         store.refresh_artifacts(job_id)
+        store.update(
+            job_id,
+            status=JobStatus.awaiting_subtitle_confirmation,
+            step="??????",
+            progress=40,
+        )
+        debug_log.event("process_transcription_job", "awaiting_confirmation")
+    except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
+        debug_log.exception("process_transcription_job", "failed", exc)
+        store.refresh_artifacts(job_id)
+        store.update(job_id, status=JobStatus.failed, step="??", error=str(exc), progress=100)
 
-        store.update(job_id, step="笔记生成", progress=60)
+
+def continue_job_to_notes(
+    *,
+    job_id: str,
+    job_dir: Path,
+    video_path: Path,
+    config: JobConfig,
+    store: JobStore,
+) -> None:
+    debug_log = TaskDebugLog(job_dir)
+    debug_log.event(
+        "continue_job_to_notes",
+        "started",
+        job_id=job_id,
+        job_dir=str(job_dir),
+        config=_config_debug_summary(config),
+    )
+    try:
+        if (job_dir / SUBTITLES_PENDING_MARKER).exists():
+            (job_dir / SUBTITLES_PENDING_MARKER).unlink()
+        metadata = _read_metadata(job_dir)
+        duration = metadata.get("duration_seconds")
+        transcript_payload = json.loads((job_dir / "transcript.json").read_text(encoding="utf-8"))
+        segments = transcript_segments_from_payload(transcript_payload)
+        if not segments:
+            raise ProcessingError("Transcript has no usable text segments.")
+
+        store.update(job_id, status=JobStatus.running, step="????", progress=60, error="")
         debug_log.event("generate_note_draft", "starting", segment_count=len(segments))
         draft = generate_note_draft(config, duration, segments, debug_log=debug_log)
         debug_log.event(
@@ -220,7 +271,7 @@ def process_job(
         )
         debug_log.event("write_metadata", "succeeded", metadata_size_bytes=_file_size(job_dir / "metadata.json"))
 
-        store.update(job_id, step="关键帧抽取", progress=78)
+        store.update(job_id, step="?????", progress=78)
         debug_log.event("create_note_version", "starting", version_id="note_001")
         create_note_version_from_draft(
             job_dir=job_dir,
@@ -235,26 +286,92 @@ def process_job(
         debug_log.event("create_note_version", "succeeded", version_id="note_001", frame_count=frame_count)
         store.refresh_artifacts(job_id)
 
-        store.update(job_id, step="Markdown 输出", progress=90)
-        debug_log.event("write_metadata", "starting", title=draft.title, duration_seconds=duration)
-        write_job_metadata(
-            job_id=job_id,
-            job_dir=job_dir,
-            config=config,
-            title=draft.title,
-            duration=duration,
-        )
-        debug_log.event("write_metadata", "succeeded", metadata_size_bytes=_file_size(job_dir / "metadata.json"))
+        store.update(job_id, step="Markdown ??", progress=90)
         debug_log.event("create_zip", "starting")
         zip_path = create_zip(job_dir)
         debug_log.event("create_zip", "succeeded", zip_path=str(zip_path), zip_size_bytes=_file_size(zip_path))
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.succeeded, step="完成", progress=100)
-        debug_log.event("process_job", "succeeded")
+        store.update(job_id, status=JobStatus.succeeded, step="??", progress=100)
+        debug_log.event("continue_job_to_notes", "succeeded")
     except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
-        debug_log.exception("process_job", "failed", exc)
+        debug_log.exception("continue_job_to_notes", "failed", exc)
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
+        store.update(job_id, status=JobStatus.failed, step="??", error=str(exc), progress=100)
+
+
+def regenerate_subtitles_job(
+    *,
+    job_id: str,
+    job_dir: Path,
+    video_path: Path,
+    config: JobConfig,
+    store: JobStore,
+) -> None:
+    debug_log = TaskDebugLog(job_dir)
+    debug_log.event(
+        "regenerate_subtitles_job",
+        "started",
+        job_id=job_id,
+        job_dir=str(job_dir),
+        config=_config_debug_summary(config),
+    )
+    try:
+        # Drop any note artifacts so the job cleanly returns to the subtitle gate.
+        for stale in ("note.md", "download.zip", SUBTITLES_PENDING_MARKER):
+            stale_path = job_dir / stale
+            if stale_path.exists():
+                stale_path.unlink()
+        note_versions_dir = job_dir / "note_versions"
+        if note_versions_dir.exists():
+            shutil.rmtree(note_versions_dir, ignore_errors=True)
+        frames_dir = job_dir / "frames"
+        if frames_dir.exists():
+            shutil.rmtree(frames_dir, ignore_errors=True)
+
+        store.update(job_id, status=JobStatus.running, step="????", progress=30, error="")
+        debug_log.event("extract_mp3", "starting", audio_path=str(job_dir / "audio.mp3"))
+        audio_path = job_dir / "audio.mp3"
+        extract_mp3(video_path, audio_path)
+        debug_log.event("extract_mp3", "succeeded", audio_size_bytes=_file_size(audio_path))
+        store.refresh_artifacts(job_id)
+
+        debug_log.event("transcribe_audio", "starting", audio_path=str(audio_path))
+        transcript_payload = transcribe_audio(
+            audio_path,
+            config,
+            job_dir,
+            progress_callback=lambda step, progress: store.update(job_id, step=step, progress=progress),
+        )
+        transcript_path = job_dir / "transcript.json"
+        transcript_path.write_text(
+            json.dumps(transcript_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        segments = transcript_segments_from_payload(transcript_payload)
+        if not segments:
+            raise ProcessingError("Transcription returned no usable text segments.")
+        write_subtitle_files(segments, job_dir)
+        duration = probe_duration(video_path)
+        write_job_metadata(
+            job_id=job_id,
+            job_dir=job_dir,
+            config=config,
+            title=config.original_filename,
+            duration=duration,
+        )
+        (job_dir / SUBTITLES_PENDING_MARKER).write_text("1", encoding="utf-8")
+        store.refresh_artifacts(job_id)
+        store.update(
+            job_id,
+            status=JobStatus.awaiting_subtitle_confirmation,
+            step="??????",
+            progress=40,
+        )
+        debug_log.event("regenerate_subtitles_job", "awaiting_confirmation")
+    except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
+        debug_log.exception("regenerate_subtitles_job", "failed", exc)
+        store.refresh_artifacts(job_id)
+        store.update(job_id, status=JobStatus.failed, step="??", error=str(exc), progress=100)
 
 
 def regenerate_note_job(
