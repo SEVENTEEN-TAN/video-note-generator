@@ -437,34 +437,16 @@ def fallback_note_draft_from_chunk(
     if not segments:
         return NoteDraft(title=f"Transcript chunk {chunk_index} of {chunk_count}", summary="")
 
-    title = f"Transcript chunk {chunk_index} of {chunk_count}"
-    transcript_lines = render_transcript_lines(segments)
-    summary = "\n".join(transcript_lines)
-    bullets = [segment.text.strip() for segment in segments if segment.text.strip()][:8]
     start_time = segments[0].start
     end_time = segments[-1].end
+    summary = f"Chunk {chunk_index}/{chunk_count} ({seconds_to_hhmmss(start_time)} - {seconds_to_hhmmss(end_time)}) was skipped because the note model rejected it."
     return NoteDraft(
-        title=title,
+        title=f"Transcript chunk {chunk_index} of {chunk_count}",
         summary=summary,
-        chapters=[
-            Chapter(
-                title=title,
-                start_time=start_time,
-                end_time=end_time,
-                bullets=bullets,
-                detail=summary,
-                quote_times=[f"{seconds_to_hhmmss(start_time)} - {seconds_to_hhmmss(end_time)}"],
-            )
-        ],
-        key_moments=[
-            KeyMoment(
-                time=start_time,
-                reason=f"Fallback transcript coverage for chunk {chunk_index}.",
-                chapter_index=0,
-            )
-        ],
+        chapters=[],
+        key_moments=[],
         recommended_frame_count=1,
-        key_takeaways=bullets[:3],
+        key_takeaways=[],
         action_items=[],
     )
 

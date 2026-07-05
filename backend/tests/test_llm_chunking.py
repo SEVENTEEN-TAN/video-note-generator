@@ -1,4 +1,4 @@
-from backend.app import llm
+﻿from backend.app import llm
 from backend.app.llm import (
     build_chunk_prompt,
     build_reduce_prompt,
@@ -252,7 +252,7 @@ def test_generate_chunked_note_draft_falls_back_when_one_chunk_model_call_fails(
 
     assert draft.title == "merged"
     assert reduce_prompts
-    assert "second chunk content that must survive fallback" in reduce_prompts[0]
+    assert "was skipped" in reduce_prompts[0]
     log_text = (tmp_path / "debug.log").read_text(encoding="utf-8")
     assert "generate_chunked_note_draft" in log_text
     assert "fallback" in log_text
