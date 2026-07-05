@@ -383,6 +383,7 @@ def generate_chunked_note_draft(
     chunks = chunk_segments(segments, MAX_CHUNK_TRANSCRIPT_CHARS)
     chunk_drafts: list[NoteDraft] = []
     for index, chunk in enumerate(chunks, start=1):
+        prior_context = _build_prior_context(chunk_drafts)
         chunk_drafts.extend(
             _transcribe_note_chunk_with_retry(
                 config=config,
@@ -391,6 +392,7 @@ def generate_chunked_note_draft(
                 chunk=chunk,
                 chunk_index=index,
                 chunk_count=len(chunks),
+                prior_context=prior_context,
                 debug_log=debug_log,
             )
         )
@@ -398,6 +400,19 @@ def generate_chunked_note_draft(
         return reduce_note_drafts(config, duration, chunk_drafts, system_prompt, debug_log=debug_log)
     return reduce_note_drafts(config, duration, chunk_drafts, system_prompt)
 
+
+
+def _build_prior_context(completed_drafts: list[NoteDraft]) -> str:
+    """Build a compact summary of earlier chunk outputs for context continuity."""
+    if not completed_drafts:
+        return ""
+    lines: list[str] = []
+    for draft in completed_drafts:
+        title = (draft.title or "").strip()
+        summary = (draft.summary or "").strip()
+        if summary:
+            lines.append(f"- {title}: {summary[:200]}")
+    return "\n".join(lines)
 
 def _transcribe_note_chunk_with_retry(
     *,
@@ -407,6 +422,7 @@ def _transcribe_note_chunk_with_retry(
     chunk: list[TranscriptSegment],
     chunk_index: int,
     chunk_count: int,
+    prior_context: str = "",
     debug_log: TaskDebugLog | None = None,
 ) -> list[NoteDraft]:
     """Transcribe one chunk; on failure, binary-split and retry each half.
@@ -431,6 +447,7 @@ def _transcribe_note_chunk_with_retry(
             chunk,
             note_style=config.note_style.value,
             extras=config.extras,
+            prior_context=prior_context,
         )
         return [
             call_note_model(
@@ -464,6 +481,7 @@ def _transcribe_note_chunk_with_retry(
                     chunk=left,
                     chunk_index=chunk_index,
                     chunk_count=chunk_count,
+                    prior_context=prior_context,
                     debug_log=debug_log,
                 )
             )
@@ -475,6 +493,7 @@ def _transcribe_note_chunk_with_retry(
                     chunk=right,
                     chunk_index=chunk_index,
                     chunk_count=chunk_count,
+                    prior_context=prior_context,
                     debug_log=debug_log,
                 )
             )
@@ -622,20 +641,24 @@ def build_chunk_prompt(
     segments: list[TranscriptSegment],
     note_style: str = NoteStyle.detailed.value,
     extras: str = "",
+    prior_context: str = "",
 ) -> str:
     transcript = "\n".join(render_transcript_lines(segments))
     duration_text = seconds_to_hhmmss(duration or 0) if duration else "unknown"
     style_guidance = build_style_guidance(note_style, extras)
     per_chunk_moments = max(1, min(3, frame_limit))
+    context_block = f"\nPrior context (summaries of earlier chunks):\n{prior_context}\n" if prior_context else ""
     return f"""
 Video filename: {original_filename}
 Video duration: {duration_text}
 Transcript chunk: {chunk_index} of {chunk_count}
 Target note language: {note_language}
 {style_guidance}
+{context_block}
 
 Create compact professional notes for only this transcript chunk.
 Use absolute timestamps exactly as shown. Do not invent facts from other chunks.
+Do not repeat content already covered in prior context. Build on it instead.
 Choose at most {per_chunk_moments} key moments.
 
 Transcript with timestamps:
