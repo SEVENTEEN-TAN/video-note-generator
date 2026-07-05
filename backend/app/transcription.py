@@ -109,7 +109,14 @@ def transcribe_with_faster_whisper(
         if progress_callback:
             progress_callback("字幕生成中：本地 Faster Whisper 转写中", 38)
         language = resolve_transcription_language(config)
-        segments_raw, _info = model.transcribe(str(audio_path), language=language or None)
+        segments_raw, _info = model.transcribe(
+            str(audio_path),
+            language=language or None,
+            vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500, "threshold": 0.5},
+            beam_size=5,
+            best_of=3,
+        )
         return faster_whisper_segments_to_payload(segments_raw)
     except Exception as exc:
         raise TranscriptionError(f"Local Faster Whisper transcription failed: {exc}") from exc

@@ -533,7 +533,7 @@ def test_transcribe_with_faster_whisper_passes_explicit_language(tmp_path, monke
         def __init__(self, *_args, **_kwargs):
             pass
 
-        def transcribe(self, _file_path, language=None):
+        def transcribe(self, _file_path, language=None, **_kwargs):
             captured["language"] = language
             return [SimpleNamespace(start=0, end=1, text="zh text")], SimpleNamespace(language="zh")
 
@@ -571,7 +571,7 @@ def test_transcribe_with_faster_whisper_omits_language_for_auto(tmp_path, monkey
         def __init__(self, *_args, **_kwargs):
             pass
 
-        def transcribe(self, _file_path, language=None):
+        def transcribe(self, _file_path, language=None, **_kwargs):
             captured["language"] = language
             return [SimpleNamespace(start=0, end=1, text="auto text")], SimpleNamespace(language="zh")
 
