@@ -46,6 +46,7 @@ import type {
 } from "./types";
 import { OPENAI_BASE_URL, QWEN_BASE_URL, noteStyleOptions, statusText } from "./constants";
 import {
+  formatElapsedSeconds,
   formatHistoryTime,
   formatInstallMode,
   formatRuntimeSource,
@@ -1196,6 +1197,21 @@ export function App() {
                     确认字幕并生成笔记
                   </button>
                 </div>
+              </div>
+            )}
+            {job && (job.status === "running" || job.status === "pending") && (
+              <div className="job-progress-bar" aria-label="处理进度">
+                <div className="job-progress-info">
+                  <Loader2 className="spin" size={15} />
+                  <span className="job-progress-step">{job.step}</span>
+                  <span className="job-progress-percent">{job.progress}%</span>
+                </div>
+                <div className="job-progress-track">
+                  <div className="job-progress-fill" style={{ width: `${job.progress}%` }} />
+                </div>
+                {job.stage_elapsed_seconds !== undefined && job.stage_elapsed_seconds > 0 && (
+                  <span className="job-progress-elapsed">{formatElapsedSeconds(job.stage_elapsed_seconds)}</span>
+                )}
               </div>
             )}
             {downloadMessage && (

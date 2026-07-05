@@ -104,15 +104,17 @@ def transcribe_with_faster_whisper(
     duration = probe_duration(audio_path) or 0.0
     if duration > LOCAL_WHISPER_CHUNK_THRESHOLD_SECONDS:
         if progress_callback:
-            progress_callback("字幕生成中：分块处理长音频", 37)
+            progress_callback("字幕生成中：正在切分长音频…", 37)
         chunks = split_audio(audio_path, work_dir / "whisper_chunks", STANDARD_TRANSCRIPTION_CHUNK_SECONDS)
+        if progress_callback:
+            progress_callback(f"字幕生成中：已切分为 {len(chunks)} 块，开始逐块转写", 38)
         merged_segments: list[TranscriptSegment] = []
         offset = 0.0
         chunk_count = len(chunks)
         for index, chunk in enumerate(chunks, start=1):
             if progress_callback:
                 progress = 35 + int((index - 1) / max(chunk_count, 1) * 25)
-                progress_callback(f"字幕生成中：第 {index}/{chunk_count} 段转写中", progress)
+                progress_callback(f"字幕生成中：第 {index}/{chunk_count} 块转写中", progress)
             chunk_payload = _transcribe_single_chunk(model_identifier, model_root, config, chunk)
             for segment in chunk_payload.segments:
                 merged_segments.append(
@@ -194,15 +196,17 @@ def transcribe_with_external_faster_whisper(
     duration = probe_duration(audio_path) or 0.0
     if duration > LOCAL_WHISPER_CHUNK_THRESHOLD_SECONDS and work_dir is not None:
         if progress_callback:
-            progress_callback("字幕生成中：分块处理长音频", 37)
+            progress_callback("字幕生成中：正在切分长音频…", 37)
         chunks = split_audio(audio_path, work_dir / "whisper_chunks", STANDARD_TRANSCRIPTION_CHUNK_SECONDS)
+        if progress_callback:
+            progress_callback(f"字幕生成中：已切分为 {len(chunks)} 块，开始逐块转写", 38)
         merged_segments: list[TranscriptSegment] = []
         offset = 0.0
         chunk_count = len(chunks)
         for index, chunk in enumerate(chunks, start=1):
             if progress_callback:
                 progress = 35 + int((index - 1) / max(chunk_count, 1) * 25)
-                progress_callback(f"字幕生成中：第 {index}/{chunk_count} 段转写中", progress)
+                progress_callback(f"字幕生成中：第 {index}/{chunk_count} 块转写中", progress)
             chunk_payload = _transcribe_single_external_chunk(chunk, config, model_root, python_path=None)
             for segment in chunk_payload.segments:
                 merged_segments.append(

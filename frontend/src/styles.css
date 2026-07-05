@@ -1562,3 +1562,49 @@ textarea:focus {
   gap: 8px;
   justify-content: flex-end;
 }
+
+.job-progress-bar {
+  align-items: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 12px 0 0;
+}
+
+.job-progress-info {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.job-progress-step {
+  color: var(--text-primary, #1a1a1a);
+  flex: 1;
+}
+
+.job-progress-percent {
+  color: var(--text-muted, #666);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.job-progress-track {
+  background: #e2e8f0;
+  border-radius: 4px;
+  height: 6px;
+  overflow: hidden;
+  width: 100%;
+}
+
+.job-progress-fill {
+  background: #3b82f6;
+  border-radius: 4px;
+  height: 100%;
+  transition: width 0.4s ease;
+}
+
+.job-progress-elapsed {
+  color: var(--text-muted, #999);
+  font-size: 12px;
+}
