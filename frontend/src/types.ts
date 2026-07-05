@@ -15,12 +15,32 @@ export type Artifact = {
   asset_url: string;
 };
 
+export type FailureContext = {
+  ts?: string;
+  stage?: string;
+  message?: string;
+  context?: string;
+  attempt?: number;
+  note_base_url?: string;
+  note_model?: string;
+  response_file?: string;
+  finish_reason?: string;
+  message_chars?: number;
+  max_tokens?: number;
+  response_length?: number;
+  status_code?: number;
+  error_code?: string;
+  flagged_categories?: string[];
+  summary?: string;
+};
+
 export type JobState = {
   job_id: string;
   status: JobStatus;
   step: string;
   progress: number;
   error?: string | null;
+  failure_context?: FailureContext | null;
   artifacts: Artifact[];
   step_started_at?: string | null;
   updated_at?: string | null;
@@ -32,7 +52,10 @@ export type JobSummary = {
   title: string;
   original_filename: string;
   created_at?: string | null;
+  updated_at?: string | null;
   status: JobStatus;
+  error?: string | null;
+  failure_context?: FailureContext | null;
   duration_seconds?: number | null;
   artifact_count: number;
   note_version_count: number;

@@ -23,6 +23,7 @@ CHAT_AUDIO_CHUNK_SECONDS = 120
 LOCAL_WHISPER_CHUNK_THRESHOLD_SECONDS = 1800  # chunk long audio above 30 minutes
 REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json")
 FASTER_WHISPER_VOCABULARY_FILES = ("vocabulary.txt", "vocabulary.json")
+TRANSCRIPTION_WRAPPER_KEYS = ("data", "result", "output", "transcript")
 ProgressCallback = Callable[[str, int], None]
 
 
@@ -550,12 +551,17 @@ def parse_chat_audio_payload(content: str, offset_seconds: float) -> TranscriptP
             start += offset_seconds
             end += offset_seconds
         segments.append(TranscriptSegment(start=max(0, start), end=max(start, end), text=text))
+    if not segments and data.get("text"):
+        text = str(data["text"]).strip()
+        if text:
+            segments.append(TranscriptSegment(start=offset_seconds, end=offset_seconds, text=text))
     if not segments:
         segments.append(TranscriptSegment(start=offset_seconds, end=offset_seconds, text="No speech detected."))
     return TranscriptPayload(text=" ".join(segment.text for segment in segments), segments=segments)
 
 
 def parse_transcription_payload(payload: dict) -> TranscriptPayload:
+    payload = _find_transcript_json(payload) or payload
     raw_segments = payload.get("segments") or []
     segments: list[TranscriptSegment] = []
     for item in raw_segments:
@@ -582,9 +588,48 @@ def extract_json(text: str) -> dict:
         text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
         text = re.sub(r"```$", "", text).strip()
     try:
-        return json.loads(text)
+        value = json.loads(text)
+        if isinstance(value, dict):
+            return _find_transcript_json(value) or value
+        return value
+    except json.JSONDecodeError as original_error:
+        candidates: list[dict] = []
+        decoder = json.JSONDecoder()
+        for match in re.finditer(r"\{", text):
+            try:
+                value, _end = decoder.raw_decode(text[match.start() :])
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                candidates.append(value)
+        if not candidates:
+            raise original_error
+        for candidate in candidates:
+            transcript_payload = _find_transcript_json(candidate)
+            if transcript_payload is not None:
+                return transcript_payload
+        return candidates[0]
+
+
+def _find_transcript_json(payload: dict) -> dict | None:
+    candidates = [payload]
+    for candidate in candidates:
+        if "segments" in candidate or "text" in candidate:
+            return candidate
+        for key in TRANSCRIPTION_WRAPPER_KEYS:
+            nested = candidate.get(key)
+            if isinstance(nested, dict):
+                candidates.append(nested)
+            elif isinstance(nested, str):
+                nested_payload = _parse_json_object(nested)
+                if nested_payload is not None:
+                    candidates.append(nested_payload)
+    return None
+
+
+def _parse_json_object(text: str) -> dict | None:
+    try:
+        payload = json.loads(text)
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
-        if not match:
-            raise
-        return json.loads(match.group(0))
+        return None
+    return payload if isinstance(payload, dict) else None

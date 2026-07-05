@@ -9,6 +9,12 @@ from typing import Any
 
 
 SENSITIVE_KEY_PARTS = ("api_key", "authorization", "password", "secret")
+MAX_LOG_STRING_LENGTH = 1000
+LOG_STRING_EDGE_LENGTH = 450
+SENSITIVE_STRING_PATTERNS = (
+    (re.compile(r"(?i)\b(Bearer)\s+([^\s;,\]}]+)"), r"\1 [REDACTED]"),
+    (re.compile(r"(?i)\b(api[_-]?key)\s*=\s*([^\s;,\]}]+)"), r"\1=[REDACTED]"),
+)
 
 
 class TaskDebugLog:
@@ -59,6 +65,8 @@ def _redact(value: Any, key: str = "") -> Any:
         return [_redact(item) for item in value]
     if isinstance(value, tuple):
         return [_redact(item) for item in value]
+    if isinstance(value, str):
+        return _truncate_log_string(_redact_sensitive_string(value))
     return value
 
 
@@ -67,6 +75,24 @@ def _is_sensitive_key(key: str) -> bool:
     if any(part in normalized for part in SENSITIVE_KEY_PARTS):
         return True
     return normalized == "token" or normalized.endswith("_token") or normalized.startswith("token_")
+
+
+def _truncate_log_string(value: str) -> str:
+    if len(value) <= MAX_LOG_STRING_LENGTH:
+        return value
+    omitted = len(value) - (LOG_STRING_EDGE_LENGTH * 2)
+    return (
+        f"{value[:LOG_STRING_EDGE_LENGTH]}"
+        f"\n...[truncated {omitted} chars]...\n"
+        f"{value[-LOG_STRING_EDGE_LENGTH:]}"
+    )
+
+
+def _redact_sensitive_string(value: str) -> str:
+    redacted = value
+    for pattern, replacement in SENSITIVE_STRING_PATTERNS:
+        redacted = pattern.sub(replacement, redacted)
+    return redacted
 
 
 def _safe_relative_filename(filename: str) -> Path:

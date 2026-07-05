@@ -1,10 +1,11 @@
 ﻿from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 
 class JobStatus(str, Enum):
@@ -178,13 +179,72 @@ class TranscriptCorrectionApplyRequest(BaseModel):
     frame_limit: int = Field(default=6, ge=1, le=24)
 
 
+def _parse_model_timestamp(value: object, range_part: str | None = None) -> object:
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip().replace("：", ":")
+    if range_part:
+        parts = re.split(r"\s*(?:-|–|—|~|至|到)\s*", stripped, maxsplit=1)
+        if len(parts) == 2:
+            stripped = parts[1 if range_part == "end" else 0].strip()
+    match = re.fullmatch(r"(?:(\d+):)?(\d{1,2}):(\d{2})(?:\.(\d+))?", stripped)
+    if not match:
+        return value
+    hours, minutes, seconds, fraction = match.groups()
+    hour_value = int(hours or 0)
+    minute_value = int(minutes)
+    second_value = int(seconds)
+    if minute_value >= 60 or second_value >= 60:
+        raise ValueError("Timestamp minutes and seconds must be below 60.")
+    total = hour_value * 3600 + minute_value * 60 + second_value
+    if fraction:
+        return total + float(f"0.{fraction}")
+    return float(total)
+
+
+def _list_if_single_object(value: object) -> object:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        return [value]
+    return value
+
+
+def _string_list_if_scalar(value: object) -> object:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        value = value.strip()
+        return [value] if value else []
+    return value
+
+
+def _empty_string_if_none(value: object) -> object:
+    return "" if value is None else value
+
+
 class Chapter(BaseModel):
     title: str
-    start_time: float
-    end_time: float
+    start_time: float = 0.0
+    end_time: float = 0.0
     bullets: list[str] = Field(default_factory=list)
     detail: str = ""
     quote_times: list[str] = Field(default_factory=list)
+
+    @field_validator("start_time", "end_time", mode="before")
+    @classmethod
+    def normalize_model_timestamps(cls, value: object, info: ValidationInfo) -> object:
+        return _parse_model_timestamp(value, range_part="end" if info.field_name == "end_time" else "start")
+
+    @field_validator("bullets", "quote_times", mode="before")
+    @classmethod
+    def normalize_string_lists(cls, value: object) -> object:
+        return _string_list_if_scalar(value)
+
+    @field_validator("detail", mode="before")
+    @classmethod
+    def normalize_null_detail(cls, value: object) -> object:
+        return _empty_string_if_none(value)
 
 
 class KeyMoment(BaseModel):
@@ -193,16 +253,51 @@ class KeyMoment(BaseModel):
     chapter_index: int | None = None
     frame_path: str | None = None
 
+    @field_validator("time", mode="before")
+    @classmethod
+    def normalize_model_timestamp(cls, value: object) -> object:
+        return _parse_model_timestamp(value, range_part="start")
+
 
 class NoteDraft(BaseModel):
     title: str
-    summary: str
+    summary: str = ""
     chapters: list[Chapter] = Field(default_factory=list)
     key_moments: list[KeyMoment] = Field(default_factory=list)
-    recommended_frame_count: int | None = Field(default=None, ge=1, le=12)
+    recommended_frame_count: int | None = Field(default=None, ge=1, le=24)
     key_takeaways: list[str] = Field(default_factory=list)
     action_items: list[str] = Field(default_factory=list)
     markdown_body: str = ""
+
+    @field_validator("recommended_frame_count", mode="before")
+    @classmethod
+    def normalize_empty_frame_recommendation(cls, value: object) -> object:
+        if value == 0:
+            return None
+        if isinstance(value, str):
+            stripped = value.strip()
+            if stripped in {"", "0"}:
+                return None
+            match = re.search(r"\d+", stripped)
+            if match:
+                parsed = int(match.group(0))
+                return None if parsed == 0 else parsed
+        return value
+
+    @field_validator("chapters", "key_moments", mode="before")
+    @classmethod
+    def normalize_null_lists(cls, value: object) -> object:
+        return _list_if_single_object(value)
+
+    @field_validator("key_takeaways", "action_items", mode="before")
+    @classmethod
+    def normalize_string_lists(cls, value: object) -> object:
+        return _string_list_if_scalar(value)
+
+    @field_validator("markdown_body", mode="before")
+    @classmethod
+    def normalize_null_markdown_body(cls, value: object) -> object:
+        return _empty_string_if_none(value)
 
 
 class FrameSuggestion(BaseModel):
@@ -246,12 +341,32 @@ class Artifact(BaseModel):
     asset_url: str
 
 
+class FailureContext(BaseModel):
+    ts: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    stage: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    message: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    context: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    attempt: int | float | None = Field(default=None, exclude_if=lambda value: value is None)
+    note_base_url: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    note_model: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    response_file: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    finish_reason: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    message_chars: int | float | None = Field(default=None, exclude_if=lambda value: value is None)
+    max_tokens: int | float | None = Field(default=None, exclude_if=lambda value: value is None)
+    response_length: int | float | None = Field(default=None, exclude_if=lambda value: value is None)
+    status_code: int | float | None = Field(default=None, exclude_if=lambda value: value is None)
+    error_code: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    flagged_categories: list[str] = Field(default_factory=list, exclude_if=lambda value: not value)
+    summary: str | None = Field(default=None, exclude_if=lambda value: value is None)
+
+
 class JobPublicState(BaseModel):
     job_id: str
     status: JobStatus
     step: str
     progress: int
     error: str | None = None
+    failure_context: FailureContext | None = Field(default=None, exclude_if=lambda value: value is None)
     artifacts: list[Artifact] = Field(default_factory=list)
     step_started_at: str | None = None
     updated_at: str | None = None
@@ -263,7 +378,10 @@ class JobSummary(BaseModel):
     title: str
     original_filename: str
     created_at: str | None = None
+    updated_at: str | None = None
     status: JobStatus
+    error: str | None = Field(default=None, exclude_if=lambda value: value is None)
+    failure_context: FailureContext | None = Field(default=None, exclude_if=lambda value: value is None)
     duration_seconds: float | None = None
     artifact_count: int = 0
     note_version_count: int = 0

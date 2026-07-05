@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from backend.app import job_store
 from backend.app.job_store import JobStore
+from backend.app.models import FailureContext, JobStatus
 
 
 def test_job_store_tracks_step_timing(tmp_path, monkeypatch) -> None:
@@ -46,3 +47,20 @@ def test_job_store_tracks_step_timing(tmp_path, monkeypatch) -> None:
     assert third.step_started_at == "2026-06-20T00:00:03+00:00"
     assert third.updated_at == "2026-06-20T00:00:03+00:00"
     assert third.stage_elapsed_seconds == 0
+
+
+def test_job_store_clears_stale_failure_context_when_job_restarts(tmp_path) -> None:
+    store = JobStore(tmp_path)
+    job_id = "retry-job"
+    state = store.create(job_id)
+    state.status = JobStatus.failed
+    state.error = "previous failure"
+    state.failure_context = FailureContext(context="note-chunk-3-of-16", summary="previous failure context")
+
+    store.update(job_id, status=JobStatus.running, step="retrying note generation", error="", progress=60)
+
+    restarted = store.get(job_id)
+    assert restarted is not None
+    assert restarted.status == JobStatus.running
+    assert restarted.error == ""
+    assert restarted.failure_context is None

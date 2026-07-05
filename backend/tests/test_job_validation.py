@@ -259,6 +259,93 @@ def test_frame_suggestion_returns_recommended_count_from_note_draft(monkeypatch)
     }
 
 
+def test_frame_suggestion_fallback_uses_product_frame_limit(monkeypatch) -> None:
+    client = TestClient(app)
+
+    monkeypatch.setattr(main, "probe_duration", lambda _video_path: 42.0, raising=False)
+    monkeypatch.setattr(main, "extract_mp3", lambda _video_path, audio_path: audio_path.write_bytes(b"mp3"), raising=False)
+    monkeypatch.setattr(
+        main,
+        "transcribe_audio",
+        lambda _audio_path, _config, _job_dir: {"text": "hello", "segments": [{"start": 0, "end": 2, "text": "hello"}]},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main,
+        "generate_note_draft",
+        lambda _config, _duration, _segments: NoteDraft(
+            title="Demo",
+            summary="summary",
+            key_moments=[
+                KeyMoment(time=index, reason=f"moment {index}", chapter_index=0)
+                for index in range(18)
+            ],
+        ),
+        raising=False,
+    )
+
+    response = client.post(
+        "/api/jobs/frame-suggestion",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_base_url": "https://api.openai.com/v1",
+            "transcription_model": "whisper-1",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "extras": "",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["recommended_frame_count"] == 18
+    assert response.json()["candidate_count"] == 18
+
+
+def test_frame_suggestion_analyzes_against_product_frame_limit(monkeypatch) -> None:
+    captured_frame_limits: list[int] = []
+    client = TestClient(app)
+
+    monkeypatch.setattr(main, "probe_duration", lambda _video_path: 42.0, raising=False)
+    monkeypatch.setattr(main, "extract_mp3", lambda _video_path, audio_path: audio_path.write_bytes(b"mp3"), raising=False)
+    monkeypatch.setattr(
+        main,
+        "transcribe_audio",
+        lambda _audio_path, _config, _job_dir: {"text": "hello", "segments": [{"start": 0, "end": 2, "text": "hello"}]},
+        raising=False,
+    )
+
+    def fake_generate_note_draft(config, _duration, _segments):
+        captured_frame_limits.append(config.frame_limit)
+        return NoteDraft(title="Demo", summary="summary", key_moments=[KeyMoment(time=1, reason="opening")])
+
+    monkeypatch.setattr(main, "generate_note_draft", fake_generate_note_draft, raising=False)
+
+    response = client.post(
+        "/api/jobs/frame-suggestion",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_base_url": "https://api.openai.com/v1",
+            "transcription_model": "whisper-1",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "extras": "",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 200
+    assert captured_frame_limits == [24]
+
+
 def test_text_asset_response_uses_utf8_attachment_headers(tmp_path, monkeypatch) -> None:
     job_dir = tmp_path / "job-text"
     job_dir.mkdir(parents=True)
@@ -372,6 +459,35 @@ def test_create_job_seeds_history_title_from_uploaded_filename(tmp_path, monkeyp
     assert jobs[0]["job_id"] == job_id
     assert jobs[0]["title"] == "02_梯度消失问题.mp4"
     assert jobs[0]["original_filename"] == "02_梯度消失问题.mp4"
+
+
+def test_create_job_repairs_mojibake_uploaded_filename(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(main, "process_transcription_job", lambda **_kwargs: None)
+
+    mojibake_filename = "第二课：经典卷积神经网络.mp4".encode("utf-8").decode("latin1")
+    response = TestClient(app).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_base_url": "https://api.openai.com/v1",
+            "transcription_model": "whisper-1",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "frame_limit": "6",
+        },
+        files={"video": (mojibake_filename, b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 200
+    jobs = TestClient(app).get("/api/jobs").json()["jobs"]
+    assert jobs[0]["title"] == "第二课：经典卷积神经网络.mp4"
+    assert jobs[0]["original_filename"] == "第二课：经典卷积神经网络.mp4"
 
 
 

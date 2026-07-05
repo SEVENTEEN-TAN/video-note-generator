@@ -1149,8 +1149,14 @@ export function App() {
                       </div>
                       <span className={`badge ${item.status}`}>{statusText[item.status]}</span>
                     </div>
+                    {item.status === "failed" && item.error && (
+                      <p className="history-item-error">
+                        <AlertTriangle size={14} />
+                        <span>{item.error}</span>
+                      </p>
+                    )}
                     <div className="history-meta">
-                      <span>{formatHistoryTime(item.created_at)}</span>
+                      <span>{formatHistoryTime(item.updated_at ?? item.created_at)}</span>
                       <span>{item.note_version_count} 个版本</span>
                       <span>{item.artifact_count} 个产物</span>
                     </div>
@@ -2106,4 +2112,3 @@ function MarkdownHeading({ level, text }: { level: number; text: string }) {
   if (level === 5) return <h5>{text}</h5>;
   return <h6>{text}</h6>;
 }
-

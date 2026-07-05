@@ -10,6 +10,7 @@ from backend.app.models import JobConfig, NoteLanguage, TranscriptPayload, Trans
 from backend.app.transcription import (
     faster_whisper_segments_to_payload,
     parse_chat_audio_payload,
+    parse_transcription_payload,
     resolve_local_faster_whisper_model,
 )
 
@@ -33,6 +34,34 @@ def test_parse_chat_audio_payload_keeps_absolute_times() -> None:
     parsed = parse_chat_audio_payload(payload, offset_seconds=120)
     assert parsed.segments[0].start == 121
     assert parsed.segments[0].end == 122
+
+
+def test_parse_chat_audio_payload_skips_non_transcript_json_candidates() -> None:
+    payload = 'Example: {"format":"demo"}\nActual:\n{"segments":[{"start":1,"end":2,"text":"hello"}]}'
+    parsed = parse_chat_audio_payload(payload, offset_seconds=120)
+
+    assert parsed.segments[0].start == 121
+    assert parsed.segments[0].end == 122
+    assert parsed.segments[0].text == "hello"
+
+
+def test_parse_chat_audio_payload_accepts_provider_wrapped_segments_json_string() -> None:
+    payload = '{"output":"{\\"segments\\":[{\\"start\\":1,\\"end\\":2,\\"text\\":\\"hello\\"}]}"}'
+    parsed = parse_chat_audio_payload(payload, offset_seconds=120)
+
+    assert parsed.segments[0].start == 121
+    assert parsed.segments[0].end == 122
+    assert parsed.segments[0].text == "hello"
+
+
+def test_parse_chat_audio_payload_uses_text_fallback_when_segments_missing() -> None:
+    parsed = parse_chat_audio_payload('{"text":"hello from audio"}', offset_seconds=120)
+
+    assert parsed.text == "hello from audio"
+    assert len(parsed.segments) == 1
+    assert parsed.segments[0].start == 120
+    assert parsed.segments[0].end == 120
+    assert parsed.segments[0].text == "hello from audio"
 
 
 def test_faster_whisper_segments_to_payload_maps_segments() -> None:
@@ -59,6 +88,17 @@ def test_faster_whisper_segments_to_payload_skips_blank_text() -> None:
 
     assert len(parsed.segments) == 1
     assert parsed.segments[0].text == "kept"
+
+
+def test_parse_transcription_payload_accepts_provider_wrapped_segments_json_string() -> None:
+    parsed = parse_transcription_payload(
+        {"output": '{"text":"hello","segments":[{"start":0,"end":1,"text":"hello"}]}'}
+    )
+
+    assert parsed.text == "hello"
+    assert parsed.segments[0].start == 0
+    assert parsed.segments[0].end == 1
+    assert parsed.segments[0].text == "hello"
 
 
 def test_local_faster_whisper_allows_empty_transcription_api_key() -> None:

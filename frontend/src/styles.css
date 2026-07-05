@@ -1096,6 +1096,28 @@ textarea:focus {
   gap: 6px 10px;
 }
 
+.history-item-error {
+  align-items: flex-start;
+  color: #a05335;
+  display: flex;
+  font-size: 12px;
+  gap: 6px;
+  line-height: 1.35;
+  margin: -2px 0 0;
+}
+
+.history-item-error svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.history-item-error span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
 .history-actions {
   flex-wrap: wrap;
 }

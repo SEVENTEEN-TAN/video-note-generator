@@ -23,6 +23,7 @@ class TranscriptCorrectionError(RuntimeError):
 MAX_CORRECTED_TEXT_CHARS = 600
 MAX_CORRECTION_EXPANSION_RATIO = 3.0
 MAX_CORRECTION_EXPANSION_CHARS = 80
+CORRECTION_WRAPPER_KEYS = ("data", "result", "output", "corrections")
 
 
 def load_original_segments(job_dir: Path) -> list[TranscriptSegment]:
@@ -97,10 +98,37 @@ Return JSON in this shape:
         ],
         max_tokens=4000,
     )
-    corrections = payload.get("segments")
-    if not isinstance(corrections, list):
+    corrections = _find_correction_segments(payload)
+    if corrections is None:
         raise TranscriptCorrectionError("Model correction response is missing segments.")
     return corrections
+
+
+def _find_correction_segments(payload: dict) -> list[dict] | None:
+    candidates = [payload]
+    for candidate in candidates:
+        segments = candidate.get("segments")
+        if isinstance(segments, list):
+            return segments
+        for key in CORRECTION_WRAPPER_KEYS:
+            nested = candidate.get(key)
+            if key == "corrections" and isinstance(nested, list):
+                return nested
+            if isinstance(nested, dict):
+                candidates.append(nested)
+            elif isinstance(nested, str):
+                nested_payload = _parse_json_object(nested)
+                if nested_payload is not None:
+                    candidates.append(nested_payload)
+    return None
+
+
+def _parse_json_object(text: str) -> dict | None:
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return None
+    return payload if isinstance(payload, dict) else None
 
 
 def build_correction_preview(

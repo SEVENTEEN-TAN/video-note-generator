@@ -21,6 +21,7 @@ from .cuda_dependencies import (
     start_cuda_dependency_install,
 )
 from .ffmpeg_tools import extract_mp3, probe_duration
+from .filenames import normalize_uploaded_filename
 from .llm import LLMError, generate_note_draft
 from .local_dependencies import (
     LocalTranscriptionDependencyInstallState,
@@ -226,7 +227,7 @@ def build_job_config_or_400(
             note_style=note_style,
             extras=extras,
             frame_limit=frame_limit,
-            original_filename=original_filename,
+            original_filename=normalize_uploaded_filename(original_filename),
         )
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -293,7 +294,7 @@ async def suggest_frame_count(
         note_language=note_language,
         note_style=note_style,
         extras=extras,
-        frame_limit=12,
+        frame_limit=24,
         original_filename=video.filename or f"input{suffix}",
     )
     ensure_local_transcription_ready(config)
@@ -315,7 +316,7 @@ async def suggest_frame_count(
             raise HTTPException(status_code=400, detail="Transcription returned no usable text segments.")
         draft = generate_note_draft(config, duration, segments)
         return FrameSuggestion(
-            recommended_frame_count=draft.recommended_frame_count or min(max(len(draft.key_moments), 1), 12),
+            recommended_frame_count=draft.recommended_frame_count or min(max(len(draft.key_moments), 1), 24),
             candidate_count=len(draft.key_moments),
             reasons=[moment.reason for moment in draft.key_moments[:3]],
         )

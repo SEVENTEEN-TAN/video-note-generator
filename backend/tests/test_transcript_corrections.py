@@ -9,13 +9,14 @@ from backend.app import main
 from backend.app.job_store import JobStore
 from backend.app.llm import LLMError
 from backend.app.main import app
-from backend.app.models import Chapter, JobConfig, KeyMoment, NoteDraft, NoteLanguage, NoteStyle, TranscriptionMode
+from backend.app.models import Chapter, JobConfig, KeyMoment, NoteDraft, NoteLanguage, NoteStyle, TranscriptSegment, TranscriptionMode
 from backend.app.note_versions import regenerate_note_version
 from backend.app.transcript_corrections import (
     TRANSCRIPT_CORRECTED,
     TRANSCRIPT_CORRECTED_PENDING,
     TranscriptCorrectionError,
     apply_pending_transcript_correction,
+    correct_transcript_segments,
     create_transcript_correction,
 )
 
@@ -62,6 +63,48 @@ def test_create_transcript_correction_writes_pending_file(tmp_path, monkeypatch)
     assert result.segments[0].original_text == "Dify 工作流"
     assert result.segments[0].corrected_text == "Dify 工作流"
     assert (tmp_path / TRANSCRIPT_CORRECTED_PENDING).exists()
+
+
+def test_correct_transcript_segments_accepts_provider_wrapped_segments(monkeypatch) -> None:
+    def fake_call_json_model(_config, _messages, max_tokens=3000):
+        return {"data": {"segments": [{"index": 0, "text": "Dify workflow"}]}}
+
+    monkeypatch.setattr("backend.app.transcript_corrections.call_json_model", fake_call_json_model)
+
+    corrections = correct_transcript_segments(
+        make_config(),
+        [TranscriptSegment(start=0.0, end=2.0, text="Dify work flow")],
+    )
+
+    assert corrections == [{"index": 0, "text": "Dify workflow"}]
+
+
+def test_correct_transcript_segments_accepts_provider_wrapped_segments_json_string(monkeypatch) -> None:
+    def fake_call_json_model(_config, _messages, max_tokens=3000):
+        return {"output": '{"segments":[{"index":0,"text":"Dify workflow"}]}'}
+
+    monkeypatch.setattr("backend.app.transcript_corrections.call_json_model", fake_call_json_model)
+
+    corrections = correct_transcript_segments(
+        make_config(),
+        [TranscriptSegment(start=0, end=1, text="Dify 工作流")],
+    )
+
+    assert corrections == [{"index": 0, "text": "Dify workflow"}]
+
+
+def test_correct_transcript_segments_accepts_corrections_list(monkeypatch) -> None:
+    def fake_call_json_model(_config, _messages, max_tokens=3000):
+        return {"corrections": [{"index": 0, "text": "Dify workflow"}]}
+
+    monkeypatch.setattr("backend.app.transcript_corrections.call_json_model", fake_call_json_model)
+
+    corrections = correct_transcript_segments(
+        make_config(),
+        [TranscriptSegment(start=0, end=1, text="Dify 工作流")],
+    )
+
+    assert corrections == [{"index": 0, "text": "Dify workflow"}]
 
 
 def test_create_transcript_correction_rejects_missing_segment(tmp_path, monkeypatch) -> None:

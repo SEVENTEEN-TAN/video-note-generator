@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from backend.app.task_debug_log import TaskDebugLog
 
 
@@ -32,3 +34,33 @@ def test_task_debug_log_writes_debug_artifacts_under_debug_dir(tmp_path) -> None
 
     assert artifact == tmp_path / "debug" / "note-model-response-attempt-1.txt"
     assert artifact.read_text(encoding="utf-8") == "bad json"
+
+
+def test_task_debug_log_truncates_very_long_string_fields(tmp_path) -> None:
+    log = TaskDebugLog(tmp_path)
+    long_error = "start-" + ("x" * 5000) + "-end"
+
+    log.event("llm", "invalid_json", error_context=long_error)
+
+    record = json.loads((tmp_path / "debug.log").read_text(encoding="utf-8"))
+    error_context = record["details"]["error_context"]
+    assert len(error_context) < 1200
+    assert "start-" in error_context
+    assert "-end" in error_context
+    assert "truncated" in error_context
+
+
+def test_task_debug_log_redacts_credentials_embedded_in_strings(tmp_path) -> None:
+    log = TaskDebugLog(tmp_path)
+
+    log.event(
+        "llm",
+        "api_error",
+        error="Authorization: Bearer sk-secret-token; retry with api_key=another-secret",
+    )
+
+    text = (tmp_path / "debug.log").read_text(encoding="utf-8")
+    assert "sk-secret-token" not in text
+    assert "another-secret" not in text
+    assert "Bearer [REDACTED]" in text
+    assert "api_key=[REDACTED]" in text
