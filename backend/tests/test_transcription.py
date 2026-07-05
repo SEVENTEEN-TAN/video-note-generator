@@ -291,7 +291,7 @@ def test_transcribe_audio_uses_external_worker_when_internal_faster_whisper_is_m
     monkeypatch.setattr(transcription, "FASTER_WHISPER_IMPORT_ERROR", "No module named 'faster_whisper'")
     monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
 
-    def fake_external_worker(audio_path_arg, config_arg, model_root_arg, progress_callback=None):
+    def fake_external_worker(audio_path_arg, config_arg, model_root_arg, *, work_dir=None, progress_callback=None):
         assert audio_path_arg == audio_path
         assert config_arg.transcription_model == "small"
         assert model_root_arg == tmp_path / "models"
@@ -323,6 +323,7 @@ def test_external_faster_whisper_worker_forces_utf8_stdout(tmp_path, monkeypatch
     model_root = tmp_path / "models"
     write_model_files(model_root / "small")
     monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "probe_duration", lambda _p: 60.0)
     monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: tmp_path / "worker.py")
     (tmp_path / "worker.py").write_text("print('worker')", encoding="utf-8")
 
@@ -350,7 +351,7 @@ def test_external_faster_whisper_worker_forces_utf8_stdout(tmp_path, monkeypatch
         original_filename="input.mp4",
     )
 
-    parsed = transcription.transcribe_with_external_faster_whisper(audio_path, config, model_root)
+    parsed = transcription.transcribe_with_external_faster_whisper(audio_path, config, model_root, work_dir=tmp_path)
 
     assert parsed.text == "中文正常"
 
@@ -361,6 +362,7 @@ def test_external_faster_whisper_worker_reports_progress_before_blocking_run(tmp
     model_root = tmp_path / "models"
     write_model_files(model_root / "small")
     monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "probe_duration", lambda _p: 60.0)
     monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: tmp_path / "worker.py")
     (tmp_path / "worker.py").write_text("print('worker')", encoding="utf-8")
 
@@ -393,6 +395,7 @@ def test_external_faster_whisper_worker_reports_progress_before_blocking_run(tmp
         audio_path,
         config,
         model_root,
+        work_dir=tmp_path,
         progress_callback=lambda step, progress: updates.append((step, progress)),
     )
 
@@ -485,6 +488,7 @@ def test_external_faster_whisper_worker_passes_resolved_model_root_to_env(tmp_pa
     model_root = tmp_path / "settings-models"
     write_model_files(model_root / "small")
     monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "probe_duration", lambda _p: 60.0)
     monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: tmp_path / "worker.py")
     (tmp_path / "worker.py").write_text("print('worker')", encoding="utf-8")
     monkeypatch.delenv("FASTER_WHISPER_MODEL_DIR", raising=False)
@@ -514,7 +518,7 @@ def test_external_faster_whisper_worker_passes_resolved_model_root_to_env(tmp_pa
         original_filename="input.mp4",
     )
 
-    transcription.transcribe_with_external_faster_whisper(audio_path, config, model_root)
+    transcription.transcribe_with_external_faster_whisper(audio_path, config, model_root, work_dir=tmp_path)
 
     assert captured_env["FASTER_WHISPER_MODEL_DIR"] == str(model_root)
     assert captured_env["HUGGINGFACE_HUB_CACHE"] == str(model_root)
@@ -553,7 +557,7 @@ def test_transcribe_with_faster_whisper_passes_explicit_language(tmp_path, monke
         original_filename="input.mp4",
     )
 
-    parsed = transcription.transcribe_with_faster_whisper(audio_path, config)
+    parsed = transcription.transcribe_with_faster_whisper(audio_path, config, tmp_path)
 
     assert parsed.text == "zh text"
     assert captured["language"] == "zh"
@@ -591,6 +595,6 @@ def test_transcribe_with_faster_whisper_omits_language_for_auto(tmp_path, monkey
         original_filename="input.mp4",
     )
 
-    transcription.transcribe_with_faster_whisper(audio_path, config)
+    transcription.transcribe_with_faster_whisper(audio_path, config, tmp_path)
 
     assert captured["language"] is None

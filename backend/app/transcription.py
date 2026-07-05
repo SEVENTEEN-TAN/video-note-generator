@@ -20,6 +20,7 @@ from .time_utils import seconds_to_hhmmss
 MAX_TRANSCRIPTION_FILE_BYTES = 24 * 1024 * 1024
 STANDARD_TRANSCRIPTION_CHUNK_SECONDS = 600
 CHAT_AUDIO_CHUNK_SECONDS = 120
+LOCAL_WHISPER_CHUNK_THRESHOLD_SECONDS = 1800  # chunk long audio above 30 minutes
 REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json")
 FASTER_WHISPER_VOCABULARY_FILES = ("vocabulary.txt", "vocabulary.json")
 ProgressCallback = Callable[[str, int], None]
@@ -64,7 +65,7 @@ def transcribe_audio(
     if config.transcription_mode == TranscriptionMode.chat_audio:
         payload = transcribe_with_chat_audio(audio_path, config, work_dir, progress_callback=progress_callback)
     elif config.transcription_mode == TranscriptionMode.local_faster_whisper:
-        payload = transcribe_with_faster_whisper(audio_path, config, progress_callback=progress_callback)
+        payload = transcribe_with_faster_whisper(audio_path, config, work_dir, progress_callback=progress_callback)
     else:
         payload = transcribe_with_audio_endpoint(audio_path, config, work_dir, progress_callback=progress_callback)
     return payload.model_dump()
@@ -73,6 +74,7 @@ def transcribe_audio(
 def transcribe_with_faster_whisper(
     audio_path: Path,
     config: JobConfig,
+    work_dir: Path,
     progress_callback: ProgressCallback | None = None,
 ) -> TranscriptPayload:
     model_name = config.transcription_model.strip() or "small"
@@ -81,12 +83,14 @@ def transcribe_with_faster_whisper(
     model_identifier = resolve_local_faster_whisper_model(model_name, model_root)
     if progress_callback:
         progress_callback(f"字幕生成中：加载 Faster Whisper 模型 {model_name}", 36)
+
     if WhisperModel is None:
         try:
             return transcribe_with_external_faster_whisper(
                 audio_path,
                 config,
                 model_root,
+                work_dir=work_dir,
                 progress_callback=progress_callback,
             )
         except Exception as exc:
@@ -97,8 +101,34 @@ def transcribe_with_faster_whisper(
                 f"{detail} External worker error: {exc}"
             ) from exc
 
-    device, compute_type = resolve_local_whisper_runtime(config)
+    duration = probe_duration(audio_path) or 0.0
+    if duration > LOCAL_WHISPER_CHUNK_THRESHOLD_SECONDS:
+        if progress_callback:
+            progress_callback("字幕生成中：分块处理长音频", 37)
+        chunks = split_audio(audio_path, work_dir / "whisper_chunks", STANDARD_TRANSCRIPTION_CHUNK_SECONDS)
+        merged_segments: list[TranscriptSegment] = []
+        offset = 0.0
+        chunk_count = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            if progress_callback:
+                progress = 35 + int((index - 1) / max(chunk_count, 1) * 25)
+                progress_callback(f"字幕生成中：第 {index}/{chunk_count} 段转写中", progress)
+            chunk_payload = _transcribe_single_chunk(model_identifier, model_root, config, chunk)
+            for segment in chunk_payload.segments:
+                merged_segments.append(
+                    TranscriptSegment(
+                        start=segment.start + offset,
+                        end=segment.end + offset,
+                        text=segment.text,
+                    )
+                )
+            offset += probe_duration(chunk) or STANDARD_TRANSCRIPTION_CHUNK_SECONDS
+        return TranscriptPayload(
+            text=" ".join(segment.text for segment in merged_segments).strip(),
+            segments=merged_segments,
+        )
 
+    device, compute_type = resolve_local_whisper_runtime(config)
     try:
         model = WhisperModel(
             model_identifier,
@@ -122,6 +152,33 @@ def transcribe_with_faster_whisper(
         raise TranscriptionError(f"Local Faster Whisper transcription failed: {exc}") from exc
 
 
+def _transcribe_single_chunk(
+    model_identifier: str,
+    model_root: Path,
+    config: JobConfig,
+    chunk_path: Path,
+) -> TranscriptPayload:
+    """Transcribe one audio chunk with its own WhisperModel instance."""
+    device, compute_type = resolve_local_whisper_runtime(config)
+    language = resolve_transcription_language(config)
+    model = WhisperModel(
+        model_identifier,
+        device=device,
+        compute_type=compute_type,
+        download_root=str(model_root),
+    )
+    segments_raw, _info = model.transcribe(
+        str(chunk_path),
+        language=language or None,
+        vad_filter=True,
+        vad_parameters={"min_silence_duration_ms": 500, "threshold": 0.5},
+        beam_size=5,
+        best_of=3,
+    )
+    return faster_whisper_segments_to_payload(segments_raw)
+
+
+
 def get_faster_whisper_model_root() -> Path:
     return get_configured_model_root().as_path()
 
@@ -130,10 +187,50 @@ def transcribe_with_external_faster_whisper(
     audio_path: Path,
     config: JobConfig,
     model_root: Path,
+    *,
+    work_dir: Path | None = None,
     progress_callback: ProgressCallback | None = None,
 ) -> TranscriptPayload:
-    python_path = find_external_python()
-    if not python_path:
+    duration = probe_duration(audio_path) or 0.0
+    if duration > LOCAL_WHISPER_CHUNK_THRESHOLD_SECONDS and work_dir is not None:
+        if progress_callback:
+            progress_callback("字幕生成中：分块处理长音频", 37)
+        chunks = split_audio(audio_path, work_dir / "whisper_chunks", STANDARD_TRANSCRIPTION_CHUNK_SECONDS)
+        merged_segments: list[TranscriptSegment] = []
+        offset = 0.0
+        chunk_count = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            if progress_callback:
+                progress = 35 + int((index - 1) / max(chunk_count, 1) * 25)
+                progress_callback(f"字幕生成中：第 {index}/{chunk_count} 段转写中", progress)
+            chunk_payload = _transcribe_single_external_chunk(chunk, config, model_root, python_path=None)
+            for segment in chunk_payload.segments:
+                merged_segments.append(
+                    TranscriptSegment(
+                        start=segment.start + offset,
+                        end=segment.end + offset,
+                        text=segment.text,
+                    )
+                )
+            offset += probe_duration(chunk) or STANDARD_TRANSCRIPTION_CHUNK_SECONDS
+        return TranscriptPayload(
+            text=" ".join(segment.text for segment in merged_segments).strip(),
+            segments=merged_segments,
+        )
+
+    return _transcribe_single_external_chunk(audio_path, config, model_root, python_path=None, progress_callback=progress_callback)
+
+
+def _transcribe_single_external_chunk(
+    chunk_path: Path,
+    config: JobConfig,
+    model_root: Path,
+    *,
+    python_path: str | None = None,
+    progress_callback: ProgressCallback | None = None,
+) -> TranscriptPayload:
+    resolved_python = python_path or find_external_python()
+    if not resolved_python:
         raise TranscriptionError("External Python was not found on PATH. Install Python 3.10+ or set VIDEO_NOTE_PYTHON_PATH.")
 
     worker_path = get_local_whisper_worker_path()
@@ -146,10 +243,10 @@ def transcribe_with_external_faster_whisper(
         progress_callback("字幕生成中：外部 Faster Whisper worker 转写中", 38)
     completed = subprocess.run(
         [
-            python_path,
+            resolved_python,
             str(worker_path),
             "--audio",
-            str(audio_path),
+            str(chunk_path),
             "--model",
             model_name,
             "--model-root",
