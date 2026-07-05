@@ -1,29 +1,27 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from .install_tasks import PackageInstallController, PackageInstallState
 from .runtime_config import get_python_package_install_args
+from .runtime_paths import get_backend_requirements_file
 from .transcription import find_external_python
-
-LOCAL_TRANSCRIPTION_DEPENDENCY_PACKAGES = (
-    "fastapi==0.115.6",
-    "uvicorn[standard]==0.34.0",
-    "python-multipart==0.0.20",
-    "openai==1.59.7",
-    "pydantic==2.12.5",
-    "imageio-ffmpeg==0.5.1",
-    "faster-whisper==1.1.1",
-)
 
 
 class LocalTranscriptionDependencyInstallState(PackageInstallState):
     pass
 
 
+def get_local_dependency_requirements_path() -> Path:
+    return get_backend_requirements_file("requirements-local.txt")
+
+
 _controller = PackageInstallController(
-    packages=LOCAL_TRANSCRIPTION_DEPENDENCY_PACKAGES,
+    packages=(),
     failure_message="Local transcription dependency installation failed.",
     python_finder=find_external_python,
     install_args_provider=get_python_package_install_args,
+    requirements_file_provider=get_local_dependency_requirements_path,
 )
 
 

@@ -76,10 +76,23 @@ def _resolve_python_candidate(value: str, source: RuntimeConfigSource) -> Runtim
 
     path = Path(value).expanduser()
     looks_like_path = path.is_absolute() or "\\" in value or "/" in value
-    if looks_like_path and not path.exists():
-        return RuntimePathResolution(
-            value=str(path),
-            source=source,
-            error=f"Configured external Python path does not exist: {path}",
-        )
-    return RuntimePathResolution(value=str(path) if looks_like_path else value, source=source)
+    if looks_like_path:
+        if not path.exists():
+            return RuntimePathResolution(
+                value=str(path),
+                source=source,
+                error=f"Configured external Python path does not exist: {path}",
+            )
+        if not path.is_file():
+            return RuntimePathResolution(
+                value=str(path),
+                source=source,
+                error=f"Configured external Python path is not a file: {path}",
+            )
+        return RuntimePathResolution(value=str(path), source=source)
+
+    return RuntimePathResolution(
+        value=value,
+        source=source,
+        error=f"Configured external Python executable was not found on PATH: {value}",
+    )

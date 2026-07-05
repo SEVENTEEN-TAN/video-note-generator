@@ -10,6 +10,9 @@ ROOT = Path.cwd()
 datas = [
     (str(ROOT / "frontend" / "dist"), "frontend/dist"),
     (str(ROOT / "backend" / "app" / "local_whisper_worker.py"), "backend/app"),
+    (str(ROOT / "backend" / "requirements.txt"), "backend"),
+    (str(ROOT / "backend" / "requirements-local.txt"), "backend"),
+    (str(ROOT / "backend" / "requirements-cuda.txt"), "backend"),
 ]
 datas += collect_data_files("imageio_ffmpeg")
 

@@ -48,3 +48,42 @@ def test_package_install_controller_passes_install_args_before_packages(monkeypa
     controller.run()
 
     assert calls == [["python", "-m", "pip", "install", "--user", "demo-package"]]
+
+
+def test_package_install_controller_installs_from_requirements_file(tmp_path, monkeypatch) -> None:
+    calls: list[list[str]] = []
+    requirements_path = tmp_path / "requirements-local.txt"
+    requirements_path.write_text("demo-package==1.0\n", encoding="utf-8")
+    controller = PackageInstallController(
+        packages=(),
+        failure_message="install failed",
+        python_finder=lambda: "python",
+        install_args_provider=lambda: ["--user"],
+        requirements_file_provider=lambda: requirements_path,
+    )
+
+    def fake_run(command, **_kwargs):
+        calls.append(command)
+        return type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr("backend.app.install_tasks.subprocess.run", fake_run)
+
+    controller.run()
+
+    assert calls == [["python", "-m", "pip", "install", "--user", "-r", str(requirements_path)]]
+
+
+def test_package_install_controller_reports_missing_requirements_file(tmp_path) -> None:
+    missing_requirements = tmp_path / "missing.txt"
+    controller = PackageInstallController(
+        packages=(),
+        failure_message="install failed",
+        python_finder=lambda: "python",
+        requirements_file_provider=lambda: missing_requirements,
+    )
+
+    controller.run()
+    finished = controller.get_state()
+
+    assert finished.status == "failed"
+    assert str(missing_requirements) in finished.error

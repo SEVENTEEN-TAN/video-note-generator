@@ -56,6 +56,32 @@ def test_configured_external_python_reports_missing_configured_path(tmp_path, mo
     assert "does not exist" in configured.error
 
 
+def test_configured_external_python_reports_missing_configured_command(monkeypatch) -> None:
+    monkeypatch.setenv("VIDEO_NOTE_PYTHON_PATH", "missing-python-for-video-note")
+    monkeypatch.setattr("backend.app.runtime_config.shutil.which", lambda _value: None)
+
+    configured = get_configured_external_python()
+
+    assert configured.value == "missing-python-for-video-note"
+    assert configured.source == "environment"
+    assert "was not found on PATH" in configured.error
+
+
+def test_configured_external_python_reports_directory_path(tmp_path, monkeypatch) -> None:
+    settings_path = tmp_path / "settings.json"
+    python_dir = tmp_path / "Python310"
+    python_dir.mkdir()
+    monkeypatch.setenv("VIDEO_NOTE_SETTINGS_FILE", str(settings_path))
+    monkeypatch.delenv("VIDEO_NOTE_PYTHON_PATH", raising=False)
+    save_user_settings({"external_python_path": str(python_dir)})
+
+    configured = get_configured_external_python()
+
+    assert configured.value == str(python_dir)
+    assert configured.source == "settings"
+    assert "is not a file" in configured.error
+
+
 def test_configured_model_root_uses_saved_settings(tmp_path, monkeypatch) -> None:
     settings_path = tmp_path / "settings.json"
     model_root = tmp_path / "custom-models"

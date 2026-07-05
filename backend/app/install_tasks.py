@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 import threading
 from collections.abc import Callable, Sequence
+from pathlib import Path
 
 from pydantic import BaseModel
 
@@ -24,11 +25,13 @@ class PackageInstallController:
         failure_message: str,
         python_finder: Callable[[], str | None] | None = None,
         install_args_provider: Callable[[], Sequence[str]] | None = None,
+        requirements_file_provider: Callable[[], Path] | None = None,
     ) -> None:
         self._packages = tuple(packages)
         self._failure_message = failure_message
         self._python_finder = python_finder
         self._install_args_provider = install_args_provider
+        self._requirements_file_provider = requirements_file_provider
         self._state = PackageInstallState()
         self._lock = threading.Lock()
 
@@ -77,6 +80,7 @@ class PackageInstallController:
 
     def install_packages(self, python_path: str) -> None:
         install_args = list(self._install_args_provider() if self._install_args_provider else [])
+        install_targets = self._install_targets()
         completed = subprocess.run(
             [
                 python_path,
@@ -84,7 +88,7 @@ class PackageInstallController:
                 "pip",
                 "install",
                 *install_args,
-                *self._packages,
+                *install_targets,
             ],
             capture_output=True,
             text=True,
@@ -95,6 +99,16 @@ class PackageInstallController:
         if completed.returncode != 0:
             message = completed.stderr.strip() or completed.stdout.strip() or self._failure_message
             raise TranscriptionError(message[-2000:])
+
+    def _install_targets(self) -> list[str]:
+        if self._requirements_file_provider is not None:
+            requirements_file = self._requirements_file_provider()
+            if not requirements_file.exists():
+                raise TranscriptionError(f"Dependency requirements file was not found: {requirements_file}")
+            return ["-r", str(requirements_file)]
+        if not self._packages:
+            raise TranscriptionError("No dependency packages were configured.")
+        return list(self._packages)
 
     def _find_python(self) -> str | None:
         if self._python_finder is None:

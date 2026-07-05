@@ -1,21 +1,27 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from .install_tasks import PackageInstallController, PackageInstallState
 from .runtime_config import get_python_package_install_args
+from .runtime_paths import get_backend_requirements_file
 from .transcription import find_external_python
-
-CUDA_DEPENDENCY_PACKAGES = ("nvidia-cublas-cu12", "nvidia-cudnn-cu12")
 
 
 class CudaDependencyInstallState(PackageInstallState):
     pass
 
 
+def get_cuda_dependency_requirements_path() -> Path:
+    return get_backend_requirements_file("requirements-cuda.txt")
+
+
 _controller = PackageInstallController(
-    packages=CUDA_DEPENDENCY_PACKAGES,
+    packages=(),
     failure_message="CUDA dependency installation failed.",
     python_finder=find_external_python,
     install_args_provider=get_python_package_install_args,
+    requirements_file_provider=get_cuda_dependency_requirements_path,
 )
 
 

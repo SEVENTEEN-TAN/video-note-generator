@@ -36,7 +36,10 @@ def get_frontend_dist_dir() -> Path:
 
 
 def get_model_root() -> Path:
-    override = os.getenv("FASTER_WHISPER_MODEL_DIR", "").strip()
-    if override:
-        return Path(override).expanduser()
-    return get_app_data_root() / "backend" / "models" / "faster-whisper"
+    from .runtime_config import get_configured_model_root
+
+    return get_configured_model_root().as_path()
+
+
+def get_backend_requirements_file(filename: str) -> Path:
+    return get_bundle_root() / "backend" / filename
