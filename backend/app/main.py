@@ -155,28 +155,33 @@ def get_faster_whisper_model_download(model_name: str) -> ModelDownloadState:
     return get_model_download_state(model_name)
 
 
-@app.post("/api/jobs/frame-suggestion", response_model=FrameSuggestion)
-async def suggest_frame_count(
-    video: Annotated[UploadFile, File()],
-    note_language: Annotated[NoteLanguage, Form()],
-    note_style: Annotated[NoteStyle, Form()] = NoteStyle.detailed,
-    extras: Annotated[str, Form()] = "",
-    transcription_mode: Annotated[TranscriptionMode, Form()] = TranscriptionMode.audio_transcriptions,
-    transcription_api_key: Annotated[str, Form()] = "",
-    transcription_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
-    transcription_model: Annotated[str, Form()] = "whisper-1",
-    local_whisper_device: Annotated[str, Form()] = "",
-    local_whisper_compute_type: Annotated[str, Form()] = "",
-    note_api_key: Annotated[str, Form()] = "",
-    note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
-    note_model: Annotated[str, Form()] = "gpt-5.5",
-) -> FrameSuggestion:
-    suffix = Path(video.filename or "").suffix.lower()
+def validate_video_extension(filename: str | None) -> str:
+    suffix = Path(filename or "").suffix.lower()
     if suffix not in ALLOWED_EXTENSIONS:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported video format. Use one of: {', '.join(sorted(ALLOWED_EXTENSIONS))}.",
         )
+    return suffix
+
+
+def build_job_config_or_400(
+    *,
+    transcription_mode: TranscriptionMode,
+    transcription_api_key: str,
+    transcription_base_url: str,
+    transcription_model: str,
+    local_whisper_device: str,
+    local_whisper_compute_type: str,
+    note_api_key: str,
+    note_base_url: str,
+    note_model: str,
+    note_language: NoteLanguage,
+    note_style: NoteStyle,
+    extras: str,
+    frame_limit: int,
+    original_filename: str,
+) -> JobConfig:
     uses_remote_transcription = transcription_mode != TranscriptionMode.local_faster_whisper
     if uses_remote_transcription and not transcription_api_key.strip():
         raise HTTPException(status_code=400, detail="Transcription API Key is required.")
@@ -188,21 +193,11 @@ async def suggest_frame_count(
         raise HTTPException(status_code=400, detail="Transcription model is required.")
     if not note_model.strip():
         raise HTTPException(status_code=400, detail="Note model is required.")
-    if transcription_mode == TranscriptionMode.local_faster_whisper:
-        try:
-            resolve_local_faster_whisper_model(transcription_model, get_faster_whisper_model_root())
-        except TranscriptionError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if frame_limit < 1 or frame_limit > 24:
+        raise HTTPException(status_code=400, detail="frame_limit must be between 1 and 24.")
 
-    temp_dir = OUTPUTS_ROOT / ".frame-suggestions" / uuid.uuid4().hex
-    source_dir = temp_dir / "source_video"
-    source_dir.mkdir(parents=True, exist_ok=True)
-    video_path = source_dir / f"input{suffix}"
     try:
-        with video_path.open("wb") as target:
-            shutil.copyfileobj(video.file, target)
-
-        config = JobConfig(
+        return JobConfig(
             transcription_mode=transcription_mode,
             transcription_api_key=transcription_api_key,
             transcription_base_url=transcription_base_url,
@@ -215,28 +210,11 @@ async def suggest_frame_count(
             note_language=note_language,
             note_style=note_style,
             extras=extras,
-            frame_limit=12,
-            original_filename=video.filename or video_path.name,
+            frame_limit=frame_limit,
+            original_filename=original_filename,
         )
-        duration = probe_duration(video_path)
-        audio_path = temp_dir / "audio.mp3"
-        extract_mp3(video_path, audio_path)
-        transcript_payload = transcribe_audio(audio_path, config, temp_dir)
-        segments = transcript_segments_from_payload(transcript_payload)
-        if not segments:
-            raise HTTPException(status_code=400, detail="Transcription returned no usable text segments.")
-        draft = generate_note_draft(config, duration, segments)
-        return FrameSuggestion(
-            recommended_frame_count=draft.recommended_frame_count or min(max(len(draft.key_moments), 1), 12),
-            candidate_count=len(draft.key_moments),
-            reasons=[moment.reason for moment in draft.key_moments[:3]],
-        )
-    except HTTPException:
-        raise
-    except (OSError, TranscriptionError, Exception) as exc:
+    except ValidationError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    finally:
-        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 def ensure_local_cuda_ready(config: JobConfig) -> None:
@@ -258,6 +236,80 @@ def ensure_local_cuda_ready(config: JobConfig) -> None:
     raise HTTPException(status_code=400, detail=f"CUDA 未就绪：{detail}")
 
 
+def ensure_local_transcription_ready(config: JobConfig) -> None:
+    if config.transcription_mode != TranscriptionMode.local_faster_whisper:
+        return
+    try:
+        resolve_local_faster_whisper_model(config.transcription_model, get_faster_whisper_model_root())
+    except TranscriptionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    ensure_local_cuda_ready(config)
+
+
+@app.post("/api/jobs/frame-suggestion", response_model=FrameSuggestion)
+async def suggest_frame_count(
+    video: Annotated[UploadFile, File()],
+    note_language: Annotated[NoteLanguage, Form()],
+    note_style: Annotated[NoteStyle, Form()] = NoteStyle.detailed,
+    extras: Annotated[str, Form()] = "",
+    transcription_mode: Annotated[TranscriptionMode, Form()] = TranscriptionMode.audio_transcriptions,
+    transcription_api_key: Annotated[str, Form()] = "",
+    transcription_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
+    transcription_model: Annotated[str, Form()] = "whisper-1",
+    local_whisper_device: Annotated[str, Form()] = "",
+    local_whisper_compute_type: Annotated[str, Form()] = "",
+    note_api_key: Annotated[str, Form()] = "",
+    note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
+    note_model: Annotated[str, Form()] = "gpt-5.5",
+) -> FrameSuggestion:
+    suffix = validate_video_extension(video.filename)
+    config = build_job_config_or_400(
+        transcription_mode=transcription_mode,
+        transcription_api_key=transcription_api_key,
+        transcription_base_url=transcription_base_url,
+        transcription_model=transcription_model,
+        local_whisper_device=local_whisper_device,
+        local_whisper_compute_type=local_whisper_compute_type,
+        note_api_key=note_api_key,
+        note_base_url=note_base_url,
+        note_model=note_model,
+        note_language=note_language,
+        note_style=note_style,
+        extras=extras,
+        frame_limit=12,
+        original_filename=video.filename or f"input{suffix}",
+    )
+    ensure_local_transcription_ready(config)
+
+    temp_dir = OUTPUTS_ROOT / ".frame-suggestions" / uuid.uuid4().hex
+    source_dir = temp_dir / "source_video"
+    source_dir.mkdir(parents=True, exist_ok=True)
+    video_path = source_dir / f"input{suffix}"
+    try:
+        with video_path.open("wb") as target:
+            shutil.copyfileobj(video.file, target)
+
+        duration = probe_duration(video_path)
+        audio_path = temp_dir / "audio.mp3"
+        extract_mp3(video_path, audio_path)
+        transcript_payload = transcribe_audio(audio_path, config, temp_dir)
+        segments = transcript_segments_from_payload(transcript_payload)
+        if not segments:
+            raise HTTPException(status_code=400, detail="Transcription returned no usable text segments.")
+        draft = generate_note_draft(config, duration, segments)
+        return FrameSuggestion(
+            recommended_frame_count=draft.recommended_frame_count or min(max(len(draft.key_moments), 1), 12),
+            candidate_count=len(draft.key_moments),
+            reasons=[moment.reason for moment in draft.key_moments[:3]],
+        )
+    except HTTPException:
+        raise
+    except (OSError, TranscriptionError, Exception) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+
 @app.post("/api/jobs")
 async def create_job(
     background_tasks: BackgroundTasks,
@@ -276,51 +328,24 @@ async def create_job(
     note_model: Annotated[str, Form()] = "gpt-5.5",
     frame_limit: Annotated[int, Form()] = 6,
 ) -> dict:
-    suffix = Path(video.filename or "").suffix.lower()
-    if suffix not in ALLOWED_EXTENSIONS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported video format. Use one of: {', '.join(sorted(ALLOWED_EXTENSIONS))}.",
-        )
-    uses_remote_transcription = transcription_mode != TranscriptionMode.local_faster_whisper
-    if uses_remote_transcription and not transcription_api_key.strip():
-        raise HTTPException(status_code=400, detail="Transcription API Key is required.")
-    if uses_remote_transcription and not transcription_base_url.strip():
-        raise HTTPException(status_code=400, detail="Transcription Base URL is required.")
-    if not note_api_key.strip():
-        raise HTTPException(status_code=400, detail="Note API Key is required.")
-    if not transcription_model.strip():
-        raise HTTPException(status_code=400, detail="Transcription model is required.")
-    if not note_model.strip():
-        raise HTTPException(status_code=400, detail="Note model is required.")
-    if frame_limit < 1 or frame_limit > 24:
-        raise HTTPException(status_code=400, detail="frame_limit must be between 1 and 24.")
-    try:
-        config = JobConfig(
-            transcription_mode=transcription_mode,
-            transcription_api_key=transcription_api_key,
-            transcription_base_url=transcription_base_url,
-            transcription_model=transcription_model,
-            local_whisper_device=local_whisper_device,
-            local_whisper_compute_type=local_whisper_compute_type,
-            note_api_key=note_api_key,
-            note_base_url=note_base_url,
-            note_model=note_model,
-            note_language=note_language,
-            note_style=note_style,
-            extras=extras,
-            frame_limit=frame_limit,
-            original_filename=video.filename or f"input{suffix}",
-        )
-    except ValidationError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    if config.transcription_mode == TranscriptionMode.local_faster_whisper:
-        try:
-            resolve_local_faster_whisper_model(config.transcription_model, get_faster_whisper_model_root())
-        except TranscriptionError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        ensure_local_cuda_ready(config)
+    suffix = validate_video_extension(video.filename)
+    config = build_job_config_or_400(
+        transcription_mode=transcription_mode,
+        transcription_api_key=transcription_api_key,
+        transcription_base_url=transcription_base_url,
+        transcription_model=transcription_model,
+        local_whisper_device=local_whisper_device,
+        local_whisper_compute_type=local_whisper_compute_type,
+        note_api_key=note_api_key,
+        note_base_url=note_base_url,
+        note_model=note_model,
+        note_language=note_language,
+        note_style=note_style,
+        extras=extras,
+        frame_limit=frame_limit,
+        original_filename=video.filename or f"input{suffix}",
+    )
+    ensure_local_transcription_ready(config)
 
     job_id = uuid.uuid4().hex
     job_dir = OUTPUTS_ROOT / job_id

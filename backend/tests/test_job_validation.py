@@ -127,6 +127,89 @@ def test_create_job_rejects_local_cuda_when_runtime_is_not_ready(tmp_path, monke
     assert list(tmp_path.iterdir()) == []
 
 
+def test_frame_suggestion_rejects_invalid_config_before_creating_temp_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "resolve_local_faster_whisper_model", lambda *_args, **_kwargs: "small")
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/jobs/frame-suggestion",
+        data={
+            "transcription_mode": "local_faster_whisper",
+            "transcription_model": "small",
+            "local_whisper_device": "gpu",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 400
+    assert "local_whisper_device must be auto, cpu, or cuda" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_frame_suggestion_rejects_local_cuda_when_runtime_is_not_ready_before_creating_temp_dir(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "resolve_local_faster_whisper_model", lambda *_args, **_kwargs: "small")
+    monkeypatch.setattr(
+        main,
+        "get_runtime_status",
+        lambda: {
+            "faster_whisper": {
+                "ready_for_cuda": False,
+                "cuda_runtime_hint": "请安装 CUDA 运行库，或切回 CPU。",
+                "cuda_error": "missing ctranslate2 cuda runtime",
+            }
+        },
+    )
+    monkeypatch.setattr(main, "probe_duration", lambda _video_path: 42.0, raising=False)
+    monkeypatch.setattr(main, "extract_mp3", lambda _video_path, audio_path: audio_path.write_bytes(b"mp3"), raising=False)
+    monkeypatch.setattr(
+        main,
+        "transcribe_audio",
+        lambda _audio_path, _config, _job_dir: {"text": "hello", "segments": [{"start": 0, "end": 2, "text": "hello"}]},
+        raising=False,
+    )
+    monkeypatch.setattr(
+        main,
+        "generate_note_draft",
+        lambda _config, _duration, _segments: NoteDraft(
+            title="Demo",
+            summary="summary",
+            chapters=[Chapter(title="Opening", start_time=0, end_time=2)],
+            key_moments=[KeyMoment(time=1, reason="opening", chapter_index=0)],
+            recommended_frame_count=7,
+        ),
+        raising=False,
+    )
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/jobs/frame-suggestion",
+        data={
+            "transcription_mode": "local_faster_whisper",
+            "transcription_model": "small",
+            "local_whisper_device": "cuda",
+            "local_whisper_compute_type": "float16",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 400
+    assert "CUDA" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_frame_suggestion_returns_recommended_count_from_note_draft(monkeypatch) -> None:
     client = TestClient(app)
 
