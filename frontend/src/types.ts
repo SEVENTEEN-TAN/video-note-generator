@@ -45,6 +45,7 @@ export type JobState = {
   step_started_at?: string | null;
   updated_at?: string | null;
   stage_elapsed_seconds?: number;
+  download_filename?: string | null;
 };
 
 export type JobSummary = {
@@ -261,8 +262,18 @@ export type FrameCandidate = {
   rejected: boolean;
 };
 
+export type FrameCandidateChapterContext = {
+  chapter_index: number;
+  title: string;
+  start_time: number;
+  end_time: number;
+  note_excerpt: string;
+  subtitle_excerpt: string;
+};
+
 export type FrameCandidateIndex = {
   candidates: FrameCandidate[];
+  chapter_contexts: FrameCandidateChapterContext[];
 };
 
 declare global {

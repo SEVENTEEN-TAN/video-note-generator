@@ -92,22 +92,24 @@ def load_frame_candidate_index(job_dir: Path) -> FrameCandidateIndex | None:
     if not path.exists():
         return None
     try:
-        return FrameCandidateIndex.model_validate_json(path.read_text(encoding="utf-8"))
+        index = FrameCandidateIndex.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
+    return _with_chapter_contexts(job_dir, index)
 
 
 def select_frame_candidate(job_dir: Path, candidate_id: str, frame_limit: int | None = None) -> FrameCandidateIndex:
     index = _require_frame_candidate_index(job_dir)
     target = _require_candidate(index, candidate_id)
-    if not target.selected and frame_limit is not None:
+    next_selected = not target.selected
+    if next_selected and frame_limit is not None:
         selected_count = sum(1 for candidate in index.candidates if candidate.selected and not candidate.rejected)
         if selected_count >= frame_limit:
             raise ValueError(f"Cannot select more frame candidates because frame limit is {frame_limit}.")
     updated: list[FrameCandidate] = []
     for candidate in index.candidates:
         if candidate.id == candidate_id:
-            updated.append(candidate.model_copy(update={"selected": True, "rejected": False}))
+            updated.append(candidate.model_copy(update={"selected": next_selected, "rejected": False}))
         else:
             updated.append(candidate)
     new_index = FrameCandidateIndex(candidates=updated, chapter_contexts=index.chapter_contexts)
@@ -217,6 +219,46 @@ def _chapter_contexts(job_dir: Path, chapters: list[CandidateChapter]) -> list[F
             )
         )
     return contexts
+
+
+def _with_chapter_contexts(job_dir: Path, index: FrameCandidateIndex) -> FrameCandidateIndex:
+    if index.chapter_contexts:
+        return index
+    chapters = _chapters_for_existing_index(job_dir, index)
+    return index.model_copy(update={"chapter_contexts": _chapter_contexts(job_dir, chapters)})
+
+
+def _chapters_for_existing_index(job_dir: Path, index: FrameCandidateIndex) -> list[CandidateChapter]:
+    duration = _duration_from_metadata(job_dir)
+    note_path = job_dir / "note.md"
+    if note_path.exists():
+        chapters = _parse_candidate_chapters(note_path.read_text(encoding="utf-8-sig"), duration)
+    else:
+        chapters = []
+    chapters_by_index = {chapter.index: chapter for chapter in chapters}
+    candidate_indexes = sorted({candidate.chapter_index for candidate in index.candidates})
+    for chapter_index in candidate_indexes:
+        if chapter_index not in chapters_by_index:
+            chapters_by_index[chapter_index] = CandidateChapter(
+                index=chapter_index,
+                title=f"第 {chapter_index + 1} 章",
+                start_time=0.0,
+                end_time=float(duration or 0),
+                key_times=[],
+            )
+    return [chapters_by_index[index] for index in sorted(chapters_by_index)]
+
+
+def _duration_from_metadata(job_dir: Path) -> float | None:
+    metadata_path = job_dir / "metadata.json"
+    if not metadata_path.exists():
+        return None
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    duration = payload.get("duration_seconds")
+    return float(duration) if isinstance(duration, (int, float)) else None
 
 
 def _load_transcript(job_dir: Path) -> TranscriptPayload:

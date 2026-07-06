@@ -99,6 +99,8 @@ a {
 }
 
 .topbar-stepper {
+  display: grid;
+  gap: 7px;
   justify-self: center;
   min-width: 0;
   width: min(100%, 760px);
@@ -750,7 +752,8 @@ textarea:focus {
   z-index: 20;
 }
 
-.settings-modal {
+.settings-modal,
+.frame-review-modal {
   background: var(--surface);
   border: 1px solid #c8bdae;
   border-radius: 8px;
@@ -766,6 +769,11 @@ textarea:focus {
 .correction-modal {
   max-width: 1080px;
   width: min(1080px, 100%);
+}
+
+.frame-review-modal {
+  max-width: 1180px;
+  width: min(1180px, 100%);
 }
 
 .modal-header,
@@ -861,6 +869,28 @@ textarea:focus {
   background: #f7f2e9;
   border-top: 1px solid var(--line);
   justify-content: flex-end;
+}
+
+.frame-review-header-actions,
+.subtitle-title-actions,
+.review-gate-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.frame-review-body {
+  display: grid;
+  gap: 12px;
+}
+
+.frame-review-summary {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 0;
 }
 
 .step-list {
@@ -961,6 +991,54 @@ textarea:focus {
   border-color: var(--teal);
   box-shadow: 0 0 0 3px rgba(98, 120, 101, 0.12);
   color: var(--teal-strong);
+}
+
+.step-progress-bar {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(86px, auto) minmax(0, 1fr) auto;
+  height: 22px;
+  min-width: 0;
+}
+
+.step-progress-label,
+.step-progress-detail {
+  align-items: center;
+  color: var(--muted);
+  display: inline-flex;
+  font-size: 12px;
+  font-weight: 850;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.step-progress-label {
+  color: var(--teal-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.step-progress-detail {
+  color: #566468;
+  justify-content: flex-end;
+}
+
+.step-progress-track {
+  background: #dfe7e4;
+  border-radius: 999px;
+  height: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.step-progress-fill {
+  background: #50715b;
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+  transition: width 0.4s ease;
 }
 
 .runtime-card {
@@ -1398,22 +1476,18 @@ textarea:focus {
   font-size: 12px;
 }
 
-.frame-candidate-panel {
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  border-radius: 8px;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.75);
-}
-
 .frame-candidate-groups {
   display: grid;
   gap: 12px;
-  margin-top: 12px;
 }
 
 .frame-candidate-group {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffdf8;
   display: grid;
-  gap: 8px;
+  gap: 10px;
+  padding: 12px;
 }
 
 .frame-candidate-group-head {
@@ -1424,8 +1498,14 @@ textarea:focus {
 }
 
 .frame-candidate-group-head strong {
-  color: var(--text);
+  color: var(--ink);
   font-size: 13px;
+}
+
+.frame-candidate-group-head div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
 }
 
 .frame-candidate-group-head span {
@@ -1433,9 +1513,54 @@ textarea:focus {
   font-size: 12px;
 }
 
+.frame-candidate-context {
+  background: #f8f4ec;
+  border: 1px solid #e4d9c9;
+  border-radius: 7px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  padding: 9px;
+}
+
+.frame-candidate-context div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.frame-candidate-context-head {
+  border-bottom: 1px solid #e4d9c9;
+  grid-column: 1 / -1;
+  padding-bottom: 7px;
+}
+
+.frame-candidate-context-head span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.frame-candidate-context strong {
+  color: #53605c;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.frame-candidate-context p {
+  color: #2f3a32;
+  display: -webkit-box;
+  font-size: 12px;
+  line-height: 1.5;
+  margin: 0;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
 .frame-candidate-strip {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
   gap: 8px;
 }
 
@@ -1479,13 +1604,14 @@ textarea:focus {
 
 .frame-candidate-body p {
   margin: 0;
-  color: var(--text);
+  color: var(--ink);
   font-size: 12px;
   line-height: 1.45;
 }
 
 .frame-candidate-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -1506,13 +1632,13 @@ textarea:focus {
   background: #fffbeb;
 }
 
-.note-review-gate div {
+.note-review-gate > div:first-child {
   display: grid;
   gap: 3px;
 }
 
 .note-review-gate strong {
-  color: var(--text);
+  color: var(--ink);
   font-size: 14px;
 }
 
@@ -1737,6 +1863,10 @@ textarea:focus {
   .correction-column-title {
     display: none;
   }
+
+  .frame-candidate-context {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 760px) {
@@ -1815,88 +1945,15 @@ textarea:focus {
   .quality-score-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-}
 
-.subtitle-gate {
-  align-items: stretch;
-  background: #eef5ff;
-  border: 1px solid #c7dbf5;
-  border-radius: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  margin: 12px 0 0;
-  padding: 12px 14px;
-}
+  .step-progress-bar {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
 
-.subtitle-gate-head {
-  align-items: flex-start;
-  display: flex;
-  gap: 10px;
-}
-
-.subtitle-gate-head strong {
-  display: block;
-}
-
-.subtitle-gate-head span {
-  color: #41556e;
-  display: block;
-  font-size: 13px;
-  margin-top: 2px;
-}
-
-.subtitle-gate-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
-}
-
-.job-progress-bar {
-  align-items: stretch;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 12px 0 0;
-}
-
-.job-progress-info {
-  align-items: center;
-  display: flex;
-  gap: 8px;
-  font-size: 13px;
-}
-
-.job-progress-step {
-  color: var(--text-primary, #1a1a1a);
-  flex: 1;
-}
-
-.job-progress-percent {
-  color: var(--text-muted, #666);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-}
-
-.job-progress-track {
-  background: #e2e8f0;
-  border-radius: 4px;
-  height: 6px;
-  overflow: hidden;
-  width: 100%;
-}
-
-.job-progress-fill {
-  background: #3b82f6;
-  border-radius: 4px;
-  height: 100%;
-  transition: width 0.4s ease;
-}
-
-.job-progress-elapsed {
-  color: var(--text-muted, #999);
-  font-size: 12px;
+  .step-progress-detail {
+    justify-content: flex-start;
+  }
 }
 
 .chunk-manager {

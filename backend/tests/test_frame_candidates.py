@@ -133,6 +133,12 @@ def test_frame_candidate_index_persists_and_mutations_update_choices(tmp_path, m
     selected_candidates = [candidate for candidate in selected.candidates if candidate.chapter_index == 0 and candidate.selected]
     assert [candidate.id for candidate in selected_candidates] == [loaded.candidates[0].id, second_id]
 
+    unselected = select_frame_candidate(tmp_path, second_id)
+    toggled_candidate = next(candidate for candidate in unselected.candidates if candidate.id == second_id)
+    assert toggled_candidate.selected is False
+    assert toggled_candidate.rejected is False
+
+    select_frame_candidate(tmp_path, second_id)
     rejected = reject_frame_candidate(tmp_path, second_id)
     rejected_candidate = next(candidate for candidate in rejected.candidates if candidate.id == second_id)
     assert rejected_candidate.selected is False
@@ -185,6 +191,47 @@ def test_build_frame_candidate_index_includes_chapter_context(tmp_path, monkeypa
     assert index.chapter_contexts[0].title == "Intro"
     assert "Intro details" in index.chapter_contexts[0].note_excerpt
     assert "Intro transcript" in index.chapter_contexts[0].subtitle_excerpt
+
+
+def test_load_legacy_frame_candidate_index_backfills_chapter_context(tmp_path) -> None:
+    write_candidate_job(tmp_path)
+    (tmp_path / "transcript.json").write_text(
+        json.dumps(
+            {
+                "segments": [
+                    {"start": 5, "end": 8, "text": "Intro transcript"},
+                    {"start": 70, "end": 75, "text": "Advanced transcript"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    candidate = FrameCandidate(
+        id="chapter_001_candidate_001",
+        chapter_index=0,
+        time=12.5,
+        path="review/frame_candidates/chapter_001/candidate_001.jpg",
+        reason="Opening concept slide",
+        source="chapter_fallback",
+        hash="010101",
+        duplicate_of=None,
+        similarity=0.0,
+        risk_flags=[],
+        selected=True,
+        rejected=False,
+    )
+    legacy_payload = {"candidates": [candidate.model_dump(mode="json")]}
+    index_path = tmp_path / "review" / "frame_candidates.json"
+    index_path.parent.mkdir(parents=True)
+    index_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    loaded = load_frame_candidate_index(tmp_path)
+
+    assert loaded is not None
+    assert loaded.chapter_contexts[0].title == "Intro"
+    assert "Intro details" in loaded.chapter_contexts[0].note_excerpt
+    assert "Intro transcript" in loaded.chapter_contexts[0].subtitle_excerpt
 
 
 def test_select_frame_candidate_rejects_missing_candidate(tmp_path) -> None:

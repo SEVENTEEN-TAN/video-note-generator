@@ -131,6 +131,7 @@ export function App() {
   const [frameCandidateIndex, setFrameCandidateIndex] = useState<FrameCandidateIndex | null>(null);
   const [frameCandidateError, setFrameCandidateError] = useState("");
   const [frameCandidateBusyId, setFrameCandidateBusyId] = useState("");
+  const [isFrameReviewOpen, setIsFrameReviewOpen] = useState(false);
   const [isFinalizingJob, setIsFinalizingJob] = useState(false);
   const [finalizeError, setFinalizeError] = useState("");
   const videoInputRef = useRef<HTMLInputElement | null>(null);
@@ -240,6 +241,15 @@ export function App() {
     }
     return Array.from(groups.entries()).sort(([left], [right]) => left - right);
   }, [frameCandidateIndex]);
+  const frameCandidateContextByChapter = useMemo(() => {
+    const contexts = new Map<number, FrameCandidateIndex["chapter_contexts"][number]>();
+    for (const context of frameCandidateIndex?.chapter_contexts ?? []) {
+      contexts.set(context.chapter_index, context);
+    }
+    return contexts;
+  }, [frameCandidateIndex]);
+  const selectedFrameCandidateCount =
+    frameCandidateIndex?.candidates.filter((candidate) => candidate.selected && !candidate.rejected).length ?? 0;
 
   function resetTaskContext() {
     setJob(null);
@@ -259,6 +269,7 @@ export function App() {
     setFrameCandidateIndex(null);
     setFrameCandidateError("");
     setFrameCandidateBusyId("");
+    setIsFrameReviewOpen(false);
     setIsFinalizingJob(false);
     setFinalizeError("");
   }
@@ -1168,6 +1179,9 @@ export function App() {
         </div>
         <div className="topbar-stepper">
           <StepList job={job} />
+          <div className="step-progress-bar" aria-label="处理进度">
+            <StepProgress job={job} />
+          </div>
         </div>
         <div className="topbar-actions">
           <HealthBadge health={health} />
@@ -1344,7 +1358,7 @@ export function App() {
                 {job?.artifacts.some((artifact) => artifact.path === "download.zip") && job && (
                   <ArtifactDownloadButton
                     className="small-button strong"
-                    filename={`video-note-${job.job_id}.zip`}
+                    filename={job.download_filename ?? `video-note-${job.job_id}.zip`}
                     label="ZIP"
                     onError={setDownloadMessage}
                     url={`/api/jobs/${job.job_id}/download.zip`}
@@ -1401,43 +1415,6 @@ export function App() {
                   </div>
                 </details>
               )}
-            {job?.status === "awaiting_subtitle_confirmation" && (
-              <div className="subtitle-gate" aria-label="字幕确认">
-                <div className="subtitle-gate-head">
-                  <Captions size={18} />
-                  <div>
-                    <strong>字幕已生成，请确认质量</strong>
-                    <span>确认无误后将继续生成笔记；如不满意可重新生成字幕。</span>
-                  </div>
-                </div>
-                {subtitleGateError && (
-                  <p className="inline-error">
-                    <AlertTriangle size={15} />
-                    {subtitleGateError}
-                  </p>
-                )}
-                <div className="subtitle-gate-actions">
-                  <button
-                    className="small-button"
-                    disabled={isRegeneratingSubtitles}
-                    onClick={() => void handleRegenerateSubtitles()}
-                    type="button"
-                  >
-                    {isRegeneratingSubtitles ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-                    重新生成字幕
-                  </button>
-                  <button
-                    className="small-button strong"
-                    disabled={isConfirmingSubtitles}
-                    onClick={() => void handleConfirmSubtitles()}
-                    type="button"
-                  >
-                    {isConfirmingSubtitles ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
-                    确认字幕并生成笔记
-                  </button>
-                </div>
-              </div>
-            )}
             {qualityReport && (
               <section className={`quality-panel ${qualityReport.status}`} aria-label="质量复核">
                 <div className="quality-panel-head">
@@ -1489,86 +1466,36 @@ export function App() {
                 {qualityReportError}
               </p>
             )}
-            {frameCandidateIndex && frameCandidateIndex.candidates.length > 0 && job && (
-              <section className="frame-candidate-panel" aria-label="配图候选">
-                <div className="quality-panel-head">
-                  <div>
-                    <strong>配图候选</strong>
-                    <span>默认避开重复画面；你可以为每章选用或拒绝候选图，选择会保存到评审数据。</span>
-                  </div>
-                  <span className="quality-status ready">{frameCandidateIndex.candidates.filter((candidate) => candidate.selected).length} 已选</span>
-                </div>
-                <div className="frame-candidate-groups">
-                  {frameCandidateGroups.map(([chapterIndex, candidates]) => (
-                    <div className="frame-candidate-group" key={chapterIndex}>
-                      <div className="frame-candidate-group-head">
-                        <strong>第 {chapterIndex + 1} 章</strong>
-                        <span>{candidates.length} 个候选</span>
-                      </div>
-                      <div className="frame-candidate-strip">
-                        {candidates.map((candidate) => {
-                          const isBusyCandidate = frameCandidateBusyId === candidate.id;
-                          const isDuplicate = candidate.risk_flags.includes("duplicate_frame");
-                          return (
-                            <article
-                              className={`frame-candidate-card ${candidate.selected ? "selected" : ""} ${candidate.rejected ? "rejected" : ""}`}
-                              key={candidate.id}
-                            >
-                              <img alt={candidate.reason} src={`/api/jobs/${job.job_id}/assets/${candidate.path}`} />
-                              <div className="frame-candidate-body">
-                                <div className="frame-candidate-meta">
-                                  <span>{formatCandidateTime(candidate.time)}</span>
-                                  {candidate.selected && <span className="mini-badge ok">已选</span>}
-                                  {candidate.rejected && <span className="mini-badge warn">已拒绝</span>}
-                                  {isDuplicate && <span className="mini-badge warn">重复风险</span>}
-                                </div>
-                                <p>{candidate.reason}</p>
-                                <div className="frame-candidate-actions">
-                                  <button
-                                    className="small-button"
-                                    disabled={isBusy || isBusyCandidate || candidate.selected}
-                                    onClick={() => void handleSelectFrameCandidate(candidate.id)}
-                                    type="button"
-                                  >
-                                    {isBusyCandidate ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}
-                                    选用
-                                  </button>
-                                  <button
-                                    className="small-button"
-                                    disabled={isBusy || isBusyCandidate || candidate.rejected}
-                                    onClick={() => void handleRejectFrameCandidate(candidate.id)}
-                                    type="button"
-                                  >
-                                    <X size={14} />
-                                    拒绝
-                                  </button>
-                                </div>
-                              </div>
-                            </article>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-            )}
             {frameCandidateError && (
               <p className="inline-warning">
                 <AlertTriangle size={15} />
                 {frameCandidateError}
               </p>
             )}
+            {subtitleGateError && (
+              <p className="inline-error">
+                <AlertTriangle size={15} />
+                {subtitleGateError}
+              </p>
+            )}
             {job?.status === "awaiting_note_review" && (
               <section className="note-review-gate" aria-label="确认定稿">
                 <div>
                   <strong>等待人工复核</strong>
-                  <span>确认覆盖、关键要点和配图后，再生成最终 ZIP。你仍可以在上方选择或拒绝候选配图。</span>
+                  <span>确认覆盖、关键要点和配图后，生成最终定稿。ZIP 只是下载打包结果。</span>
                 </div>
-                <button className="small-button strong" disabled={isBusy} onClick={() => void handleFinalizeJob()} type="button">
-                  {isFinalizingJob ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
-                  确认定稿并生成 ZIP
-                </button>
+                <div className="review-gate-actions">
+                  {frameCandidateIndex && frameCandidateIndex.candidates.length > 0 && (
+                    <button className="small-button" disabled={!job || isBusy} onClick={() => setIsFrameReviewOpen(true)} type="button">
+                      <Image size={15} />
+                      审核配图 · {selectedFrameCandidateCount} 已选
+                    </button>
+                  )}
+                  <button className="small-button strong" disabled={isBusy} onClick={() => void handleFinalizeJob()} type="button">
+                    {isFinalizingJob ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+                    确认定稿
+                  </button>
+                </div>
               </section>
             )}
             {finalizeError && (
@@ -1576,21 +1503,6 @@ export function App() {
                 <AlertTriangle size={15} />
                 {finalizeError}
               </p>
-            )}
-            {job && (job.status === "running" || job.status === "pending") && (
-              <div className="job-progress-bar" aria-label="处理进度">
-                <div className="job-progress-info">
-                  <Loader2 className="spin" size={15} />
-                  <span className="job-progress-step">{job.step}</span>
-                  <span className="job-progress-percent">{job.progress}%</span>
-                </div>
-                <div className="job-progress-track">
-                  <div className="job-progress-fill" style={{ width: `${job.progress}%` }} />
-                </div>
-                {job.stage_elapsed_seconds !== undefined && job.stage_elapsed_seconds > 0 && (
-                  <span className="job-progress-elapsed">{formatElapsedSeconds(job.stage_elapsed_seconds)}</span>
-                )}
-              </div>
             )}
             {downloadMessage && (
               <p className="inline-warning">
@@ -1621,7 +1533,28 @@ export function App() {
                 <PreviewBlock
                   title="字幕 Markdown"
                   titleAction={
-                    job?.artifacts.some((artifact) => artifact.path === "transcript.json") ? (
+                    job?.status === "awaiting_subtitle_confirmation" ? (
+                      <div className="subtitle-title-actions">
+                        <button
+                          className="small-button"
+                          disabled={isRegeneratingSubtitles}
+                          onClick={() => void handleRegenerateSubtitles()}
+                          type="button"
+                        >
+                          {isRegeneratingSubtitles ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+                          重新生成字幕
+                        </button>
+                        <button
+                          className="small-button strong"
+                          disabled={isConfirmingSubtitles}
+                          onClick={() => void handleConfirmSubtitles()}
+                          type="button"
+                        >
+                          {isConfirmingSubtitles ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+                          确认字幕并生成笔记
+                        </button>
+                      </div>
+                    ) : job?.artifacts.some((artifact) => artifact.path === "transcript.json") ? (
                       <button
                         className="small-button"
                         disabled={isBusy || isCorrectingTranscript}
@@ -2049,6 +1982,19 @@ export function App() {
         }}
         preview={correctionPreview}
       />
+      {isFrameReviewOpen && job && frameCandidateIndex && (
+        <FrameReviewModal
+          busyCandidateId={frameCandidateBusyId}
+          contextByChapter={frameCandidateContextByChapter}
+          groups={frameCandidateGroups}
+          isBusy={isBusy}
+          jobId={job.job_id}
+          onClose={() => setIsFrameReviewOpen(false)}
+          onReject={(candidateId) => void handleRejectFrameCandidate(candidateId)}
+          onSelect={(candidateId) => void handleSelectFrameCandidate(candidateId)}
+          selectedCount={selectedFrameCandidateCount}
+        />
+      )}
     </main>
   );
 }
@@ -2196,6 +2142,36 @@ function StepList({ job }: { job: JobState | null }) {
   );
 }
 
+function StepProgress({ job }: { job: JobState | null }) {
+  const progress = Math.min(100, Math.max(0, Math.round(job?.progress ?? 0)));
+  const isActive = job?.status === "pending" || job?.status === "running";
+  const icon = isActive ? (
+    <Loader2 className="spin" size={14} />
+  ) : job?.status === "succeeded" ? (
+    <CheckCircle2 size={14} />
+  ) : job?.status === "failed" ? (
+    <AlertTriangle size={14} />
+  ) : null;
+  const label = job?.step || (job ? statusText[job.status] : "未开始");
+  return (
+    <>
+      <span className="step-progress-label">
+        {icon}
+        {label}
+      </span>
+      <span className="step-progress-track">
+        <span className="step-progress-fill" style={{ width: `${progress}%` }} />
+      </span>
+      <span className="step-progress-detail">
+        <span>{progress}%</span>
+        {job?.stage_elapsed_seconds !== undefined && job.stage_elapsed_seconds > 0 && (
+          <span>{formatElapsedSeconds(job.stage_elapsed_seconds)}</span>
+        )}
+      </span>
+    </>
+  );
+}
+
 function formatQualityScore(value: number) {
   return `${Math.round(value * 100)}%`;
 }
@@ -2227,6 +2203,144 @@ function formatCandidateTime(value: number) {
   const minutes = Math.floor((seconds % 3600) / 60);
   const remainingSeconds = seconds % 60;
   return [hours, minutes, remainingSeconds].map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+function FrameReviewModal({
+  busyCandidateId,
+  contextByChapter,
+  groups,
+  isBusy,
+  jobId,
+  onClose,
+  onReject,
+  onSelect,
+  selectedCount
+}: {
+  busyCandidateId: string;
+  contextByChapter: Map<number, FrameCandidateIndex["chapter_contexts"][number]>;
+  groups: [number, FrameCandidate[]][];
+  isBusy: boolean;
+  jobId: string;
+  onClose: () => void;
+  onReject: (candidateId: string) => void;
+  onSelect: (candidateId: string) => void;
+  selectedCount: number;
+}) {
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <section
+        aria-label="审核配图"
+        aria-modal="true"
+        className="frame-review-modal"
+        onMouseDown={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">Frame Review</p>
+            <h2>审核配图候选</h2>
+          </div>
+          <div className="frame-review-header-actions">
+            <span className="mini-badge ok">{selectedCount} 已选</span>
+            <button className="icon-button" onClick={onClose} title="关闭配图审核" type="button">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="modal-body frame-review-body">
+          <p className="frame-review-summary">每章可以选用多张配图；选择会保存到评审数据，最终定稿时一起写入笔记。</p>
+          <div className="frame-candidate-groups">
+            {groups.map(([chapterIndex, candidates]) => {
+              const context = contextByChapter.get(chapterIndex);
+              return (
+                <section className="frame-candidate-group" key={chapterIndex}>
+                  <div className="frame-candidate-group-head">
+                    <div>
+                      <strong>{context?.title || `第 ${chapterIndex + 1} 章`}</strong>
+                      {context && <span>{formatSecondsRange(context.start_time, context.end_time)}</span>}
+                    </div>
+                    <span>{candidates.length} 个候选</span>
+                  </div>
+                  {context && (
+                    <div className="frame-candidate-context" aria-label="原始段落参考">
+                      <div className="frame-candidate-context-head">
+                        <strong>原始段落参考</strong>
+                        <span>选图时对照本章笔记和字幕原文，避免只看缩略图判断。</span>
+                      </div>
+                      <div>
+                        <strong>笔记原段落</strong>
+                        <p>{context.note_excerpt || "暂无可用笔记段落。"}</p>
+                      </div>
+                      <div>
+                        <strong>字幕原文片段</strong>
+                        <p>{context.subtitle_excerpt || "暂无可用字幕片段。"}</p>
+                      </div>
+                    </div>
+                  )}
+                  <div className="frame-candidate-strip">
+                    {candidates.map((candidate) => {
+                      const isBusyCandidate = busyCandidateId === candidate.id;
+                      const isDuplicate = candidate.risk_flags.includes("duplicate_frame");
+                      return (
+                        <article
+                          className={`frame-candidate-card ${candidate.selected ? "selected" : ""} ${candidate.rejected ? "rejected" : ""}`}
+                          key={candidate.id}
+                        >
+                          <img alt={candidate.reason} src={`/api/jobs/${jobId}/assets/${candidate.path}`} />
+                          <div className="frame-candidate-body">
+                            <div className="frame-candidate-meta">
+                              <span>{formatCandidateTime(candidate.time)}</span>
+                              {candidate.selected && <span className="mini-badge ok">已选</span>}
+                              {candidate.rejected && <span className="mini-badge warn">已拒绝</span>}
+                              {isDuplicate && <span className="mini-badge warn">重复风险</span>}
+                            </div>
+                            <p>{candidate.reason}</p>
+                            <div className="frame-candidate-actions">
+                              <button
+                                className="small-button"
+                                disabled={isBusy || isBusyCandidate}
+                                onClick={() => onSelect(candidate.id)}
+                                type="button"
+                              >
+                                {isBusyCandidate ? (
+                                  <Loader2 className="spin" size={14} />
+                                ) : candidate.selected ? (
+                                  <X size={14} />
+                                ) : (
+                                  <CheckCircle2 size={14} />
+                                )}
+                                {candidate.selected ? "取消" : "选用"}
+                              </button>
+                              <button
+                                className="small-button"
+                                disabled={isBusy || isBusyCandidate || candidate.rejected}
+                                onClick={() => onReject(candidate.id)}
+                                type="button"
+                              >
+                                <X size={14} />
+                                拒绝
+                              </button>
+                            </div>
+                          </div>
+                        </article>
+                      );
+                    })}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="modal-footer">
+          <button className="small-button strong" onClick={onClose} type="button">
+            完成
+          </button>
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function DownloadLink({
