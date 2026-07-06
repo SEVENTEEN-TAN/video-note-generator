@@ -180,6 +180,25 @@ class QualityReport(BaseModel):
     chapter_reports: list[ChapterQualityReport] = Field(default_factory=list)
 
 
+class FrameCandidate(BaseModel):
+    id: str
+    chapter_index: int
+    time: float
+    path: str
+    reason: str
+    source: Literal["note_key_moment", "chapter_fallback"]
+    hash: str
+    duplicate_of: str | None = None
+    similarity: float = Field(ge=0, le=1)
+    risk_flags: list[str] = Field(default_factory=list)
+    selected: bool = False
+    rejected: bool = False
+
+
+class FrameCandidateIndex(BaseModel):
+    candidates: list[FrameCandidate] = Field(default_factory=list)
+
+
 class TranscriptCorrectionRequest(BaseModel):
     note_api_key: str
     note_base_url: str = "https://api.openai.com/v1"
