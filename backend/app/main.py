@@ -22,6 +22,13 @@ from .cuda_dependencies import (
 )
 from .ffmpeg_tools import extract_mp3, probe_duration
 from .filenames import normalize_uploaded_filename
+from .frame_candidates import (
+    build_frame_candidate_index,
+    load_frame_candidate_index,
+    reject_frame_candidate,
+    select_frame_candidate,
+    write_frame_candidate_index,
+)
 from .llm import LLMError, generate_note_draft
 from .local_dependencies import (
     LocalTranscriptionDependencyInstallState,
@@ -37,6 +44,7 @@ from .model_downloads import (
     start_model_download,
 )
 from .models import (
+    FrameCandidateIndex,
     FrameSuggestion,
     JobConfig,
     JobHistory,
@@ -58,7 +66,13 @@ from .note_chunks import (
     load_chunk_draft,
     regenerate_chunk_and_reduce,
 )
-from .note_versions import activate_note_version, get_note_version, load_note_version_index, set_note_version_selection
+from .note_versions import (
+    activate_note_version,
+    find_source_video,
+    get_note_version,
+    load_note_version_index,
+    set_note_version_selection,
+)
 from .processor import (
     continue_job_to_notes,
     create_zip,
@@ -593,6 +607,52 @@ def get_quality_report(job_id: str) -> QualityReport:
     write_quality_report(job_dir, report)
     store.refresh_artifacts(job_id)
     return report
+
+
+@app.get("/api/jobs/{job_id}/frame-candidates", response_model=FrameCandidateIndex)
+def get_frame_candidates(job_id: str) -> FrameCandidateIndex:
+    job_dir = safe_job_dir(job_id)
+    if not (job_dir / "note.md").exists():
+        raise HTTPException(status_code=400, detail="frame candidates require note.md.")
+    existing = load_frame_candidate_index(job_dir)
+    if existing is not None:
+        return existing
+    try:
+        video_path = find_source_video(job_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    metadata = read_metadata(job_dir)
+    duration = metadata.get("duration_seconds")
+    index = build_frame_candidate_index(
+        job_dir,
+        video_path,
+        duration=float(duration) if duration is not None else None,
+    )
+    write_frame_candidate_index(job_dir, index)
+    store.refresh_artifacts(job_id)
+    return index
+
+
+@app.post("/api/jobs/{job_id}/frame-candidates/{candidate_id}/select", response_model=FrameCandidateIndex)
+def select_job_frame_candidate(job_id: str, candidate_id: str) -> FrameCandidateIndex:
+    job_dir = safe_job_dir(job_id)
+    try:
+        index = select_frame_candidate(job_dir, candidate_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    store.refresh_artifacts(job_id)
+    return index
+
+
+@app.post("/api/jobs/{job_id}/frame-candidates/{candidate_id}/reject", response_model=FrameCandidateIndex)
+def reject_job_frame_candidate(job_id: str, candidate_id: str) -> FrameCandidateIndex:
+    job_dir = safe_job_dir(job_id)
+    try:
+        index = reject_frame_candidate(job_dir, candidate_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    store.refresh_artifacts(job_id)
+    return index
 
 
 @app.get("/api/jobs/{job_id}/assets/{asset_path:path}")

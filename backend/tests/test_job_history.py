@@ -173,6 +173,20 @@ def test_refresh_artifacts_includes_quality_report_files(tmp_path, monkeypatch) 
     }
 
 
+def test_refresh_artifacts_includes_frame_candidate_index(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    job_dir = tmp_path / "frame-candidate-artifacts"
+    job_dir.mkdir()
+    review_dir = job_dir / "review"
+    review_dir.mkdir()
+    (review_dir / "frame_candidates.json").write_text('{"candidates":[]}', encoding="utf-8")
+
+    artifacts = main.store.refresh_artifacts("frame-candidate-artifacts")
+
+    assert {artifact.path for artifact in artifacts} >= {"review/frame_candidates.json"}
+
+
 def test_list_jobs_orders_recent_activity_before_newer_creation_time(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))

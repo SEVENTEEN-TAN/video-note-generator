@@ -120,6 +120,7 @@ class JobStore:
             review_candidates = [
                 ("quality_report.json", "质量报告 JSON", "json"),
                 ("quality_report.md", "质量报告 Markdown", "markdown"),
+                ("frame_candidates.json", "配图候选 JSON", "json"),
             ]
             for filename, label, kind in review_candidates:
                 review_path = review_dir / filename

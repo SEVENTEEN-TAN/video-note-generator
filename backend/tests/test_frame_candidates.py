@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from backend.app import main
 from backend.app.frame_candidates import (
     build_frame_candidate_index,
     load_frame_candidate_index,
@@ -12,6 +14,8 @@ from backend.app.frame_candidates import (
     select_frame_candidate,
     write_frame_candidate_index,
 )
+from backend.app.job_store import JobStore
+from backend.app.main import app
 from backend.app.models import FrameCandidate, FrameCandidateIndex
 
 
@@ -140,3 +144,61 @@ def test_select_frame_candidate_rejects_missing_candidate(tmp_path) -> None:
 
     with pytest.raises(FileNotFoundError):
         select_frame_candidate(tmp_path, "missing")
+
+
+def test_frame_candidate_endpoint_generates_and_returns_candidates(tmp_path, monkeypatch) -> None:
+    outputs_root = tmp_path / "outputs"
+    job_id = "frame-candidates-job"
+    job_dir = outputs_root / job_id
+    job_dir.mkdir(parents=True)
+    video_path = write_candidate_job(job_dir)
+
+    def fake_extract_frame(_video_path: Path, output_path: Path, timestamp: float, _duration: float | None) -> float:
+        assert _video_path == video_path
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(f"jpg-{timestamp}".encode())
+        return timestamp
+
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
+    monkeypatch.setattr(main, "store", JobStore(outputs_root))
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+
+    response = TestClient(app).get(f"/api/jobs/{job_id}/frame-candidates")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["candidates"]) > 0
+    assert (job_dir / "review" / "frame_candidates.json").exists()
+
+
+def test_frame_candidate_select_and_reject_endpoints_persist_choice(tmp_path, monkeypatch) -> None:
+    outputs_root = tmp_path / "outputs"
+    job_id = "frame-choice-job"
+    job_dir = outputs_root / job_id
+    job_dir.mkdir(parents=True)
+    write_candidate_job(job_dir)
+
+    def fake_extract_frame(_video_path: Path, output_path: Path, timestamp: float, _duration: float | None) -> float:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(f"jpg-{timestamp}".encode())
+        return timestamp
+
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
+    monkeypatch.setattr(main, "store", JobStore(outputs_root))
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+
+    client = TestClient(app)
+    first_payload = client.get(f"/api/jobs/{job_id}/frame-candidates").json()
+    candidate_id = first_payload["candidates"][1]["id"]
+
+    selected = client.post(f"/api/jobs/{job_id}/frame-candidates/{candidate_id}/select")
+    assert selected.status_code == 200
+    assert next(candidate for candidate in selected.json()["candidates"] if candidate["id"] == candidate_id)["selected"] is True
+
+    rejected = client.post(f"/api/jobs/{job_id}/frame-candidates/{candidate_id}/reject")
+    assert rejected.status_code == 200
+    candidate = next(candidate for candidate in rejected.json()["candidates"] if candidate["id"] == candidate_id)
+    assert candidate["selected"] is False
+    assert candidate["rejected"] is True
