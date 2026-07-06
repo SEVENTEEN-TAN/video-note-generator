@@ -223,6 +223,7 @@ a {
 .result-panel {
   display: flex;
   flex-direction: column;
+  gap: 12px;
 }
 
 .task-config-panel .drop-zone {
@@ -1226,7 +1227,10 @@ textarea:focus {
 }
 
 .result-body-scroll {
+  align-content: start;
+  display: grid;
   flex: 1 1 auto;
+  gap: 12px;
   min-height: 0;
   overflow: auto;
   padding-right: 3px;
@@ -1405,9 +1409,6 @@ textarea:focus {
   display: grid;
   gap: 12px;
   margin-top: 12px;
-  max-height: min(520px, 42vh);
-  overflow-y: auto;
-  padding-right: 4px;
 }
 
 .frame-candidate-group {

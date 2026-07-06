@@ -1335,35 +1335,6 @@ export function App() {
               </div>
               {previewVersion && <span className="result-version-summary">{formatVersionDetails(previewVersion)}</span>}
             </div>
-            {noteChunks && noteChunks.chunks.length > 1 && (
-              <details className="chunk-manager" aria-label="笔记分段管理">
-                <summary>
-                  <Captions size={15} />
-                  <span>笔记分段（{noteChunks.chunks.length} 块）</span>
-                </summary>
-                <div className="chunk-list">
-                  {noteChunks.chunks.map((chunk: NoteChunkMeta) => (
-                    <div className={`chunk-item ${chunk.status}`} key={chunk.id}>
-                      <div className="chunk-item-info">
-                        <strong>{chunk.label}</strong>
-                        <span className="chunk-time">{formatSecondsRange(chunk.start_time, chunk.end_time)}</span>
-                        {chunk.title && <span className="chunk-title">{chunk.title}</span>}
-                        {chunk.status === "skipped" && <span className="mini-badge warn">已跳过</span>}
-                      </div>
-                      <button
-                        className="small-button"
-                        disabled={isBusy || regeneratingChunkId === chunk.id}
-                        onClick={() => void handleRegenerateNoteChunk(chunk.id)}
-                        type="button"
-                      >
-                        {regeneratingChunkId === chunk.id ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
-                        重生成
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
             <div className="download-row">
               <div className="download-actions">
                 <DownloadLink job={job} artifactPath="note.md" label="Markdown" onDownloadError={setDownloadMessage} />
@@ -1400,6 +1371,36 @@ export function App() {
                 </button>
               </div>
             </div>
+            <div className="result-body-scroll">
+              {noteChunks && noteChunks.chunks.length > 1 && (
+                <details className="chunk-manager" aria-label="笔记分段管理">
+                  <summary>
+                    <Captions size={15} />
+                    <span>笔记分段（{noteChunks.chunks.length} 块）</span>
+                  </summary>
+                  <div className="chunk-list">
+                    {noteChunks.chunks.map((chunk: NoteChunkMeta) => (
+                      <div className={`chunk-item ${chunk.status}`} key={chunk.id}>
+                        <div className="chunk-item-info">
+                          <strong>{chunk.label}</strong>
+                          <span className="chunk-time">{formatSecondsRange(chunk.start_time, chunk.end_time)}</span>
+                          {chunk.title && <span className="chunk-title">{chunk.title}</span>}
+                          {chunk.status === "skipped" && <span className="mini-badge warn">已跳过</span>}
+                        </div>
+                        <button
+                          className="small-button"
+                          disabled={isBusy || regeneratingChunkId === chunk.id}
+                          onClick={() => void handleRegenerateNoteChunk(chunk.id)}
+                          type="button"
+                        >
+                          {regeneratingChunkId === chunk.id ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+                          重生成
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
             {job?.status === "awaiting_subtitle_confirmation" && (
               <div className="subtitle-gate" aria-label="字幕确认">
                 <div className="subtitle-gate-head">
@@ -1609,7 +1610,6 @@ export function App() {
                 {correctionError}
               </p>
             )}
-            <div className="result-body-scroll">
               <div className="preview-stack">
                 <PreviewBlock
                   assetBasePath={previewAssetBasePath}
