@@ -147,6 +147,39 @@ class TranscriptPayload(BaseModel):
     segments: list[TranscriptSegment] = Field(default_factory=list)
 
 
+class QualityScores(BaseModel):
+    coverage: float = Field(ge=0, le=1)
+    structure: float = Field(ge=0, le=1)
+    frames: float = Field(ge=0, le=1)
+    stability: float = Field(ge=0, le=1)
+
+
+class QualityIssue(BaseModel):
+    severity: Literal["info", "warning", "error"]
+    type: str
+    message: str
+    chapter_index: int | None = None
+    frame_ids: list[str] = Field(default_factory=list)
+
+
+class ChapterQualityReport(BaseModel):
+    chapter_index: int
+    title: str
+    start_time: float
+    end_time: float
+    transcript_chars: int
+    note_chars: int
+    selected_frame_count: int
+    issues: list[str] = Field(default_factory=list)
+
+
+class QualityReport(BaseModel):
+    status: Literal["ready", "review_recommended", "needs_attention"]
+    scores: QualityScores
+    issues: list[QualityIssue] = Field(default_factory=list)
+    chapter_reports: list[ChapterQualityReport] = Field(default_factory=list)
+
+
 class TranscriptCorrectionRequest(BaseModel):
     note_api_key: str
     note_base_url: str = "https://api.openai.com/v1"
