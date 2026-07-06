@@ -172,18 +172,18 @@ def process_transcription_job(
     )
     try:
         debug_log.event("probe_duration", "starting", video_path=str(video_path))
-        store.update(job_id, status=JobStatus.running, step="????", progress=5)
+        store.update(job_id, status=JobStatus.running, step="分析视频", progress=5)
         duration = probe_duration(video_path)
         debug_log.event("probe_duration", "succeeded", duration_seconds=duration)
 
-        store.update(job_id, step="????", progress=15)
+        store.update(job_id, step="音频分离", progress=15)
         audio_path = job_dir / "audio.mp3"
         debug_log.event("extract_mp3", "starting", audio_path=str(audio_path))
         extract_mp3(video_path, audio_path)
         debug_log.event("extract_mp3", "succeeded", audio_size_bytes=_file_size(audio_path))
         store.refresh_artifacts(job_id)
 
-        store.update(job_id, step="????", progress=35)
+        store.update(job_id, step="字幕生成", progress=35)
         debug_log.event("transcribe_audio", "starting", audio_path=str(audio_path))
         transcript_payload = transcribe_audio(
             audio_path,
@@ -223,14 +223,14 @@ def process_transcription_job(
         store.update(
             job_id,
             status=JobStatus.awaiting_subtitle_confirmation,
-            step="??????",
+            step="等待确认字幕",
             progress=40,
         )
         debug_log.event("process_transcription_job", "awaiting_confirmation")
     except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
         debug_log.exception("process_transcription_job", "failed", exc)
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.failed, step="??", error=str(exc), progress=100)
+        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
 
 
 def continue_job_to_notes(
@@ -259,7 +259,7 @@ def continue_job_to_notes(
         if not segments:
             raise ProcessingError("Transcript has no usable text segments.")
 
-        store.update(job_id, status=JobStatus.running, step="????", progress=60, error="")
+        store.update(job_id, status=JobStatus.running, step="笔记生成", progress=60, error="")
         debug_log.event("generate_note_draft", "starting", segment_count=len(segments))
         system_prompt = (
             "You are a professional video content editor, course note writer, and knowledge management expert. "
@@ -289,7 +289,7 @@ def continue_job_to_notes(
         )
         debug_log.event("write_metadata", "succeeded", metadata_size_bytes=_file_size(job_dir / "metadata.json"))
 
-        store.update(job_id, step="?????", progress=78)
+        store.update(job_id, step="关键帧抽取", progress=78)
         debug_log.event("create_note_version", "starting", version_id="note_001")
         create_note_version_from_draft(
             job_dir=job_dir,
@@ -323,7 +323,7 @@ def continue_job_to_notes(
     except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
         debug_log.exception("continue_job_to_notes", "failed", exc)
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.failed, step="??", error=str(exc), progress=100)
+        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
 
 
 def regenerate_subtitles_job(
@@ -358,7 +358,7 @@ def regenerate_subtitles_job(
         if review_dir.exists():
             shutil.rmtree(review_dir, ignore_errors=True)
 
-        store.update(job_id, status=JobStatus.running, step="????", progress=30, error="")
+        store.update(job_id, status=JobStatus.running, step="字幕生成", progress=30, error="")
         debug_log.event("extract_mp3", "starting", audio_path=str(job_dir / "audio.mp3"))
         audio_path = job_dir / "audio.mp3"
         extract_mp3(video_path, audio_path)
@@ -394,14 +394,14 @@ def regenerate_subtitles_job(
         store.update(
             job_id,
             status=JobStatus.awaiting_subtitle_confirmation,
-            step="??????",
+            step="等待确认字幕",
             progress=40,
         )
         debug_log.event("regenerate_subtitles_job", "awaiting_confirmation")
     except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
         debug_log.exception("regenerate_subtitles_job", "failed", exc)
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.failed, step="??", error=str(exc), progress=100)
+        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
 
 
 def regenerate_note_job(

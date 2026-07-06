@@ -20,6 +20,7 @@ from backend.app.models import (
     TranscriptionMode,
 )
 from backend.app.job_store import JobStore
+from backend.app import note_versions
 from backend.app.note_versions import (
     activate_note_version,
     add_note_version,
@@ -212,6 +213,53 @@ def test_note_version_patch_rejects_missing_frames_before_changing_active(tmp_pa
     assert loaded.selected_version_ids == []
     assert (job_dir / "note.md").read_text(encoding="utf-8") == "# Active"
     assert (frames_dir / "frame_001.jpg").read_bytes() == b"active frame"
+
+
+def test_ensure_root_note_has_version_snapshots_legacy_manual_note(tmp_path) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "note.md").write_text("# 手工改过的旧笔记", encoding="utf-8-sig")
+    (job_dir / "frames").mkdir()
+    (job_dir / "frames" / "frame_001.jpg").write_bytes(b"manual frame")
+
+    index = note_versions.ensure_root_note_has_version(job_dir)
+
+    assert index.active_version_id == "manual_001"
+    assert index.selected_version_ids == ["manual_001"]
+    assert index.versions[0].label == "manual_001 · 手工版本"
+    assert index.versions[0].note_path == "note_versions/manual_001/note.md"
+    assert (job_dir / "note_versions" / "manual_001" / "note.md").read_text(encoding="utf-8-sig") == "# 手工改过的旧笔记"
+    assert (job_dir / "note_versions" / "manual_001" / "frames" / "frame_001.jpg").read_bytes() == b"manual frame"
+
+
+def test_ensure_root_note_has_version_snapshots_manual_note_that_differs_from_active_version(tmp_path) -> None:
+    job_dir = tmp_path / "job"
+    job_dir.mkdir()
+    (job_dir / "note.md").write_text("# 用户定稿", encoding="utf-8-sig")
+    root_frames = job_dir / "frames"
+    root_frames.mkdir()
+    (root_frames / "frame_001.jpg").write_bytes(b"manual frame")
+    version_dir = job_dir / "note_versions" / "note_001"
+    (version_dir / "frames").mkdir(parents=True)
+    (version_dir / "note.md").write_text("# AI 初稿", encoding="utf-8-sig")
+    (version_dir / "frames" / "frame_001.jpg").write_bytes(b"ai frame")
+    write_note_version_index(
+        job_dir,
+        NoteVersionIndex(
+            active_version_id="note_001",
+            selected_version_ids=["note_001"],
+            versions=[make_version("note_001", selected=True, active=True)],
+        ),
+    )
+
+    index = note_versions.ensure_root_note_has_version(job_dir)
+
+    assert index.active_version_id == "manual_001"
+    assert index.selected_version_ids == ["note_001", "manual_001"]
+    assert [version.id for version in index.versions] == ["note_001", "manual_001"]
+    manual = index.versions[1]
+    assert manual.label == "manual_001 · 手工版本"
+    assert (job_dir / "note_versions" / "manual_001" / "note.md").read_text(encoding="utf-8-sig") == "# 用户定稿"
 
 
 def test_create_zip_includes_selected_note_versions_with_relative_frames(tmp_path) -> None:

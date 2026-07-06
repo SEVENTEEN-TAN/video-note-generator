@@ -8,7 +8,7 @@ from threading import Lock
 
 from .filenames import normalize_uploaded_filename
 from .models import Artifact, FailureContext, JobPublicState, JobStatus, JobSummary
-from .note_versions import load_note_version_index, resolve_job_relative_path
+from .note_versions import ensure_root_note_has_version, load_note_version_index, resolve_job_relative_path
 
 
 TERMINAL_DEBUG_STAGES = {
@@ -133,6 +133,7 @@ class JobStore:
             state = self._jobs.get(job_id)
             if state:
                 state.artifacts = artifacts
+                state.download_filename = _zip_download_filename(job_dir) if (job_dir / "download.zip").exists() else None
                 if state.status == JobStatus.failed and state.failure_context is None:
                     state.failure_context = _latest_disk_failure_context(job_dir)
         return artifacts
@@ -144,6 +145,9 @@ class JobStore:
 
         metadata = self._read_metadata(job_dir)
         artifacts = self.refresh_artifacts(job_id)
+        if (job_dir / "note.md").exists():
+            ensure_root_note_has_version(job_dir)
+            artifacts = self.refresh_artifacts(job_id)
         version_index = load_note_version_index(job_dir)
         timestamp = str(_job_history_activity_timestamp(job_dir) or metadata.get("created_at") or _mtime_iso(job_dir))
         status = _infer_disk_job_status(job_dir, artifacts, version_index)
@@ -180,6 +184,7 @@ class JobStore:
             step_started_at=timestamp,
             updated_at=timestamp,
             stage_elapsed_seconds=0,
+            download_filename=_zip_download_filename(job_dir) if (job_dir / "download.zip").exists() else None,
         )
         if status == JobStatus.awaiting_note_review:
             state.step = "等待复核笔记"
@@ -263,6 +268,21 @@ class JobStore:
 
 def _mtime_iso(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
+
+
+def _zip_download_filename(job_dir: Path) -> str:
+    metadata_path = job_dir / "metadata.json"
+    metadata: dict = {}
+    if metadata_path.exists():
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = {}
+    title = str(metadata.get("title") or metadata.get("original_filename") or job_dir.name).strip() or job_dir.name
+    stem = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", title).strip(" ._") or job_dir.name
+    if stem.lower().endswith(".zip"):
+        return stem
+    return f"{stem}.zip"
 
 
 def _job_history_activity_timestamp(job_dir: Path) -> str | None:

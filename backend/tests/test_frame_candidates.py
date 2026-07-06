@@ -131,12 +131,60 @@ def test_frame_candidate_index_persists_and_mutations_update_choices(tmp_path, m
     second_id = loaded.candidates[1].id
     selected = select_frame_candidate(tmp_path, second_id)
     selected_candidates = [candidate for candidate in selected.candidates if candidate.chapter_index == 0 and candidate.selected]
-    assert [candidate.id for candidate in selected_candidates] == [second_id]
+    assert [candidate.id for candidate in selected_candidates] == [loaded.candidates[0].id, second_id]
 
     rejected = reject_frame_candidate(tmp_path, second_id)
     rejected_candidate = next(candidate for candidate in rejected.candidates if candidate.id == second_id)
     assert rejected_candidate.selected is False
     assert rejected_candidate.rejected is True
+
+
+def test_select_frame_candidate_respects_global_frame_limit(tmp_path, monkeypatch) -> None:
+    video_path = write_candidate_job(tmp_path)
+
+    def fake_extract_frame(_video_path: Path, output_path: Path, timestamp: float, _duration: float | None) -> float:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(f"jpg-{timestamp}".encode())
+        return timestamp
+
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+    index = build_frame_candidate_index(tmp_path, video_path, duration=120, candidates_per_chapter=2)
+    write_frame_candidate_index(tmp_path, index)
+
+    with pytest.raises(ValueError, match="frame limit"):
+        select_frame_candidate(tmp_path, index.candidates[1].id, frame_limit=1)
+
+
+def test_build_frame_candidate_index_includes_chapter_context(tmp_path, monkeypatch) -> None:
+    video_path = write_candidate_job(tmp_path)
+    (tmp_path / "transcript.json").write_text(
+        json.dumps(
+            {
+                "text": "Intro transcript Advanced transcript",
+                "segments": [
+                    {"start": 5, "end": 8, "text": "Intro transcript"},
+                    {"start": 70, "end": 75, "text": "Advanced transcript"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_extract_frame(_video_path: Path, output_path: Path, timestamp: float, _duration: float | None) -> float:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(f"jpg-{timestamp}".encode())
+        return timestamp
+
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+
+    index = build_frame_candidate_index(tmp_path, video_path, duration=120, candidates_per_chapter=1)
+
+    assert index.chapter_contexts[0].title == "Intro"
+    assert "Intro details" in index.chapter_contexts[0].note_excerpt
+    assert "Intro transcript" in index.chapter_contexts[0].subtitle_excerpt
 
 
 def test_select_frame_candidate_rejects_missing_candidate(tmp_path) -> None:

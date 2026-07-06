@@ -1469,6 +1469,25 @@ def test_get_job_loads_disk_history_when_job_is_not_in_memory(tmp_path, monkeypa
     assert {artifact["path"] for artifact in payload["artifacts"]} == {"metadata.json", "note.md", "subtitles.md"}
 
 
+def test_get_job_uses_article_title_for_zip_download_filename(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    write_history_job(
+        tmp_path,
+        "zip-title-job",
+        created_at="2026-07-06T00:00:00+00:00",
+        title="Self-Attention 详解：计算流程/缩放技巧",
+        original_filename="input.mp4",
+    )
+    (tmp_path / "zip-title-job" / "download.zip").write_bytes(b"zip")
+
+    response = TestClient(app).get("/api/jobs/zip-title-job")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["download_filename"] == "Self-Attention 详解：计算流程_缩放技巧.zip"
+
+
 def test_get_job_loads_note_review_pending_state_from_disk(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))

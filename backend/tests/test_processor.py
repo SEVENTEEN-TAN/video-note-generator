@@ -2,6 +2,7 @@
 
 import codecs
 import json
+from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
@@ -370,6 +371,7 @@ def test_phase_one_pauses_for_subtitle_confirmation(tmp_path, monkeypatch) -> No
     state = store.get(job_id)
     assert state is not None
     assert state.status == JobStatus.awaiting_subtitle_confirmation
+    assert state.step == "等待确认字幕"
     assert (job_dir / "subtitles.md").exists()
     assert (job_dir / "subtitles.pending").exists()
     assert not (job_dir / "note.md").exists()
@@ -424,6 +426,14 @@ def test_regenerate_subtitles_removes_old_notes_and_pauses_again(tmp_path, monke
     state = store.get(job_id)
     assert state is not None
     assert state.status == JobStatus.awaiting_subtitle_confirmation
+    assert state.step == "等待确认字幕"
     assert (job_dir / "subtitles.pending").exists()
     assert not (job_dir / "note.md").exists()
     assert not (job_dir / "download.zip").exists()
+
+
+def test_processor_progress_labels_do_not_contain_placeholder_question_marks() -> None:
+    processor_source = Path(processor.__file__).read_text(encoding="utf-8")
+
+    assert '"????' not in processor_source
+    assert 'step="??"' not in processor_source

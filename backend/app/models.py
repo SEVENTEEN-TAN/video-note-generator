@@ -196,8 +196,18 @@ class FrameCandidate(BaseModel):
     rejected: bool = False
 
 
+class FrameCandidateChapterContext(BaseModel):
+    chapter_index: int
+    title: str
+    start_time: float
+    end_time: float
+    note_excerpt: str = ""
+    subtitle_excerpt: str = ""
+
+
 class FrameCandidateIndex(BaseModel):
     candidates: list[FrameCandidate] = Field(default_factory=list)
+    chapter_contexts: list[FrameCandidateChapterContext] = Field(default_factory=list)
 
 
 class TranscriptCorrectionRequest(BaseModel):
@@ -424,6 +434,7 @@ class JobPublicState(BaseModel):
     step_started_at: str | None = None
     updated_at: str | None = None
     stage_elapsed_seconds: float = 0
+    download_filename: str | None = None
 
 
 class JobSummary(BaseModel):

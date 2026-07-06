@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import subprocess
 import sys
@@ -8,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .ffmpeg_tools import extract_frame, require_ffmpeg
-from .models import FrameCandidate, FrameCandidateIndex
+from .models import FrameCandidate, FrameCandidateChapterContext, FrameCandidateIndex, TranscriptPayload
 
 
 FRAME_CANDIDATES_INDEX = Path("review") / "frame_candidates.json"
@@ -76,7 +77,7 @@ def build_frame_candidate_index(
                 )
             )
             prior_hashes.append((candidate_id, hash_value))
-    return FrameCandidateIndex(candidates=candidates)
+    return FrameCandidateIndex(candidates=candidates, chapter_contexts=_chapter_contexts(job_dir, chapters))
 
 
 def write_frame_candidate_index(job_dir: Path, index: FrameCandidateIndex) -> Path:
@@ -96,18 +97,20 @@ def load_frame_candidate_index(job_dir: Path) -> FrameCandidateIndex | None:
         return None
 
 
-def select_frame_candidate(job_dir: Path, candidate_id: str) -> FrameCandidateIndex:
+def select_frame_candidate(job_dir: Path, candidate_id: str, frame_limit: int | None = None) -> FrameCandidateIndex:
     index = _require_frame_candidate_index(job_dir)
     target = _require_candidate(index, candidate_id)
+    if not target.selected and frame_limit is not None:
+        selected_count = sum(1 for candidate in index.candidates if candidate.selected and not candidate.rejected)
+        if selected_count >= frame_limit:
+            raise ValueError(f"Cannot select more frame candidates because frame limit is {frame_limit}.")
     updated: list[FrameCandidate] = []
     for candidate in index.candidates:
-        if candidate.chapter_index != target.chapter_index:
-            updated.append(candidate)
-        elif candidate.id == candidate_id:
+        if candidate.id == candidate_id:
             updated.append(candidate.model_copy(update={"selected": True, "rejected": False}))
         else:
-            updated.append(candidate.model_copy(update={"selected": False}))
-    new_index = FrameCandidateIndex(candidates=updated)
+            updated.append(candidate)
+    new_index = FrameCandidateIndex(candidates=updated, chapter_contexts=index.chapter_contexts)
     write_frame_candidate_index(job_dir, new_index)
     return new_index
 
@@ -121,7 +124,7 @@ def reject_frame_candidate(job_dir: Path, candidate_id: str) -> FrameCandidateIn
         else candidate
         for candidate in index.candidates
     ]
-    new_index = FrameCandidateIndex(candidates=updated)
+    new_index = FrameCandidateIndex(candidates=updated, chapter_contexts=index.chapter_contexts)
     write_frame_candidate_index(job_dir, new_index)
     return new_index
 
@@ -197,6 +200,65 @@ def _candidate_seeds(chapter: CandidateChapter, limit: int) -> list[CandidateSee
         if len(unique) >= limit:
             break
     return unique
+
+
+def _chapter_contexts(job_dir: Path, chapters: list[CandidateChapter]) -> list[FrameCandidateChapterContext]:
+    transcript = _load_transcript(job_dir)
+    contexts: list[FrameCandidateChapterContext] = []
+    for chapter in chapters:
+        contexts.append(
+            FrameCandidateChapterContext(
+                chapter_index=chapter.index,
+                title=chapter.title,
+                start_time=chapter.start_time,
+                end_time=chapter.end_time,
+                note_excerpt=_note_excerpt_for_chapter(job_dir, chapter.title),
+                subtitle_excerpt=_subtitle_excerpt_for_range(transcript, chapter.start_time, chapter.end_time),
+            )
+        )
+    return contexts
+
+
+def _load_transcript(job_dir: Path) -> TranscriptPayload:
+    transcript_path = job_dir / "transcript.json"
+    if not transcript_path.exists():
+        return TranscriptPayload()
+    try:
+        return TranscriptPayload.model_validate(json.loads(transcript_path.read_text(encoding="utf-8")))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return TranscriptPayload()
+
+
+def _note_excerpt_for_chapter(job_dir: Path, title: str) -> str:
+    note_path = job_dir / "note.md"
+    if not note_path.exists():
+        return ""
+    lines = note_path.read_text(encoding="utf-8-sig").splitlines()
+    in_target = False
+    excerpt: list[str] = []
+    for line in lines:
+        heading = HEADING_PATTERN.match(line)
+        if heading:
+            if in_target:
+                break
+            in_target = heading.group(1).strip() == title
+            continue
+        if in_target:
+            stripped = line.strip()
+            if stripped and not stripped.startswith("!") and "关键帧：" not in stripped:
+                excerpt.append(stripped)
+        if len(" ".join(excerpt)) > 220:
+            break
+    return " ".join(excerpt)[:260]
+
+
+def _subtitle_excerpt_for_range(transcript: TranscriptPayload, start_time: float, end_time: float) -> str:
+    lines = [
+        segment.text.strip()
+        for segment in transcript.segments
+        if segment.text.strip() and segment.end >= start_time and segment.start <= end_time
+    ]
+    return " ".join(lines)[:260]
 
 
 def _find_time_range(lines: list[str], duration: float | None) -> tuple[float, float]:

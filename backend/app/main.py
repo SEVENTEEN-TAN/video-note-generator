@@ -639,9 +639,12 @@ def get_frame_candidates(job_id: str) -> FrameCandidateIndex:
 def select_job_frame_candidate(job_id: str, candidate_id: str) -> FrameCandidateIndex:
     job_dir = safe_job_dir(job_id)
     try:
-        index = select_frame_candidate(job_dir, candidate_id)
+        metadata = read_metadata(job_dir)
+        index = select_frame_candidate(job_dir, candidate_id, frame_limit=int(metadata.get("frame_limit") or 6))
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     store.refresh_artifacts(job_id)
     return index
 
