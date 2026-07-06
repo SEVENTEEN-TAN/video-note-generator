@@ -1405,6 +1405,9 @@ textarea:focus {
   display: grid;
   gap: 12px;
   margin-top: 12px;
+  max-height: min(520px, 42vh);
+  overflow-y: auto;
+  padding-right: 4px;
 }
 
 .frame-candidate-group {
