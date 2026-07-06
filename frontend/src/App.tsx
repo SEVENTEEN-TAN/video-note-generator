@@ -1324,6 +1324,57 @@ export function App() {
                 </div>
               </div>
             )}
+            {qualityReport && (
+              <section className={`quality-panel ${qualityReport.status}`} aria-label="质量复核">
+                <div className="quality-panel-head">
+                  <div>
+                    <strong>质量复核</strong>
+                    <span>系统已检查覆盖、结构、配图和生成稳定性；最终准确性仍建议人工确认。</span>
+                  </div>
+                  <span className={`quality-status ${qualityReport.status}`}>{formatQualityStatus(qualityReport.status)}</span>
+                </div>
+                <div className="quality-score-grid">
+                  <div>
+                    <span>覆盖</span>
+                    <strong>{formatQualityScore(qualityReport.scores.coverage)}</strong>
+                  </div>
+                  <div>
+                    <span>结构</span>
+                    <strong>{formatQualityScore(qualityReport.scores.structure)}</strong>
+                  </div>
+                  <div>
+                    <span>配图</span>
+                    <strong>{formatQualityScore(qualityReport.scores.frames)}</strong>
+                  </div>
+                  <div>
+                    <span>稳定性</span>
+                    <strong>{formatQualityScore(qualityReport.scores.stability)}</strong>
+                  </div>
+                </div>
+                {qualityReport.issues.length > 0 ? (
+                  <div className="quality-issues">
+                    {qualityReport.issues.slice(0, 5).map((issue, index) => (
+                      <div className={`quality-issue ${issue.severity}`} key={`${issue.type}-${issue.chapter_index ?? "global"}-${index}`}>
+                        <AlertTriangle size={14} />
+                        <span>
+                          {issue.chapter_index !== null && issue.chapter_index !== undefined ? `第 ${issue.chapter_index + 1} 章 · ` : ""}
+                          {formatQualityIssueType(issue.type)}：{issue.message}
+                        </span>
+                      </div>
+                    ))}
+                    {qualityReport.issues.length > 5 && <span className="quality-more">还有 {qualityReport.issues.length - 5} 个风险项</span>}
+                  </div>
+                ) : (
+                  <p className="quality-empty">没有发现可测量的覆盖或配图风险。</p>
+                )}
+              </section>
+            )}
+            {qualityReportError && (
+              <p className="inline-warning">
+                <AlertTriangle size={15} />
+                {qualityReportError}
+              </p>
+            )}
             {job && (job.status === "running" || job.status === "pending") && (
               <div className="job-progress-bar" aria-label="处理进度">
                 <div className="job-progress-info">
@@ -1942,6 +1993,31 @@ function StepList({ job }: { job: JobState | null }) {
       })}
     </ol>
   );
+}
+
+function formatQualityScore(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatQualityStatus(status: QualityReport["status"]) {
+  if (status === "ready") {
+    return "可交付";
+  }
+  if (status === "needs_attention") {
+    return "需要处理";
+  }
+  return "建议复核";
+}
+
+function formatQualityIssueType(type: string) {
+  const labels: Record<string, string> = {
+    low_chapter_coverage: "章节覆盖偏薄",
+    missing_chapter_frame: "章节缺少配图",
+    missing_timestamp_reference: "缺少引用时间",
+    duplicate_frame_reference: "重复配图",
+    generation_instability: "生成不稳定"
+  };
+  return labels[type] ?? type;
 }
 
 function DownloadLink({
