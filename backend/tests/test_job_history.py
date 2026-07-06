@@ -155,6 +155,38 @@ def test_list_jobs_returns_disk_history_with_note_version_counts(tmp_path, monke
     ]
 
 
+def test_refresh_artifacts_includes_quality_report_files(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    job_dir = tmp_path / "quality-artifacts"
+    job_dir.mkdir()
+    review_dir = job_dir / "review"
+    review_dir.mkdir()
+    (review_dir / "quality_report.json").write_text("{}", encoding="utf-8")
+    (review_dir / "quality_report.md").write_text("# Quality Report", encoding="utf-8")
+
+    artifacts = main.store.refresh_artifacts("quality-artifacts")
+
+    assert {artifact.path for artifact in artifacts} >= {
+        "review/quality_report.json",
+        "review/quality_report.md",
+    }
+
+
+def test_refresh_artifacts_includes_frame_candidate_index(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    job_dir = tmp_path / "frame-candidate-artifacts"
+    job_dir.mkdir()
+    review_dir = job_dir / "review"
+    review_dir.mkdir()
+    (review_dir / "frame_candidates.json").write_text('{"candidates":[]}', encoding="utf-8")
+
+    artifacts = main.store.refresh_artifacts("frame-candidate-artifacts")
+
+    assert {artifact.path for artifact in artifacts} >= {"review/frame_candidates.json"}
+
+
 def test_list_jobs_orders_recent_activity_before_newer_creation_time(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))
@@ -1435,6 +1467,45 @@ def test_get_job_loads_disk_history_when_job_is_not_in_memory(tmp_path, monkeypa
     assert payload["status"] == "succeeded"
     assert payload["step"] == "已从历史记录载入"
     assert {artifact["path"] for artifact in payload["artifacts"]} == {"metadata.json", "note.md", "subtitles.md"}
+
+
+def test_get_job_uses_article_title_for_zip_download_filename(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    write_history_job(
+        tmp_path,
+        "zip-title-job",
+        created_at="2026-07-06T00:00:00+00:00",
+        title="Self-Attention 详解：计算流程/缩放技巧",
+        original_filename="input.mp4",
+    )
+    (tmp_path / "zip-title-job" / "download.zip").write_bytes(b"zip")
+
+    response = TestClient(app).get("/api/jobs/zip-title-job")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["download_filename"] == "Self-Attention 详解：计算流程_缩放技巧.zip"
+
+
+def test_get_job_loads_note_review_pending_state_from_disk(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    write_history_job(
+        tmp_path,
+        "note-review-job",
+        created_at="2026-07-06T00:00:00+00:00",
+        title="Review",
+        original_filename="review.mp4",
+    )
+    (tmp_path / "note-review-job" / ".note-review.pending").write_text("1", encoding="utf-8")
+
+    response = TestClient(app).get("/api/jobs/note-review-job")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "awaiting_note_review"
+    assert payload["progress"] == 92
 
 
 def test_get_job_uses_latest_debug_activity_as_loaded_timestamp(tmp_path, monkeypatch) -> None:

@@ -171,6 +171,47 @@ def test_transcribe_audio_dispatches_local_faster_whisper(tmp_path, monkeypatch)
     assert parsed["segments"] == [{"start": 0.0, "end": 1.0, "text": "local text"}]
 
 
+def test_internal_cuda_faster_whisper_configures_cuda_dll_paths_before_model_load(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"fake audio")
+    write_model_files(tmp_path / "models" / "small")
+    events: list[str] = []
+
+    def fake_configure_cuda_dll_paths() -> None:
+        events.append("dll")
+
+    class FakeWhisperModel:
+        def __init__(self, *_args, **_kwargs):
+            assert events == ["dll"]
+            events.append("model")
+
+        def transcribe(self, _file_path, **_kwargs):
+            return [SimpleNamespace(start=0, end=1, text="cuda text")], SimpleNamespace(language="zh")
+
+    monkeypatch.setattr(local_whisper_worker, "configure_cuda_dll_paths", fake_configure_cuda_dll_paths)
+    monkeypatch.setattr(transcription, "WhisperModel", FakeWhisperModel)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
+
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_api_key="",
+        transcription_base_url="",
+        transcription_model="small",
+        local_whisper_device="cuda",
+        local_whisper_compute_type="float16",
+        note_api_key="note-key",
+        note_base_url="https://api.openai.com/v1",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+
+    parsed = transcription.transcribe_audio(audio_path, config, tmp_path)
+
+    assert parsed["text"] == "cuda text"
+    assert events == ["dll", "model"]
+
+
 def test_transcribe_audio_reports_progress_for_internal_local_faster_whisper(tmp_path, monkeypatch) -> None:
     audio_path = tmp_path / "audio.mp3"
     audio_path.write_bytes(b"fake audio")

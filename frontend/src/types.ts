@@ -6,7 +6,7 @@ export type LocalWhisperDevice = "auto" | "cpu" | "cuda";
 export type LocalWhisperComputeType = "default" | "int8" | "int8_float16" | "float16" | "float32";
 export type RuntimePathSource = "environment" | "settings" | "default" | "missing";
 export type PythonPackageInstallMode = "default" | "user";
-export type JobStatus = "pending" | "running" | "awaiting_subtitle_confirmation" | "succeeded" | "failed";
+export type JobStatus = "pending" | "running" | "awaiting_subtitle_confirmation" | "awaiting_note_review" | "succeeded" | "failed";
 
 export type Artifact = {
   label: string;
@@ -45,6 +45,7 @@ export type JobState = {
   step_started_at?: string | null;
   updated_at?: string | null;
   stage_elapsed_seconds?: number;
+  download_filename?: string | null;
 };
 
 export type JobSummary = {
@@ -211,6 +212,95 @@ export type PreviewImage = {
   label: string;
   path: string;
   asset_url: string;
+};
+
+export type QualityScores = {
+  coverage: number;
+  structure: number;
+  frames: number;
+  stability: number;
+};
+
+export type QualityIssue = {
+  severity: "info" | "warning" | "error";
+  type: string;
+  message: string;
+  chapter_index?: number | null;
+  frame_ids: string[];
+};
+
+export type ChapterQualityReport = {
+  chapter_index: number;
+  title: string;
+  start_time: number;
+  end_time: number;
+  transcript_chars: number;
+  note_chars: number;
+  selected_frame_count: number;
+  issues: string[];
+};
+
+export type QualityReport = {
+  status: "ready" | "review_recommended" | "needs_attention";
+  scores: QualityScores;
+  issues: QualityIssue[];
+  chapter_reports: ChapterQualityReport[];
+};
+
+export type FrameCandidate = {
+  id: string;
+  chapter_index: number;
+  time: number;
+  path: string;
+  reason: string;
+  note_excerpt: string;
+  subtitle_excerpt: string;
+  source: "note_key_moment" | "chapter_fallback";
+  hash: string;
+  duplicate_of?: string | null;
+  similarity: number;
+  risk_flags: string[];
+  selected: boolean;
+  rejected: boolean;
+};
+
+export type FrameCandidateChapterContext = {
+  chapter_index: number;
+  title: string;
+  start_time: number;
+  end_time: number;
+  note_excerpt: string;
+  subtitle_excerpt: string;
+};
+
+export type FrameCandidateIndex = {
+  candidates: FrameCandidate[];
+  chapter_contexts: FrameCandidateChapterContext[];
+};
+
+export type ReviewSubtitleSegment = {
+  start: number;
+  end: number;
+  text: string;
+};
+
+export type ReviewDraftParagraphStatus = "needs_review" | "edited" | "approved";
+
+export type ReviewDraftParagraph = {
+  id: string;
+  chapter_index: number;
+  title: string;
+  start_time: number;
+  end_time: number;
+  body: string;
+  subtitle_segments: ReviewSubtitleSegment[];
+  selected_frame_ids: string[];
+  status: ReviewDraftParagraphStatus;
+};
+
+export type ReviewDraft = {
+  title: string;
+  paragraphs: ReviewDraftParagraph[];
 };
 
 declare global {

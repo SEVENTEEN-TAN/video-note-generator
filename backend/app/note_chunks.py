@@ -12,6 +12,7 @@ from .llm import (
     chunk_segments,
     generate_note_draft,
     reduce_note_drafts,
+    render_transcript_lines,
     _build_prior_context,
 )
 from .models import JobConfig, NoteDraft, TranscriptSegment
@@ -136,6 +137,7 @@ def regenerate_chunk_and_reduce(
     # Re-split segments to get the same boundary, then pick the target chunk
     chunk_lists = chunk_segments(segments)
     target_chunk = chunk_lists[meta.index - 1]
+    adjacent_context = _build_adjacent_transcript_context(chunk_lists, meta.index - 1)
 
     # Build prior context from earlier chunks
     prior_drafts: list[NoteDraft] = []
@@ -159,6 +161,7 @@ def regenerate_chunk_and_reduce(
         note_style=config.note_style.value,
         extras=config.extras,
         prior_context=prior_context,
+        adjacent_context=adjacent_context,
     )
     try:
         new_draft = call_note_model(
@@ -201,3 +204,18 @@ def regenerate_chunk_and_reduce(
     all_drafts = load_all_chunk_drafts(job_dir, index)
     return reduce_note_drafts(config, duration, all_drafts, system_prompt)
 
+
+def _build_adjacent_transcript_context(chunk_lists: list[list[TranscriptSegment]], target_index: int) -> str:
+    parts: list[str] = []
+    if target_index > 0:
+        parts.append(_transcript_context_excerpt("Previous chunk", chunk_lists[target_index - 1]))
+    if target_index + 1 < len(chunk_lists):
+        parts.append(_transcript_context_excerpt("Next chunk", chunk_lists[target_index + 1]))
+    return "\n\n".join(part for part in parts if part)
+
+
+def _transcript_context_excerpt(label: str, segments: list[TranscriptSegment]) -> str:
+    lines = render_transcript_lines(segments)
+    if len(lines) > 8:
+        lines = [*lines[:4], "...", *lines[-4:]]
+    return f"{label}:\n" + "\n".join(lines)

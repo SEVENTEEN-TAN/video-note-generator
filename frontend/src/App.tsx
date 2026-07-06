@@ -1,8 +1,10 @@
 ﻿import {
   AlertTriangle,
   Captions,
+  ChevronDown,
   CheckCircle2,
   Download,
+  FileSearch,
   FileText,
   FolderOpen,
   History,
@@ -15,7 +17,8 @@
   Settings,
   Trash2,
   X,
-  Upload
+  Upload,
+  ZoomIn
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, Dispatch, SetStateAction } from "react";
@@ -23,6 +26,8 @@ import type { ChangeEvent, Dispatch, SetStateAction } from "react";
 import type {
   Artifact,
   CudaDependencyInstallState,
+  FrameCandidate,
+  FrameCandidateIndex,
   HealthState,
   JobState,
   JobStatus,
@@ -40,6 +45,10 @@ import type {
   PollableTaskState,
   PythonPackageInstallMode,
   PreviewImage,
+  QualityReport,
+  ReviewDraft,
+  ReviewDraftParagraph,
+  ReviewDraftParagraphStatus,
   RuntimeState,
   TranscriptCorrectionPreview,
   TranscriptionLanguage,
@@ -59,10 +68,17 @@ import {
 import {
   downloadArtifact,
   deriveDownloadFilename,
+  finalizeJob,
   fetchJob,
+  fetchFrameCandidates,
   fetchJobHistory,
   fetchNoteVersions,
-  readResponseError
+  fetchQualityReport,
+  fetchReviewDraft,
+  rejectFrameCandidate,
+  selectFrameCandidate,
+  readResponseError,
+  updateReviewDraftParagraph
 } from "./api";
 import { extractMarkdownImages, parseMarkdown, resolvePreviewAssetUrl } from "./markdown";
 
@@ -118,6 +134,16 @@ export function App() {
   const [subtitleGateError, setSubtitleGateError] = useState("");
   const [noteChunks, setNoteChunks] = useState<NoteChunkIndex | null>(null);
   const [regeneratingChunkId, setRegeneratingChunkId] = useState("");
+  const [qualityReport, setQualityReport] = useState<QualityReport | null>(null);
+  const [qualityReportError, setQualityReportError] = useState("");
+  const [frameCandidateIndex, setFrameCandidateIndex] = useState<FrameCandidateIndex | null>(null);
+  const [frameCandidateError, setFrameCandidateError] = useState("");
+  const [frameCandidateBusyId, setFrameCandidateBusyId] = useState("");
+  const [reviewDraft, setReviewDraft] = useState<ReviewDraft | null>(null);
+  const [reviewDraftSavingId, setReviewDraftSavingId] = useState("");
+  const [isFrameReviewOpen, setIsFrameReviewOpen] = useState(false);
+  const [isFinalizingJob, setIsFinalizingJob] = useState(false);
+  const [finalizeError, setFinalizeError] = useState("");
   const videoInputRef = useRef<HTMLInputElement | null>(null);
 
   async function pollTaskState<T extends PollableTaskState>(
@@ -181,7 +207,15 @@ export function App() {
   }
 
   const isTranscriptCorrectionActive = isCorrectingTranscript || isApplyingCorrection || Boolean(correctionPreview);
-  const isBusy = job?.status === "pending" || job?.status === "running" || isSubmitting || isRegenerating || isConfirmingSubtitles || isRegeneratingSubtitles || isTranscriptCorrectionActive;
+  const isBusy =
+    job?.status === "pending" ||
+    job?.status === "running" ||
+    isSubmitting ||
+    isRegenerating ||
+    isConfirmingSubtitles ||
+    isRegeneratingSubtitles ||
+    isTranscriptCorrectionActive ||
+    isFinalizingJob;
   const isLocalTranscription = transcriptionMode === "local_faster_whisper";
   const runtimeLocalStatus = health?.runtime?.faster_whisper;
   const selectedLocalModelAvailable =
@@ -193,6 +227,7 @@ export function App() {
     !runtimeLocalStatus?.cuda_available &&
     !!runtimeLocalStatus?.worker_ready;
   const images = useMemo(() => job?.artifacts.filter((artifact) => artifact.kind === "image") ?? [], [job]);
+  const hasNoteArtifact = Boolean(job?.artifacts.some((artifact) => artifact.path === "note.md"));
   const previewVersion = useMemo(
     () => noteVersions?.versions.find((version) => version.id === previewVersionId) ?? null,
     [noteVersions, previewVersionId]
@@ -208,6 +243,36 @@ export function App() {
       asset_url: artifact.asset_url
     }));
   }, [images, job, notePreview, previewAssetBasePath, previewVersion]);
+  const frameCandidateGroups = useMemo(() => {
+    const groups = new Map<number, FrameCandidate[]>();
+    for (const context of frameCandidateIndex?.chapter_contexts ?? []) {
+      groups.set(context.chapter_index, groups.get(context.chapter_index) ?? []);
+    }
+    for (const candidate of frameCandidateIndex?.candidates ?? []) {
+      const group = groups.get(candidate.chapter_index) ?? [];
+      group.push(candidate);
+      groups.set(candidate.chapter_index, group);
+    }
+    return Array.from(groups.entries()).sort(([left], [right]) => left - right);
+  }, [frameCandidateIndex]);
+  const frameCandidateContextByChapter = useMemo(() => {
+    const contexts = new Map<number, FrameCandidateIndex["chapter_contexts"][number]>();
+    for (const context of frameCandidateIndex?.chapter_contexts ?? []) {
+      contexts.set(context.chapter_index, context);
+    }
+    return contexts;
+  }, [frameCandidateIndex]);
+  const selectedFrameCandidateCount =
+    frameCandidateIndex?.candidates.filter((candidate) => candidate.selected && !candidate.rejected).length ?? 0;
+  const noteTitleAction = hasNoteArtifact ? (
+    <div className="note-title-actions">
+      {qualityReport && <QualityStatusControl report={qualityReport} />}
+      <button className="small-button manual-review-button" disabled={isBusy} onClick={handleManualReview} type="button">
+        <FileSearch size={15} />
+        手动审核
+      </button>
+    </div>
+  ) : null;
 
   function resetTaskContext() {
     setJob(null);
@@ -222,6 +287,16 @@ export function App() {
     setIsCorrectingTranscript(false);
     setIsApplyingCorrection(false);
     setIsRegenerating(false);
+    setQualityReport(null);
+    setQualityReportError("");
+    setFrameCandidateIndex(null);
+    setFrameCandidateError("");
+    setFrameCandidateBusyId("");
+    setReviewDraft(null);
+    setReviewDraftSavingId("");
+    setIsFrameReviewOpen(false);
+    setIsFinalizingJob(false);
+    setFinalizeError("");
   }
 
   function clearVideoInput() {
@@ -320,6 +395,7 @@ export function App() {
     }
     if (job.status === "succeeded" || job.status === "failed") {
       setIsRegenerating(false);
+      setIsFinalizingJob(false);
     }
     if (!job.artifacts.some((artifact) => artifact.path === "note.md")) {
       setNoteVersions(null);
@@ -396,9 +472,68 @@ export function App() {
     };
   }, [job, previewVersionId]);
 
+  useEffect(() => {
+    const currentJobId = job?.job_id;
+    const hasNote = Boolean(job?.artifacts.some((artifact) => artifact.path === "note.md"));
+    if (!currentJobId || !hasNote) {
+      setQualityReport(null);
+      setQualityReportError("");
+      return;
+    }
+
+    let cancelled = false;
+    fetchQualityReport(currentJobId)
+      .then((report) => {
+        if (!cancelled) {
+          setQualityReport(report);
+          setQualityReportError("");
+        }
+      })
+      .catch((error: Error) => {
+        if (!cancelled) {
+          setQualityReport(null);
+          setQualityReportError(error.message);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [job]);
 
   useEffect(() => {
-    if (!job || job.status !== "succeeded") {
+    const currentJobId = job?.job_id;
+    const hasNote = Boolean(job?.artifacts.some((artifact) => artifact.path === "note.md"));
+    if (!currentJobId || !hasNote) {
+      setFrameCandidateIndex(null);
+      setFrameCandidateError("");
+      setFrameCandidateBusyId("");
+      return;
+    }
+
+    let cancelled = false;
+    fetchFrameCandidates(currentJobId)
+      .then((index) => {
+        if (!cancelled) {
+          setFrameCandidateIndex(index);
+          setFrameCandidateError("");
+        }
+      })
+      .catch((error: Error) => {
+        if (!cancelled) {
+          setFrameCandidateIndex(null);
+          setFrameCandidateError(error.message);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [job]);
+
+
+  useEffect(() => {
+    if (!job || (job.status !== "succeeded" && job.status !== "awaiting_note_review")) {
       setNoteChunks(null);
       return;
     }
@@ -419,6 +554,131 @@ export function App() {
       cancelled = true;
     };
   }, [job?.job_id, job?.status]);
+
+  async function handleSelectFrameCandidate(candidateId: string) {
+    if (!job?.job_id) {
+      return;
+    }
+    const previousIndex = frameCandidateIndex;
+    setFrameCandidateBusyId(candidateId);
+    setFrameCandidateIndex((current) =>
+      current
+        ? {
+            ...current,
+            candidates: current.candidates.map((candidate) =>
+              candidate.id === candidateId
+                ? { ...candidate, selected: !candidate.selected, rejected: false }
+                : candidate
+            )
+          }
+        : current
+    );
+    try {
+      setFrameCandidateIndex(await selectFrameCandidate(job.job_id, candidateId));
+      setFrameCandidateError("");
+    } catch (error) {
+      setFrameCandidateIndex(previousIndex);
+      setFrameCandidateError(error instanceof Error ? error.message : "配图候选选择失败。");
+    } finally {
+      setFrameCandidateBusyId("");
+    }
+  }
+
+  async function handleRejectFrameCandidate(candidateId: string) {
+    if (!job?.job_id) {
+      return;
+    }
+    const previousIndex = frameCandidateIndex;
+    setFrameCandidateBusyId(candidateId);
+    setFrameCandidateIndex((current) =>
+      current
+        ? {
+            ...current,
+            candidates: current.candidates.map((candidate) =>
+              candidate.id === candidateId
+                ? { ...candidate, selected: false, rejected: true }
+                : candidate
+            )
+          }
+        : current
+    );
+    try {
+      setFrameCandidateIndex(await rejectFrameCandidate(job.job_id, candidateId));
+      setFrameCandidateError("");
+    } catch (error) {
+      setFrameCandidateIndex(previousIndex);
+      setFrameCandidateError(error instanceof Error ? error.message : "配图候选拒绝失败。");
+    } finally {
+      setFrameCandidateBusyId("");
+    }
+  }
+
+  async function handleManualReview() {
+    if (!job?.job_id) {
+      return;
+    }
+    try {
+      const [nextFrameCandidateIndex, nextReviewDraft] = await Promise.all([
+        fetchFrameCandidates(job.job_id),
+        fetchReviewDraft(job.job_id)
+      ]);
+      setFrameCandidateIndex(nextFrameCandidateIndex);
+      setReviewDraft(nextReviewDraft);
+      setFrameCandidateError("");
+      setIsFrameReviewOpen(true);
+      return;
+    } catch (error) {
+      if (frameCandidateIndex && reviewDraft) {
+        setFrameCandidateError(error instanceof Error ? error.message : "人工审核数据读取失败。");
+        setIsFrameReviewOpen(true);
+        return;
+      }
+      setFrameCandidateError(error instanceof Error ? error.message : "当前任务暂时没有可审核的人工稿数据。");
+    }
+  }
+
+  async function handleSaveReviewParagraph(
+    paragraphId: string,
+    body: string,
+    selectedFrameIds: string[],
+    status: ReviewDraftParagraphStatus
+  ) {
+    if (!job?.job_id) {
+      return;
+    }
+    setReviewDraftSavingId(paragraphId);
+    try {
+      setReviewDraft(
+        await updateReviewDraftParagraph(job.job_id, paragraphId, {
+          body,
+          selected_frame_ids: selectedFrameIds,
+          status
+        })
+      );
+      setFrameCandidateError("");
+    } catch (error) {
+      setFrameCandidateError(error instanceof Error ? error.message : "人工审核稿保存失败。");
+    } finally {
+      setReviewDraftSavingId("");
+    }
+  }
+
+  async function handleFinalizeJob() {
+    if (!job?.job_id) {
+      return;
+    }
+    setIsFinalizingJob(true);
+    setFinalizeError("");
+    try {
+      const nextJob = await finalizeJob(job.job_id);
+      setJob(nextJob);
+      await refreshJobHistory();
+    } catch (error) {
+      setFinalizeError(error instanceof Error ? error.message : "确认定稿失败。");
+    } finally {
+      setIsFinalizingJob(false);
+    }
+  }
 
   function handleVideoChange(event: ChangeEvent<HTMLInputElement>) {
     const selectedVideo = event.target.files?.[0] ?? null;
@@ -1022,6 +1282,9 @@ export function App() {
         </div>
         <div className="topbar-stepper">
           <StepList job={job} />
+          <div className="step-progress-bar" aria-label="处理进度">
+            <StepProgress job={job} />
+          </div>
         </div>
         <div className="topbar-actions">
           <HealthBadge health={health} />
@@ -1189,35 +1452,6 @@ export function App() {
               </div>
               {previewVersion && <span className="result-version-summary">{formatVersionDetails(previewVersion)}</span>}
             </div>
-            {noteChunks && noteChunks.chunks.length > 1 && (
-              <details className="chunk-manager" aria-label="笔记分段管理">
-                <summary>
-                  <Captions size={15} />
-                  <span>笔记分段（{noteChunks.chunks.length} 块）</span>
-                </summary>
-                <div className="chunk-list">
-                  {noteChunks.chunks.map((chunk: NoteChunkMeta) => (
-                    <div className={`chunk-item ${chunk.status}`} key={chunk.id}>
-                      <div className="chunk-item-info">
-                        <strong>{chunk.label}</strong>
-                        <span className="chunk-time">{formatSecondsRange(chunk.start_time, chunk.end_time)}</span>
-                        {chunk.title && <span className="chunk-title">{chunk.title}</span>}
-                        {chunk.status === "skipped" && <span className="mini-badge warn">已跳过</span>}
-                      </div>
-                      <button
-                        className="small-button"
-                        disabled={isBusy || regeneratingChunkId === chunk.id}
-                        onClick={() => void handleRegenerateNoteChunk(chunk.id)}
-                        type="button"
-                      >
-                        {regeneratingChunkId === chunk.id ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
-                        重生成
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              </details>
-            )}
             <div className="download-row">
               <div className="download-actions">
                 <DownloadLink job={job} artifactPath="note.md" label="Markdown" onDownloadError={setDownloadMessage} />
@@ -1227,7 +1461,7 @@ export function App() {
                 {job?.artifacts.some((artifact) => artifact.path === "download.zip") && job && (
                   <ArtifactDownloadButton
                     className="small-button strong"
-                    filename={`video-note-${job.job_id}.zip`}
+                    filename={job.download_filename ?? `video-note-${job.job_id}.zip`}
                     label="ZIP"
                     onError={setDownloadMessage}
                     url={`/api/jobs/${job.job_id}/download.zip`}
@@ -1254,57 +1488,79 @@ export function App() {
                 </button>
               </div>
             </div>
-            {job?.status === "awaiting_subtitle_confirmation" && (
-              <div className="subtitle-gate" aria-label="字幕确认">
-                <div className="subtitle-gate-head">
-                  <Captions size={18} />
-                  <div>
-                    <strong>字幕已生成，请确认质量</strong>
-                    <span>确认无误后将继续生成笔记；如不满意可重新生成字幕。</span>
+            <div className="result-body-scroll">
+              {noteChunks && noteChunks.chunks.length > 1 && (
+                <details className="chunk-manager" aria-label="笔记分段管理">
+                  <summary>
+                    <Captions size={15} />
+                    <span>笔记分段（{noteChunks.chunks.length} 块）</span>
+                  </summary>
+                  <div className="chunk-list">
+                    {noteChunks.chunks.map((chunk: NoteChunkMeta) => (
+                      <div className={`chunk-item ${chunk.status}`} key={chunk.id}>
+                        <div className="chunk-item-info">
+                          <strong>{chunk.label}</strong>
+                          <span className="chunk-time">{formatSecondsRange(chunk.start_time, chunk.end_time)}</span>
+                          {chunk.title && <span className="chunk-title">{chunk.title}</span>}
+                          {chunk.status === "skipped" && <span className="mini-badge warn">已跳过</span>}
+                        </div>
+                        <button
+                          className="small-button"
+                          disabled={isBusy || regeneratingChunkId === chunk.id}
+                          onClick={() => void handleRegenerateNoteChunk(chunk.id)}
+                          type="button"
+                        >
+                          {regeneratingChunkId === chunk.id ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+                          重生成
+                        </button>
+                      </div>
+                    ))}
                   </div>
-                </div>
-                {subtitleGateError && (
-                  <p className="inline-error">
-                    <AlertTriangle size={15} />
-                    {subtitleGateError}
-                  </p>
-                )}
-                <div className="subtitle-gate-actions">
-                  <button
-                    className="small-button"
-                    disabled={isRegeneratingSubtitles}
-                    onClick={() => void handleRegenerateSubtitles()}
-                    type="button"
-                  >
-                    {isRegeneratingSubtitles ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-                    重新生成字幕
-                  </button>
-                  <button
-                    className="small-button strong"
-                    disabled={isConfirmingSubtitles}
-                    onClick={() => void handleConfirmSubtitles()}
-                    type="button"
-                  >
-                    {isConfirmingSubtitles ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
-                    确认字幕并生成笔记
-                  </button>
-                </div>
-              </div>
+                </details>
+              )}
+            {qualityReportError && (
+              <p className="inline-warning">
+                <AlertTriangle size={15} />
+                {qualityReportError}
+              </p>
             )}
-            {job && (job.status === "running" || job.status === "pending") && (
-              <div className="job-progress-bar" aria-label="处理进度">
-                <div className="job-progress-info">
-                  <Loader2 className="spin" size={15} />
-                  <span className="job-progress-step">{job.step}</span>
-                  <span className="job-progress-percent">{job.progress}%</span>
+            {frameCandidateError && (
+              <p className="inline-warning">
+                <AlertTriangle size={15} />
+                {frameCandidateError}
+              </p>
+            )}
+            {subtitleGateError && (
+              <p className="inline-error">
+                <AlertTriangle size={15} />
+                {subtitleGateError}
+              </p>
+            )}
+            {job?.status === "awaiting_note_review" && (
+              <section className="note-review-gate" aria-label="确认定稿">
+                <div>
+                  <strong>等待人工复核</strong>
+                  <span>确认覆盖、关键要点和配图后，生成最终定稿。ZIP 只是下载打包结果。</span>
                 </div>
-                <div className="job-progress-track">
-                  <div className="job-progress-fill" style={{ width: `${job.progress}%` }} />
+                <div className="review-gate-actions">
+                  {frameCandidateIndex && frameCandidateIndex.candidates.length > 0 && (
+                    <button className="small-button" disabled={!job || isBusy} onClick={() => setIsFrameReviewOpen(true)} type="button">
+                      <Image size={15} />
+                      审核配图 · {selectedFrameCandidateCount} 已选
+                    </button>
+                  )}
+                  <button className="small-button strong" disabled={isBusy} onClick={() => void handleFinalizeJob()} type="button">
+                    {isFinalizingJob ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+                    确认定稿
+                  </button>
                 </div>
-                {job.stage_elapsed_seconds !== undefined && job.stage_elapsed_seconds > 0 && (
-                  <span className="job-progress-elapsed">{formatElapsedSeconds(job.stage_elapsed_seconds)}</span>
-                )}
-              </div>
+              </section>
+            )}
+            {finalizeError && (
+              <p className="inline-error">
+                <AlertTriangle size={15} />
+                {finalizeError}
+              </p>
             )}
             {downloadMessage && (
               <p className="inline-warning">
@@ -1324,11 +1580,11 @@ export function App() {
                 {correctionError}
               </p>
             )}
-            <div className="result-body-scroll">
               <div className="preview-stack">
                 <PreviewBlock
                   assetBasePath={previewAssetBasePath}
                   title={previewVersion ? `视频笔记 Markdown · ${previewVersion.id}` : "视频笔记 Markdown"}
+                  titleAction={noteTitleAction}
                   text={notePreview}
                   empty="完成后显示 note.md 预览"
                   jobId={job?.job_id}
@@ -1336,7 +1592,28 @@ export function App() {
                 <PreviewBlock
                   title="字幕 Markdown"
                   titleAction={
-                    job?.artifacts.some((artifact) => artifact.path === "transcript.json") ? (
+                    job?.status === "awaiting_subtitle_confirmation" ? (
+                      <div className="subtitle-title-actions">
+                        <button
+                          className="small-button"
+                          disabled={isRegeneratingSubtitles}
+                          onClick={() => void handleRegenerateSubtitles()}
+                          type="button"
+                        >
+                          {isRegeneratingSubtitles ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+                          重新生成字幕
+                        </button>
+                        <button
+                          className="small-button strong"
+                          disabled={isConfirmingSubtitles}
+                          onClick={() => void handleConfirmSubtitles()}
+                          type="button"
+                        >
+                          {isConfirmingSubtitles ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+                          确认字幕并生成笔记
+                        </button>
+                      </div>
+                    ) : job?.artifacts.some((artifact) => artifact.path === "transcript.json") ? (
                       <button
                         className="small-button"
                         disabled={isBusy || isCorrectingTranscript}
@@ -1354,21 +1631,23 @@ export function App() {
                 />
               </div>
 
-              <div className="frame-grid" aria-label="关键帧">
-                {previewImages.length === 0 ? (
-                  <div className="empty-frames">
-                    <Image size={20} />
-                    <span>关键帧完成后显示在这里</span>
-                  </div>
-                ) : (
-                  previewImages.map((artifact) => (
-                    <figure key={artifact.path}>
-                      <img alt={artifact.label} src={artifact.asset_url} />
-                      <figcaption>{artifact.label}</figcaption>
-                    </figure>
-                  ))
-                )}
-              </div>
+              <CollapsibleBlock className="frame-preview-block" title="关键帧">
+                <div className="frame-grid" aria-label="关键帧">
+                  {previewImages.length === 0 ? (
+                    <div className="empty-frames">
+                      <Image size={20} />
+                      <span>关键帧完成后显示在这里</span>
+                    </div>
+                  ) : (
+                    previewImages.map((artifact) => (
+                      <figure key={artifact.path}>
+                        <img alt={artifact.label} src={artifact.asset_url} />
+                        <figcaption>{artifact.label}</figcaption>
+                      </figure>
+                    ))
+                  )}
+                </div>
+              </CollapsibleBlock>
             </div>
           </section>
         </div>
@@ -1764,6 +2043,28 @@ export function App() {
         }}
         preview={correctionPreview}
       />
+      {isFrameReviewOpen && job && frameCandidateIndex && reviewDraft && (
+        <FrameReviewModal
+          busyCandidateId={frameCandidateBusyId}
+          contextByChapter={frameCandidateContextByChapter}
+          groups={frameCandidateGroups}
+          isBusy={isBusy}
+          jobId={job.job_id}
+          noteChunks={noteChunks}
+          onSaveParagraph={(paragraphId, body, selectedFrameIds, status) =>
+            void handleSaveReviewParagraph(paragraphId, body, selectedFrameIds, status)
+          }
+          onRegenerateNote={() => void handleRegenerateNote()}
+          onRegenerateChunk={(chunkId) => void handleRegenerateNoteChunk(chunkId)}
+          onClose={() => setIsFrameReviewOpen(false)}
+          onReject={(candidateId) => void handleRejectFrameCandidate(candidateId)}
+          onSelect={(candidateId) => void handleSelectFrameCandidate(candidateId)}
+          regeneratingChunkId={regeneratingChunkId}
+          reviewDraft={reviewDraft}
+          savingParagraphId={reviewDraftSavingId}
+          selectedCount={selectedFrameCandidateCount}
+        />
+      )}
     </main>
   );
 }
@@ -1911,6 +2212,384 @@ function StepList({ job }: { job: JobState | null }) {
   );
 }
 
+function StepProgress({ job }: { job: JobState | null }) {
+  const progress = Math.min(100, Math.max(0, Math.round(job?.progress ?? 0)));
+  const isActive = job?.status === "pending" || job?.status === "running";
+  const icon = isActive ? (
+    <Loader2 className="spin" size={14} />
+  ) : job?.status === "succeeded" ? (
+    <CheckCircle2 size={14} />
+  ) : job?.status === "failed" ? (
+    <AlertTriangle size={14} />
+  ) : null;
+  const label = job?.step || (job ? statusText[job.status] : "未开始");
+  return (
+    <>
+      <span className="step-progress-label">
+        {icon}
+        {label}
+      </span>
+      <span className="step-progress-track">
+        <span className="step-progress-fill" style={{ width: `${progress}%` }} />
+      </span>
+      <span className="step-progress-detail">
+        <span>{progress}%</span>
+        {job?.stage_elapsed_seconds !== undefined && job.stage_elapsed_seconds > 0 && (
+          <span>{formatElapsedSeconds(job.stage_elapsed_seconds)}</span>
+        )}
+      </span>
+    </>
+  );
+}
+
+function formatQualityScore(value: number) {
+  return `${Math.round(value * 100)}%`;
+}
+
+function formatQualityStatus(status: QualityReport["status"]) {
+  if (status === "ready") {
+    return "可交付";
+  }
+  if (status === "needs_attention") {
+    return "需要处理";
+  }
+  return "建议复核";
+}
+
+function formatQualityIssueType(type: string) {
+  const labels: Record<string, string> = {
+    low_chapter_coverage: "章节覆盖偏薄",
+    missing_chapter_frame: "章节缺少配图",
+    missing_timestamp_reference: "缺少引用时间",
+    duplicate_frame_reference: "重复配图",
+    generation_instability: "生成不稳定"
+  };
+  return labels[type] ?? type;
+}
+
+function formatCandidateTime(value: number) {
+  const seconds = Math.max(0, Math.floor(value));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  return [hours, minutes, remainingSeconds].map((part) => String(part).padStart(2, "0")).join(":");
+}
+
+function formatCandidateSource(source: FrameCandidate["source"]) {
+  return source === "note_key_moment" ? "笔记关键点" : "兜底推荐";
+}
+
+function findChunkForChapterContext(
+  context: FrameCandidateIndex["chapter_contexts"][number] | undefined,
+  chunks: NoteChunkMeta[]
+) {
+  if (!context || chunks.length === 0) {
+    return null;
+  }
+  const midpoint = (context.start_time + context.end_time) / 2;
+  return (
+    chunks.find((chunk) => rangesOverlap(context.start_time, context.end_time, chunk.start_time, chunk.end_time)) ??
+    chunks.find((chunk) => chunk.start_time <= midpoint && midpoint <= chunk.end_time) ??
+    null
+  );
+}
+
+function rangesOverlap(leftStart: number, leftEnd: number, rightStart: number, rightEnd: number) {
+  return Math.max(leftStart, rightStart) <= Math.min(leftEnd, rightEnd);
+}
+
+function FrameReviewModal({
+  busyCandidateId,
+  contextByChapter,
+  groups,
+  isBusy,
+  jobId,
+  noteChunks,
+  onClose,
+  onRegenerateNote,
+  onRegenerateChunk,
+  onSaveParagraph,
+  onReject,
+  onSelect,
+  regeneratingChunkId,
+  reviewDraft,
+  savingParagraphId,
+  selectedCount
+}: {
+  busyCandidateId: string;
+  contextByChapter: Map<number, FrameCandidateIndex["chapter_contexts"][number]>;
+  groups: [number, FrameCandidate[]][];
+  isBusy: boolean;
+  jobId: string;
+  noteChunks: NoteChunkIndex | null;
+  onClose: () => void;
+  onRegenerateNote: () => void;
+  onRegenerateChunk: (chunkId: string) => void;
+  onSaveParagraph: (
+    paragraphId: string,
+    body: string,
+    selectedFrameIds: string[],
+    status: ReviewDraftParagraphStatus
+  ) => void;
+  onReject: (candidateId: string) => void;
+  onSelect: (candidateId: string) => void;
+  regeneratingChunkId: string;
+  reviewDraft: ReviewDraft;
+  savingParagraphId: string;
+  selectedCount: number;
+}) {
+  const chunks = noteChunks?.chunks ?? [];
+  const candidatesByChapter = new Map(groups);
+  const draftSelectedCount = reviewDraft.paragraphs.reduce(
+    (total, paragraph) => total + paragraph.selected_frame_ids.length,
+    0
+  );
+  const [previewCandidate, setPreviewCandidate] = useState<FrameCandidate | null>(null);
+  return (
+    <div className="modal-backdrop" onMouseDown={onClose}>
+      <section
+        aria-label="手动审核"
+        aria-modal="true"
+        className="frame-review-modal"
+        onMouseDown={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <div className="modal-header">
+          <div>
+            <p className="eyebrow">Manual Review</p>
+            <h2>手动审核</h2>
+          </div>
+          <div className="frame-review-header-actions">
+            <span className="mini-badge ok">{draftSelectedCount || selectedCount} 已选</span>
+            <button className="icon-button" onClick={onClose} title="关闭配图审核" type="button">
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="modal-body frame-review-body">
+          <p className="frame-review-summary">
+            按段落核对最终文案、字幕依据和配图。这里保存的人工审核稿会作为确认定稿的来源。
+          </p>
+          <div className="frame-candidate-groups">
+            {reviewDraft.paragraphs.map((paragraph) => {
+              const candidates = candidatesByChapter.get(paragraph.chapter_index) ?? [];
+              const context = contextByChapter.get(paragraph.chapter_index);
+              const chunk =
+                chunks.find((item) => rangesOverlap(paragraph.start_time, paragraph.end_time, item.start_time, item.end_time)) ??
+                findChunkForChapterContext(context, chunks);
+              const isRegeneratingThisChunk = Boolean(chunk ? regeneratingChunkId === chunk.id : isBusy);
+              return (
+                <ReviewParagraphEditor
+                  candidates={candidates}
+                  isBusy={isBusy}
+                  isRegenerating={isRegeneratingThisChunk}
+                  isSaving={savingParagraphId === paragraph.id}
+                  jobId={jobId}
+                  key={paragraph.id}
+                  onPreviewCandidate={setPreviewCandidate}
+                  onRegenerate={() => {
+                    chunk ? onRegenerateChunk(chunk.id) : onRegenerateNote();
+                  }}
+                  onSave={onSaveParagraph}
+                  paragraph={paragraph}
+                />
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="modal-footer">
+          <button className="small-button strong" onClick={onClose} type="button">
+            完成
+          </button>
+        </div>
+      </section>
+      {previewCandidate && (
+        <div className="frame-image-preview-backdrop" onMouseDown={(event) => event.stopPropagation()}>
+          <section aria-label="候选配图预览" className="frame-image-preview" role="dialog">
+            <div className="frame-image-preview-head">
+              <div>
+                <strong>{formatCandidateTime(previewCandidate.time)}</strong>
+                <span>{previewCandidate.reason}</span>
+              </div>
+              <button className="icon-button" onClick={() => setPreviewCandidate(null)} title="关闭预览" type="button">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="frame-image-preview-body">
+              <img alt={previewCandidate.reason} src={`/api/jobs/${jobId}/assets/${previewCandidate.path}`} />
+              <div className="frame-image-preview-reference">
+                <div>
+                  <strong>笔记依据</strong>
+                  <p>{previewCandidate.note_excerpt || previewCandidate.reason || "暂无笔记依据。"}</p>
+                </div>
+                <div>
+                  <strong>附近字幕</strong>
+                  <p>{previewCandidate.subtitle_excerpt || "暂无该时间点附近字幕。"}</p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ReviewParagraphEditor({
+  candidates,
+  isBusy,
+  isRegenerating,
+  isSaving,
+  jobId,
+  onPreviewCandidate,
+  onRegenerate,
+  onSave,
+  paragraph
+}: {
+  candidates: FrameCandidate[];
+  isBusy: boolean;
+  isRegenerating: boolean;
+  isSaving: boolean;
+  jobId: string;
+  onPreviewCandidate: (candidate: FrameCandidate) => void;
+  onRegenerate: () => void;
+  onSave: (paragraphId: string, body: string, selectedFrameIds: string[], status: ReviewDraftParagraphStatus) => void;
+  paragraph: ReviewDraftParagraph;
+}) {
+  const [body, setBody] = useState(paragraph.body);
+  const [selectedFrameIds, setSelectedFrameIds] = useState(paragraph.selected_frame_ids);
+  useEffect(() => {
+    setBody(paragraph.body);
+    setSelectedFrameIds(paragraph.selected_frame_ids);
+  }, [paragraph.body, paragraph.id, paragraph.selected_frame_ids]);
+  const selectedSet = new Set(selectedFrameIds);
+  const hasChanges =
+    body.trim() !== paragraph.body.trim() ||
+    selectedFrameIds.join("|") !== paragraph.selected_frame_ids.join("|");
+
+  function toggleFrame(candidateId: string) {
+    setSelectedFrameIds((current) =>
+      current.includes(candidateId) ? current.filter((id) => id !== candidateId) : [...current, candidateId]
+    );
+  }
+
+  return (
+    <section className="frame-candidate-group review-paragraph-group">
+      <div className="frame-candidate-group-head">
+        <div className="frame-candidate-title-line">
+          <strong>{paragraph.title || `第 ${paragraph.chapter_index + 1} 段`}</strong>
+          <span>{formatSecondsRange(paragraph.start_time, paragraph.end_time)}</span>
+          <span className={`mini-badge ${paragraph.status === "approved" ? "ok" : ""}`}>
+            {formatReviewParagraphStatus(paragraph.status)}
+          </span>
+        </div>
+        <div className="frame-candidate-group-actions">
+          <button className="small-button" disabled={isBusy || isRegenerating} onClick={onRegenerate} type="button">
+            {isRegenerating ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+            重新生成本段文字
+          </button>
+          <button
+            className="small-button strong"
+            disabled={isBusy || isSaving || (!hasChanges && paragraph.status === "approved")}
+            onClick={() => onSave(paragraph.id, body, selectedFrameIds, hasChanges ? "edited" : "approved")}
+            type="button"
+          >
+            {isSaving ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}
+            保存本段
+          </button>
+          <span>{candidates.length} 个候选</span>
+        </div>
+      </div>
+
+      <div className="review-paragraph-layout" aria-label="段落审稿">
+        <label className="frame-candidate-reference-panel review-paragraph-editor">
+          <strong>文案编辑</strong>
+          <textarea value={body} onChange={(event) => setBody(event.target.value)} />
+        </label>
+        <div className="frame-candidate-reference-panel review-subtitle-evidence">
+          <strong>字幕依据</strong>
+          <textarea
+            aria-label="字幕依据内容"
+            className="review-subtitle-textarea"
+            readOnly
+            value={formatReviewSubtitleEvidence(paragraph.subtitle_segments)}
+          />
+        </div>
+
+        <div className="review-frame-column">
+          <strong>配图</strong>
+          {candidates.length === 0 ? (
+            <p className="frame-candidate-empty">本段暂无候选配图。</p>
+          ) : (
+            <div className="frame-candidate-strip review-frame-list">
+              {candidates.map((candidate) => {
+                const isSelected = selectedSet.has(candidate.id);
+                const isDuplicate = candidate.risk_flags.includes("duplicate_frame");
+                return (
+                  <article
+                    className={`frame-candidate-card ${isSelected ? "selected" : ""} ${candidate.rejected ? "rejected" : ""}`}
+                    key={candidate.id}
+                  >
+                    <div className="frame-image-wrap">
+                      <label className="frame-candidate-check">
+                        <input
+                          checked={isSelected}
+                          disabled={isBusy || isSaving}
+                          onChange={() => toggleFrame(candidate.id)}
+                          type="checkbox"
+                        />
+                      </label>
+                      <img alt={candidate.reason} src={`/api/jobs/${jobId}/assets/${candidate.path}`} />
+                      <button
+                        aria-label={`放大预览 ${formatCandidateTime(candidate.time)}`}
+                        className="frame-candidate-zoom"
+                        onClick={() => onPreviewCandidate(candidate)}
+                        title="放大预览"
+                        type="button"
+                      >
+                        <ZoomIn size={15} />
+                      </button>
+                    </div>
+                    <div className="frame-candidate-body">
+                      <div className="frame-candidate-meta">
+                        <span>{formatCandidateTime(candidate.time)}</span>
+                        <span className="mini-badge">{formatCandidateSource(candidate.source)}</span>
+                        {candidate.similarity > 0 && <span className="mini-badge">相似度 {Math.round(candidate.similarity * 100)}%</span>}
+                        {isSelected && <span className="mini-badge ok">已选</span>}
+                        {candidate.rejected && <span className="mini-badge warn">已拒绝</span>}
+                        {isDuplicate && <span className="mini-badge warn">重复风险</span>}
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function formatReviewParagraphStatus(status: ReviewDraftParagraphStatus) {
+  if (status === "approved") {
+    return "已确认";
+  }
+  if (status === "edited") {
+    return "已修改";
+  }
+  return "待审核";
+}
+
+function formatReviewSubtitleEvidence(segments: ReviewDraftParagraph["subtitle_segments"]) {
+  if (segments.length === 0) {
+    return "暂无可用字幕片段。";
+  }
+  return segments.map((segment) => `${formatSecondsRange(segment.start, segment.end)}  ${segment.text}`).join("\n");
+}
+
 function DownloadLink({
   job,
   artifactPath,
@@ -1974,8 +2653,98 @@ function ArtifactDownloadButton({
   );
 }
 
+function QualityStatusControl({ report }: { report: QualityReport }) {
+  const visibleIssues = report.issues.slice(0, 4);
+  return (
+    <div className="quality-status-control">
+      <button className={`quality-status ${report.status}`} type="button">
+        {formatQualityStatus(report.status)}
+      </button>
+      <div className="quality-popover" role="tooltip">
+        <div className="quality-popover-head">
+          <strong>质量复核</strong>
+          <span>覆盖、结构、配图、稳定性</span>
+        </div>
+        <div className="quality-score-grid">
+          <div>
+            <span>覆盖</span>
+            <strong>{formatQualityScore(report.scores.coverage)}</strong>
+          </div>
+          <div>
+            <span>结构</span>
+            <strong>{formatQualityScore(report.scores.structure)}</strong>
+          </div>
+          <div>
+            <span>配图</span>
+            <strong>{formatQualityScore(report.scores.frames)}</strong>
+          </div>
+          <div>
+            <span>稳定性</span>
+            <strong>{formatQualityScore(report.scores.stability)}</strong>
+          </div>
+        </div>
+        {visibleIssues.length > 0 ? (
+          <div className="quality-issues">
+            {visibleIssues.map((issue, index) => (
+              <div className={`quality-issue ${issue.severity}`} key={`${issue.type}-${issue.chapter_index ?? "global"}-${index}`}>
+                <AlertTriangle size={14} />
+                <span>
+                  {issue.chapter_index !== null && issue.chapter_index !== undefined ? `第 ${issue.chapter_index + 1} 章 · ` : ""}
+                  {formatQualityIssueType(issue.type)}：{issue.message}
+                </span>
+              </div>
+            ))}
+            {report.issues.length > visibleIssues.length && (
+              <span className="quality-more">还有 {report.issues.length - visibleIssues.length} 个风险项</span>
+            )}
+          </div>
+        ) : (
+          <p className="quality-empty">没有发现可测量的覆盖或配图风险。</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CollapsibleBlock({
+  children,
+  className = "",
+  defaultCollapsed = false,
+  title,
+  titleAction
+}: {
+  children: React.ReactNode;
+  className?: string;
+  defaultCollapsed?: boolean;
+  title: string;
+  titleAction?: React.ReactNode;
+}) {
+  const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
+  const sectionClassName = className ? `collapsible-block ${className}` : "collapsible-block";
+  return (
+    <section className={sectionClassName}>
+      <div className="preview-title-row">
+        <h3>
+          <button
+            aria-expanded={!isCollapsed}
+            className="collapse-toggle"
+            onClick={() => setIsCollapsed((current) => !current)}
+            type="button"
+          >
+            <ChevronDown className={isCollapsed ? "collapsed" : ""} size={16} />
+            <span>{title}</span>
+          </button>
+        </h3>
+        {titleAction}
+      </div>
+      {!isCollapsed && <div className="collapsible-content">{children}</div>}
+    </section>
+  );
+}
+
 function PreviewBlock({
   assetBasePath,
+  defaultCollapsed,
   title,
   titleAction,
   text,
@@ -1983,6 +2752,7 @@ function PreviewBlock({
   jobId
 }: {
   assetBasePath?: string;
+  defaultCollapsed?: boolean;
   title: string;
   titleAction?: React.ReactNode;
   text: string;
@@ -1990,13 +2760,9 @@ function PreviewBlock({
   jobId?: string;
 }) {
   return (
-    <section className="preview-block">
-      <div className="preview-title-row">
-        <h3>{title}</h3>
-        {titleAction}
-      </div>
-      {text ? <MarkdownPreview assetBasePath={assetBasePath} markdown={text} jobId={jobId} /> : <p>{empty}</p>}
-    </section>
+    <CollapsibleBlock className="preview-block" defaultCollapsed={defaultCollapsed} title={title} titleAction={titleAction}>
+      {text ? <MarkdownPreview assetBasePath={assetBasePath} markdown={text} jobId={jobId} /> : <p className="preview-empty">{empty}</p>}
+    </CollapsibleBlock>
   );
 }
 

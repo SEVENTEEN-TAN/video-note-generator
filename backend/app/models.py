@@ -12,6 +12,7 @@ class JobStatus(str, Enum):
     pending = "pending"
     running = "running"
     awaiting_subtitle_confirmation = "awaiting_subtitle_confirmation"
+    awaiting_note_review = "awaiting_note_review"
     succeeded = "succeeded"
     failed = "failed"
 
@@ -145,6 +146,99 @@ class TranscriptSegment(BaseModel):
 class TranscriptPayload(BaseModel):
     text: str = ""
     segments: list[TranscriptSegment] = Field(default_factory=list)
+
+
+class QualityScores(BaseModel):
+    coverage: float = Field(ge=0, le=1)
+    structure: float = Field(ge=0, le=1)
+    frames: float = Field(ge=0, le=1)
+    stability: float = Field(ge=0, le=1)
+
+
+class QualityIssue(BaseModel):
+    severity: Literal["info", "warning", "error"]
+    type: str
+    message: str
+    chapter_index: int | None = None
+    frame_ids: list[str] = Field(default_factory=list)
+
+
+class ChapterQualityReport(BaseModel):
+    chapter_index: int
+    title: str
+    start_time: float
+    end_time: float
+    transcript_chars: int
+    note_chars: int
+    selected_frame_count: int
+    issues: list[str] = Field(default_factory=list)
+
+
+class QualityReport(BaseModel):
+    status: Literal["ready", "review_recommended", "needs_attention"]
+    scores: QualityScores
+    issues: list[QualityIssue] = Field(default_factory=list)
+    chapter_reports: list[ChapterQualityReport] = Field(default_factory=list)
+
+
+class FrameCandidate(BaseModel):
+    id: str
+    chapter_index: int
+    time: float
+    path: str
+    reason: str
+    note_excerpt: str = ""
+    subtitle_excerpt: str = ""
+    source: Literal["note_key_moment", "chapter_fallback"]
+    hash: str
+    duplicate_of: str | None = None
+    similarity: float = Field(ge=0, le=1)
+    risk_flags: list[str] = Field(default_factory=list)
+    selected: bool = False
+    rejected: bool = False
+
+
+class FrameCandidateChapterContext(BaseModel):
+    chapter_index: int
+    title: str
+    start_time: float
+    end_time: float
+    note_excerpt: str = ""
+    subtitle_excerpt: str = ""
+
+
+class FrameCandidateIndex(BaseModel):
+    candidates: list[FrameCandidate] = Field(default_factory=list)
+    chapter_contexts: list[FrameCandidateChapterContext] = Field(default_factory=list)
+
+
+class ReviewSubtitleSegment(BaseModel):
+    start: float
+    end: float
+    text: str
+
+
+class ReviewDraftParagraph(BaseModel):
+    id: str
+    chapter_index: int
+    title: str
+    start_time: float
+    end_time: float
+    body: str = ""
+    subtitle_segments: list[ReviewSubtitleSegment] = Field(default_factory=list)
+    selected_frame_ids: list[str] = Field(default_factory=list)
+    status: Literal["needs_review", "edited", "approved"] = "needs_review"
+
+
+class ReviewDraft(BaseModel):
+    title: str = ""
+    paragraphs: list[ReviewDraftParagraph] = Field(default_factory=list)
+
+
+class ReviewDraftParagraphUpdate(BaseModel):
+    body: str
+    selected_frame_ids: list[str] = Field(default_factory=list)
+    status: Literal["needs_review", "edited", "approved"] = "edited"
 
 
 class TranscriptCorrectionRequest(BaseModel):
@@ -371,6 +465,7 @@ class JobPublicState(BaseModel):
     step_started_at: str | None = None
     updated_at: str | None = None
     stage_elapsed_seconds: float = 0
+    download_filename: str | None = None
 
 
 class JobSummary(BaseModel):

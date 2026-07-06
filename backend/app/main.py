@@ -22,6 +22,13 @@ from .cuda_dependencies import (
 )
 from .ffmpeg_tools import extract_mp3, probe_duration
 from .filenames import normalize_uploaded_filename
+from .frame_candidates import (
+    build_frame_candidate_index,
+    load_frame_candidate_index,
+    reject_frame_candidate,
+    select_frame_candidate,
+    write_frame_candidate_index,
+)
 from .llm import LLMError, generate_note_draft
 from .local_dependencies import (
     LocalTranscriptionDependencyInstallState,
@@ -37,6 +44,7 @@ from .model_downloads import (
     start_model_download,
 )
 from .models import (
+    FrameCandidateIndex,
     FrameSuggestion,
     JobConfig,
     JobHistory,
@@ -44,6 +52,9 @@ from .models import (
     JobStatus,
     NoteLanguage,
     NoteStyle,
+    QualityReport,
+    ReviewDraft,
+    ReviewDraftParagraphUpdate,
     TranscriptionLanguage,
     NoteVersionIndex,
     NoteVersionSelection,
@@ -57,7 +68,14 @@ from .note_chunks import (
     load_chunk_draft,
     regenerate_chunk_and_reduce,
 )
-from .note_versions import activate_note_version, get_note_version, load_note_version_index, set_note_version_selection
+from .note_versions import (
+    activate_note_version,
+    create_note_version_from_draft,
+    find_source_video,
+    get_note_version,
+    load_note_version_index,
+    set_note_version_selection,
+)
 from .processor import (
     continue_job_to_notes,
     create_zip,
@@ -68,6 +86,9 @@ from .processor import (
 )
 from .runtime_status import get_runtime_status
 from .runtime_paths import get_frontend_dist_dir, get_outputs_root
+from .review_quality import build_quality_report, write_quality_report
+from .review_finalization import finalize_reviewed_note, is_note_review_pending, mark_note_review_pending
+from .review_drafts import get_or_build_review_draft, update_review_draft_paragraph
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
 from .subtitles import transcript_segments_from_payload
 from .task_debug_log import TaskDebugLog
@@ -580,6 +601,122 @@ def preview_subtitles(job_id: str) -> str:
     return read_job_text_file(job_id, "subtitles.md")
 
 
+@app.get("/api/jobs/{job_id}/quality-report", response_model=QualityReport)
+def get_quality_report(job_id: str) -> QualityReport:
+    job_dir = safe_job_dir(job_id)
+    if not (job_dir / "note.md").exists():
+        raise HTTPException(status_code=400, detail="quality report requires note.md.")
+    if not (job_dir / "transcript.json").exists():
+        raise HTTPException(status_code=400, detail="quality report requires transcript.json.")
+    report = build_quality_report(job_dir)
+    write_quality_report(job_dir, report)
+    store.refresh_artifacts(job_id)
+    return report
+
+
+@app.get("/api/jobs/{job_id}/frame-candidates", response_model=FrameCandidateIndex)
+def get_frame_candidates(job_id: str) -> FrameCandidateIndex:
+    job_dir = safe_job_dir(job_id)
+    if not (job_dir / "note.md").exists():
+        raise HTTPException(status_code=400, detail="frame candidates require note.md.")
+    existing = load_frame_candidate_index(job_dir)
+    if existing is not None:
+        return existing
+    try:
+        video_path = find_source_video(job_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    metadata = read_metadata(job_dir)
+    duration = metadata.get("duration_seconds")
+    index = build_frame_candidate_index(
+        job_dir,
+        video_path,
+        duration=float(duration) if duration is not None else None,
+    )
+    write_frame_candidate_index(job_dir, index)
+    store.refresh_artifacts(job_id)
+    return index
+
+
+@app.post("/api/jobs/{job_id}/frame-candidates/{candidate_id}/select", response_model=FrameCandidateIndex)
+def select_job_frame_candidate(job_id: str, candidate_id: str) -> FrameCandidateIndex:
+    job_dir = safe_job_dir(job_id)
+    try:
+        metadata = read_metadata(job_dir)
+        index = select_frame_candidate(job_dir, candidate_id, frame_limit=int(metadata.get("frame_limit") or 6))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    store.refresh_artifacts(job_id)
+    return index
+
+
+@app.post("/api/jobs/{job_id}/frame-candidates/{candidate_id}/reject", response_model=FrameCandidateIndex)
+def reject_job_frame_candidate(job_id: str, candidate_id: str) -> FrameCandidateIndex:
+    job_dir = safe_job_dir(job_id)
+    try:
+        index = reject_frame_candidate(job_dir, candidate_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    store.refresh_artifacts(job_id)
+    return index
+
+
+@app.get("/api/jobs/{job_id}/review-draft", response_model=ReviewDraft)
+def get_job_review_draft(job_id: str) -> ReviewDraft:
+    job_dir = safe_job_dir(job_id)
+    try:
+        draft = get_or_build_review_draft(job_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    store.refresh_artifacts(job_id)
+    return draft
+
+
+@app.patch("/api/jobs/{job_id}/review-draft/paragraphs/{paragraph_id}", response_model=ReviewDraft)
+def update_job_review_draft_paragraph(
+    job_id: str,
+    paragraph_id: str,
+    update: ReviewDraftParagraphUpdate,
+) -> ReviewDraft:
+    job_dir = safe_job_dir(job_id)
+    try:
+        draft = update_review_draft_paragraph(
+            job_dir,
+            paragraph_id,
+            body=update.body,
+            selected_frame_ids=update.selected_frame_ids,
+            status=update.status,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    store.refresh_artifacts(job_id)
+    return draft
+
+
+@app.post("/api/jobs/{job_id}/finalize", response_model=JobPublicState)
+def finalize_job(job_id: str) -> JobPublicState:
+    job_dir = safe_job_dir(job_id)
+    if not is_note_review_pending(job_dir):
+        raise HTTPException(status_code=409, detail="note review is not pending.")
+    try:
+        finalize_reviewed_note(job_dir)
+        report = build_quality_report(job_dir)
+        write_quality_report(job_dir, report)
+        create_zip(job_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    store.refresh_artifacts(job_id)
+    if not store.get(job_id):
+        store.load_from_disk(job_id)
+    store.update(job_id, status=JobStatus.succeeded, step="完成", progress=100, error="")
+    state = store.get(job_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return state
+
+
 @app.get("/api/jobs/{job_id}/assets/{asset_path:path}")
 def get_asset(job_id: str, asset_path: str) -> FileResponse:
     file_path = safe_job_path(job_id, asset_path)
@@ -658,10 +795,8 @@ def regenerate_note_chunk(
 
 
 def _regenerate_chunk_job(job_id: str, job_dir: Path, config: JobConfig, chunk_id: str) -> None:
-    from .processor import create_zip, write_job_metadata, SUBTITLES_PENDING_MARKER
-    from .note_versions import regenerate_note_version_from_draft
+    from .processor import write_job_metadata
     from .task_debug_log import TaskDebugLog
-    from .llm import reduce_note_drafts
     from .subtitles import transcript_segments_from_payload
     import json as _json
 
@@ -680,19 +815,25 @@ def _regenerate_chunk_job(job_id: str, job_dir: Path, config: JobConfig, chunk_i
         draft = regenerate_chunk_and_reduce(job_dir, config, duration, segments, chunk_id, system_prompt)
         debug_log.event("regenerate_note_chunk", "succeeded", chunk_id=chunk_id)
         write_job_metadata(job_id=job_id, job_dir=job_dir, config=config, title=draft.title, duration=duration)
-        # Rebuild the active note version with the new draft
-        from .note_versions import load_note_version_index, activate_note_version
-        version_index = load_note_version_index(job_dir)
-        if version_index.active_version_id:
-            version_dir = job_dir / "note_versions" / version_index.active_version_id
-            version_dir.mkdir(parents=True, exist_ok=True)
-            (version_dir / "note.md").write_text(
-                draft.markdown_body or draft.summary,
-                encoding="utf-8-sig",
-            )
-        create_zip(job_dir)
+        stale_zip = job_dir / "download.zip"
+        if stale_zip.exists():
+            stale_zip.unlink()
+        video_path = find_source_video(job_dir)
+        duration_value = float(duration) if duration is not None else None
+        create_note_version_from_draft(
+            job_dir=job_dir,
+            video_path=video_path,
+            draft=draft,
+            duration=duration_value,
+            config=config,
+        )
+        frame_candidates = build_frame_candidate_index(job_dir, video_path, duration=duration_value)
+        write_frame_candidate_index(job_dir, frame_candidates)
+        quality_report = build_quality_report(job_dir)
+        write_quality_report(job_dir, quality_report)
+        mark_note_review_pending(job_dir)
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.succeeded, step="完成", progress=100)
+        store.update(job_id, status=JobStatus.awaiting_note_review, step="等待复核笔记", progress=92)
     except Exception as exc:
         debug_log.exception("regenerate_note_chunk", "failed", exc)
         store.refresh_artifacts(job_id)

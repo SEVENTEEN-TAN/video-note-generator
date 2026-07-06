@@ -2,6 +2,7 @@
 
 import codecs
 import json
+from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
@@ -9,7 +10,7 @@ import pytest
 from backend.app import processor
 from backend.app.ffmpeg_tools import FFmpegError, run_ffmpeg
 from backend.app.job_store import JobStore
-from backend.app.models import Chapter, JobConfig, JobStatus, KeyMoment, NoteDraft, NoteLanguage
+from backend.app.models import Chapter, FrameCandidateIndex, JobConfig, JobStatus, KeyMoment, NoteDraft, NoteLanguage
 
 
 def test_create_zip_includes_debug_logs(tmp_path) -> None:
@@ -66,6 +67,16 @@ def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> 
         "create_note_version_from_draft",
         lambda **kwargs: (kwargs["job_dir"] / "note.md").write_text("# 长视频\n", encoding="utf-8-sig"),
     )
+    monkeypatch.setattr(processor, "build_frame_candidate_index", lambda *_args, **_kwargs: FrameCandidateIndex(), raising=False)
+    monkeypatch.setattr(
+        processor,
+        "write_frame_candidate_index",
+        lambda job_dir, index: (
+            (job_dir / "review").mkdir(parents=True, exist_ok=True),
+            (job_dir / "review" / "frame_candidates.json").write_text(index.model_dump_json(), encoding="utf-8"),
+        ),
+        raising=False,
+    )
 
     store = JobStore(outputs_root)
     store.create(job_id)
@@ -98,11 +109,14 @@ def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> 
 
     state = store.get(job_id)
     assert state is not None
-    assert state.status == JobStatus.succeeded, state.error
+    assert state.status == JobStatus.awaiting_note_review, state.error
     assert (job_dir / "transcript.json").exists()
     assert (job_dir / "subtitles.md").exists()
     assert "第 299 段字幕" in (job_dir / "subtitles.md").read_text(encoding="utf-8-sig")
-    assert (job_dir / "download.zip").exists()
+    assert (job_dir / ".note-review.pending").exists()
+    assert (job_dir / "review" / "quality_report.json").exists()
+    assert (job_dir / "review" / "frame_candidates.json").exists()
+    assert not (job_dir / "download.zip").exists()
     debug_text = (job_dir / "debug.log").read_text(encoding="utf-8")
     for stage in [
         "process_job",
@@ -113,7 +127,7 @@ def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> 
         "write_subtitles",
         "generate_note_draft",
         "create_note_version",
-        "create_zip",
+        "await_note_review",
     ]:
         assert stage in debug_text
     assert "secret-transcription-key" not in debug_text
@@ -207,7 +221,7 @@ def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, mo
 
     state = store.get(job_id)
     assert state is not None
-    assert state.status == JobStatus.succeeded
+    assert state.status == JobStatus.awaiting_note_review
     assert (job_dir / "audio.mp3").exists()
     assert video_path.exists()
     assert (job_dir / "subtitles.srt").exists()
@@ -215,7 +229,10 @@ def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, mo
     assert (job_dir / "note.md").exists()
     assert (job_dir / "note_versions" / "note_001" / "note.md").exists()
     assert (job_dir / "note_versions" / "note_001" / "frames" / "frame_001.jpg").exists()
-    assert (job_dir / "download.zip").exists()
+    assert (job_dir / ".note-review.pending").exists()
+    assert (job_dir / "review" / "quality_report.json").exists()
+    assert (job_dir / "review" / "frame_candidates.json").exists()
+    assert not (job_dir / "download.zip").exists()
     metadata = json.loads((job_dir / "metadata.json").read_text(encoding="utf-8"))
     assert "api_key" not in metadata
     metadata_text = (job_dir / "metadata.json").read_text(encoding="utf-8")
@@ -231,10 +248,6 @@ def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, mo
     assert version_index["active_version_id"] == "note_001"
     assert version_index["selected_version_ids"] == ["note_001"]
 
-    with ZipFile(job_dir / "download.zip") as archive:
-        names = set(archive.namelist())
-    assert "notes/note_001/note.md" in names
-    assert "notes/note_001/frames/frame_001.jpg" in names
 
 
 def test_process_job_persists_draft_title_before_frame_failure(tmp_path, monkeypatch) -> None:
@@ -358,6 +371,7 @@ def test_phase_one_pauses_for_subtitle_confirmation(tmp_path, monkeypatch) -> No
     state = store.get(job_id)
     assert state is not None
     assert state.status == JobStatus.awaiting_subtitle_confirmation
+    assert state.step == "等待确认字幕"
     assert (job_dir / "subtitles.md").exists()
     assert (job_dir / "subtitles.pending").exists()
     assert not (job_dir / "note.md").exists()
@@ -412,6 +426,14 @@ def test_regenerate_subtitles_removes_old_notes_and_pauses_again(tmp_path, monke
     state = store.get(job_id)
     assert state is not None
     assert state.status == JobStatus.awaiting_subtitle_confirmation
+    assert state.step == "等待确认字幕"
     assert (job_dir / "subtitles.pending").exists()
     assert not (job_dir / "note.md").exists()
     assert not (job_dir / "download.zip").exists()
+
+
+def test_processor_progress_labels_do_not_contain_placeholder_question_marks() -> None:
+    processor_source = Path(processor.__file__).read_text(encoding="utf-8")
+
+    assert '"????' not in processor_source
+    assert 'step="??"' not in processor_source

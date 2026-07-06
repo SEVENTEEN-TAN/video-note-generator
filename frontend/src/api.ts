@@ -1,4 +1,12 @@
-import type { JobState, JobSummary, NoteVersionIndex } from "./types";
+import type {
+  FrameCandidateIndex,
+  JobState,
+  JobSummary,
+  NoteVersionIndex,
+  QualityReport,
+  ReviewDraft,
+  ReviewDraftParagraphStatus
+} from "./types";
 
 export async function fetchJob(jobId: string): Promise<JobState> {
   const response = await fetch(`/api/jobs/${jobId}`);
@@ -71,6 +79,74 @@ export async function fetchNoteVersions(jobId: string): Promise<NoteVersionIndex
   const response = await fetch(`/api/jobs/${jobId}/note-versions`);
   if (!response.ok) {
     throw new Error("笔记版本读取失败。");
+  }
+  return response.json();
+}
+
+export async function fetchQualityReport(jobId: string): Promise<QualityReport> {
+  const response = await fetch(`/api/jobs/${jobId}/quality-report`);
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "质量报告读取失败。"));
+  }
+  return response.json();
+}
+
+export async function fetchFrameCandidates(jobId: string): Promise<FrameCandidateIndex> {
+  const response = await fetch(`/api/jobs/${jobId}/frame-candidates`);
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "配图候选读取失败。"));
+  }
+  return response.json();
+}
+
+export async function selectFrameCandidate(jobId: string, candidateId: string): Promise<FrameCandidateIndex> {
+  const response = await fetch(`/api/jobs/${jobId}/frame-candidates/${candidateId}/select`, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "配图候选选择失败。"));
+  }
+  return response.json();
+}
+
+export async function rejectFrameCandidate(jobId: string, candidateId: string): Promise<FrameCandidateIndex> {
+  const response = await fetch(`/api/jobs/${jobId}/frame-candidates/${candidateId}/reject`, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "配图候选拒绝失败。"));
+  }
+  return response.json();
+}
+
+export async function fetchReviewDraft(jobId: string): Promise<ReviewDraft> {
+  const response = await fetch(`/api/jobs/${jobId}/review-draft`);
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "人工审核稿读取失败。"));
+  }
+  return response.json();
+}
+
+export async function updateReviewDraftParagraph(
+  jobId: string,
+  paragraphId: string,
+  payload: {
+    body: string;
+    selected_frame_ids: string[];
+    status: ReviewDraftParagraphStatus;
+  }
+): Promise<ReviewDraft> {
+  const response = await fetch(`/api/jobs/${jobId}/review-draft/paragraphs/${paragraphId}`, {
+    body: JSON.stringify(payload),
+    headers: { "Content-Type": "application/json" },
+    method: "PATCH"
+  });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "人工审核稿保存失败。"));
+  }
+  return response.json();
+}
+
+export async function finalizeJob(jobId: string): Promise<JobState> {
+  const response = await fetch(`/api/jobs/${jobId}/finalize`, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "确认定稿失败。"));
   }
   return response.json();
 }

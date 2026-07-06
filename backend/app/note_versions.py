@@ -8,7 +8,7 @@ from .ffmpeg_tools import extract_frame
 from .frame_selection import select_key_frame_moments
 from .llm import generate_note_draft
 from .markdown import render_note_markdown
-from .models import JobConfig, NoteDraft, NoteVersion, NoteVersionIndex
+from .models import JobConfig, NoteDraft, NoteStyle, NoteVersion, NoteVersionIndex
 from .subtitles import transcript_segments_from_payload
 from .task_debug_log import TaskDebugLog
 from .transcript_corrections import load_preferred_transcript_payload
@@ -141,6 +141,18 @@ def next_note_version_id(job_dir: Path) -> str:
     return f"note_{(max(used_numbers, default=0) + 1):03d}"
 
 
+def next_manual_version_id(job_dir: Path) -> str:
+    index = load_note_version_index(job_dir)
+    used_numbers: list[int] = []
+    for version in index.versions:
+        if version.id.startswith("manual_"):
+            try:
+                used_numbers.append(int(version.id.removeprefix("manual_")))
+            except ValueError:
+                continue
+    return f"manual_{(max(used_numbers, default=0) + 1):03d}"
+
+
 def get_note_version(index: NoteVersionIndex, version_id: str) -> NoteVersion | None:
     for version in index.versions:
         if version.id == version_id:
@@ -191,6 +203,71 @@ def activate_note_version(job_dir: Path, version_id: str) -> NoteVersionIndex:
         shutil.rmtree(root_frames)
     shutil.copytree(source_frames, root_frames)
     return index
+
+
+def ensure_root_note_has_version(job_dir: Path) -> NoteVersionIndex:
+    root_note = job_dir / "note.md"
+    if not root_note.exists() or not root_note.is_file():
+        return load_note_version_index(job_dir)
+
+    index = load_note_version_index(job_dir)
+    root_text = root_note.read_text(encoding="utf-8-sig")
+    for version in index.versions:
+        try:
+            version_note = resolve_job_relative_path(job_dir, version.note_path)
+        except ValueError:
+            continue
+        if version_note.exists() and version_note.read_text(encoding="utf-8-sig") == root_text:
+            if version.id == index.active_version_id:
+                return index
+            return set_note_version_selection(job_dir, index.selected_version_ids, version.id)
+
+    return snapshot_root_note_as_manual_version(job_dir)
+
+
+def snapshot_root_note_as_manual_version(job_dir: Path) -> NoteVersionIndex:
+    version_id = next_manual_version_id(job_dir)
+    version_dir = job_dir / NOTE_VERSIONS_DIR / version_id
+    frames_dir = version_dir / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(job_dir / "note.md", version_dir / "note.md")
+
+    root_frames = job_dir / "frames"
+    if root_frames.exists():
+        if frames_dir.exists():
+            shutil.rmtree(frames_dir)
+        shutil.copytree(root_frames, frames_dir)
+
+    metadata = _read_metadata(job_dir)
+    try:
+        note_style = NoteStyle(str(metadata.get("note_style") or NoteStyle.detailed.value))
+    except ValueError:
+        note_style = NoteStyle.detailed
+    frame_limit = int(metadata.get("frame_limit") or 6)
+    version = NoteVersion(
+        id=version_id,
+        label=f"{version_id} · 手工版本",
+        note_style=note_style,
+        note_language=str(metadata.get("note_language") or "zh"),
+        note_model=str(metadata.get("note_model") or "manual"),
+        note_base_url=str(metadata.get("note_base_url") or ""),
+        frame_limit=frame_limit,
+        note_path=f"{NOTE_VERSIONS_DIR}/{version_id}/note.md",
+        frame_dir=f"{NOTE_VERSIONS_DIR}/{version_id}/frames",
+        selected=True,
+        active=True,
+        extras_present=bool(metadata.get("extras_present") or False),
+        extras_length=int(metadata.get("extras_length") or 0),
+    )
+    index = load_note_version_index(job_dir)
+    selected_version_ids = [item for item in index.selected_version_ids if item != version_id]
+    selected_version_ids.append(version_id)
+    versions = [item for item in index.versions if item.id != version_id]
+    versions.append(version)
+    return write_note_version_index(
+        job_dir,
+        NoteVersionIndex(active_version_id=version_id, selected_version_ids=selected_version_ids, versions=versions),
+    )
 
 
 def create_note_version_from_draft(
