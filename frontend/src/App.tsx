@@ -1,8 +1,10 @@
 ﻿import {
   AlertTriangle,
   Captions,
+  ChevronDown,
   CheckCircle2,
   Download,
+  FileSearch,
   FileText,
   FolderOpen,
   History,
@@ -15,7 +17,8 @@
   Settings,
   Trash2,
   X,
-  Upload
+  Upload,
+  ZoomIn
 } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, Dispatch, SetStateAction } from "react";
@@ -43,6 +46,9 @@ import type {
   PythonPackageInstallMode,
   PreviewImage,
   QualityReport,
+  ReviewDraft,
+  ReviewDraftParagraph,
+  ReviewDraftParagraphStatus,
   RuntimeState,
   TranscriptCorrectionPreview,
   TranscriptionLanguage,
@@ -68,9 +74,11 @@ import {
   fetchJobHistory,
   fetchNoteVersions,
   fetchQualityReport,
+  fetchReviewDraft,
   rejectFrameCandidate,
   selectFrameCandidate,
-  readResponseError
+  readResponseError,
+  updateReviewDraftParagraph
 } from "./api";
 import { extractMarkdownImages, parseMarkdown, resolvePreviewAssetUrl } from "./markdown";
 
@@ -131,6 +139,8 @@ export function App() {
   const [frameCandidateIndex, setFrameCandidateIndex] = useState<FrameCandidateIndex | null>(null);
   const [frameCandidateError, setFrameCandidateError] = useState("");
   const [frameCandidateBusyId, setFrameCandidateBusyId] = useState("");
+  const [reviewDraft, setReviewDraft] = useState<ReviewDraft | null>(null);
+  const [reviewDraftSavingId, setReviewDraftSavingId] = useState("");
   const [isFrameReviewOpen, setIsFrameReviewOpen] = useState(false);
   const [isFinalizingJob, setIsFinalizingJob] = useState(false);
   const [finalizeError, setFinalizeError] = useState("");
@@ -217,6 +227,7 @@ export function App() {
     !runtimeLocalStatus?.cuda_available &&
     !!runtimeLocalStatus?.worker_ready;
   const images = useMemo(() => job?.artifacts.filter((artifact) => artifact.kind === "image") ?? [], [job]);
+  const hasNoteArtifact = Boolean(job?.artifacts.some((artifact) => artifact.path === "note.md"));
   const previewVersion = useMemo(
     () => noteVersions?.versions.find((version) => version.id === previewVersionId) ?? null,
     [noteVersions, previewVersionId]
@@ -234,6 +245,9 @@ export function App() {
   }, [images, job, notePreview, previewAssetBasePath, previewVersion]);
   const frameCandidateGroups = useMemo(() => {
     const groups = new Map<number, FrameCandidate[]>();
+    for (const context of frameCandidateIndex?.chapter_contexts ?? []) {
+      groups.set(context.chapter_index, groups.get(context.chapter_index) ?? []);
+    }
     for (const candidate of frameCandidateIndex?.candidates ?? []) {
       const group = groups.get(candidate.chapter_index) ?? [];
       group.push(candidate);
@@ -250,6 +264,15 @@ export function App() {
   }, [frameCandidateIndex]);
   const selectedFrameCandidateCount =
     frameCandidateIndex?.candidates.filter((candidate) => candidate.selected && !candidate.rejected).length ?? 0;
+  const noteTitleAction = hasNoteArtifact ? (
+    <div className="note-title-actions">
+      {qualityReport && <QualityStatusControl report={qualityReport} />}
+      <button className="small-button manual-review-button" disabled={isBusy} onClick={handleManualReview} type="button">
+        <FileSearch size={15} />
+        手动审核
+      </button>
+    </div>
+  ) : null;
 
   function resetTaskContext() {
     setJob(null);
@@ -269,6 +292,8 @@ export function App() {
     setFrameCandidateIndex(null);
     setFrameCandidateError("");
     setFrameCandidateBusyId("");
+    setReviewDraft(null);
+    setReviewDraftSavingId("");
     setIsFrameReviewOpen(false);
     setIsFinalizingJob(false);
     setFinalizeError("");
@@ -534,11 +559,25 @@ export function App() {
     if (!job?.job_id) {
       return;
     }
+    const previousIndex = frameCandidateIndex;
     setFrameCandidateBusyId(candidateId);
+    setFrameCandidateIndex((current) =>
+      current
+        ? {
+            ...current,
+            candidates: current.candidates.map((candidate) =>
+              candidate.id === candidateId
+                ? { ...candidate, selected: !candidate.selected, rejected: false }
+                : candidate
+            )
+          }
+        : current
+    );
     try {
       setFrameCandidateIndex(await selectFrameCandidate(job.job_id, candidateId));
       setFrameCandidateError("");
     } catch (error) {
+      setFrameCandidateIndex(previousIndex);
       setFrameCandidateError(error instanceof Error ? error.message : "配图候选选择失败。");
     } finally {
       setFrameCandidateBusyId("");
@@ -549,14 +588,78 @@ export function App() {
     if (!job?.job_id) {
       return;
     }
+    const previousIndex = frameCandidateIndex;
     setFrameCandidateBusyId(candidateId);
+    setFrameCandidateIndex((current) =>
+      current
+        ? {
+            ...current,
+            candidates: current.candidates.map((candidate) =>
+              candidate.id === candidateId
+                ? { ...candidate, selected: false, rejected: true }
+                : candidate
+            )
+          }
+        : current
+    );
     try {
       setFrameCandidateIndex(await rejectFrameCandidate(job.job_id, candidateId));
       setFrameCandidateError("");
     } catch (error) {
+      setFrameCandidateIndex(previousIndex);
       setFrameCandidateError(error instanceof Error ? error.message : "配图候选拒绝失败。");
     } finally {
       setFrameCandidateBusyId("");
+    }
+  }
+
+  async function handleManualReview() {
+    if (!job?.job_id) {
+      return;
+    }
+    try {
+      const [nextFrameCandidateIndex, nextReviewDraft] = await Promise.all([
+        fetchFrameCandidates(job.job_id),
+        fetchReviewDraft(job.job_id)
+      ]);
+      setFrameCandidateIndex(nextFrameCandidateIndex);
+      setReviewDraft(nextReviewDraft);
+      setFrameCandidateError("");
+      setIsFrameReviewOpen(true);
+      return;
+    } catch (error) {
+      if (frameCandidateIndex && reviewDraft) {
+        setFrameCandidateError(error instanceof Error ? error.message : "人工审核数据读取失败。");
+        setIsFrameReviewOpen(true);
+        return;
+      }
+      setFrameCandidateError(error instanceof Error ? error.message : "当前任务暂时没有可审核的人工稿数据。");
+    }
+  }
+
+  async function handleSaveReviewParagraph(
+    paragraphId: string,
+    body: string,
+    selectedFrameIds: string[],
+    status: ReviewDraftParagraphStatus
+  ) {
+    if (!job?.job_id) {
+      return;
+    }
+    setReviewDraftSavingId(paragraphId);
+    try {
+      setReviewDraft(
+        await updateReviewDraftParagraph(job.job_id, paragraphId, {
+          body,
+          selected_frame_ids: selectedFrameIds,
+          status
+        })
+      );
+      setFrameCandidateError("");
+    } catch (error) {
+      setFrameCandidateError(error instanceof Error ? error.message : "人工审核稿保存失败。");
+    } finally {
+      setReviewDraftSavingId("");
     }
   }
 
@@ -1415,51 +1518,6 @@ export function App() {
                   </div>
                 </details>
               )}
-            {qualityReport && (
-              <section className={`quality-panel ${qualityReport.status}`} aria-label="质量复核">
-                <div className="quality-panel-head">
-                  <div>
-                    <strong>质量复核</strong>
-                    <span>系统已检查覆盖、结构、配图和生成稳定性；最终准确性仍建议人工确认。</span>
-                  </div>
-                  <span className={`quality-status ${qualityReport.status}`}>{formatQualityStatus(qualityReport.status)}</span>
-                </div>
-                <div className="quality-score-grid">
-                  <div>
-                    <span>覆盖</span>
-                    <strong>{formatQualityScore(qualityReport.scores.coverage)}</strong>
-                  </div>
-                  <div>
-                    <span>结构</span>
-                    <strong>{formatQualityScore(qualityReport.scores.structure)}</strong>
-                  </div>
-                  <div>
-                    <span>配图</span>
-                    <strong>{formatQualityScore(qualityReport.scores.frames)}</strong>
-                  </div>
-                  <div>
-                    <span>稳定性</span>
-                    <strong>{formatQualityScore(qualityReport.scores.stability)}</strong>
-                  </div>
-                </div>
-                {qualityReport.issues.length > 0 ? (
-                  <div className="quality-issues">
-                    {qualityReport.issues.slice(0, 5).map((issue, index) => (
-                      <div className={`quality-issue ${issue.severity}`} key={`${issue.type}-${issue.chapter_index ?? "global"}-${index}`}>
-                        <AlertTriangle size={14} />
-                        <span>
-                          {issue.chapter_index !== null && issue.chapter_index !== undefined ? `第 ${issue.chapter_index + 1} 章 · ` : ""}
-                          {formatQualityIssueType(issue.type)}：{issue.message}
-                        </span>
-                      </div>
-                    ))}
-                    {qualityReport.issues.length > 5 && <span className="quality-more">还有 {qualityReport.issues.length - 5} 个风险项</span>}
-                  </div>
-                ) : (
-                  <p className="quality-empty">没有发现可测量的覆盖或配图风险。</p>
-                )}
-              </section>
-            )}
             {qualityReportError && (
               <p className="inline-warning">
                 <AlertTriangle size={15} />
@@ -1526,6 +1584,7 @@ export function App() {
                 <PreviewBlock
                   assetBasePath={previewAssetBasePath}
                   title={previewVersion ? `视频笔记 Markdown · ${previewVersion.id}` : "视频笔记 Markdown"}
+                  titleAction={noteTitleAction}
                   text={notePreview}
                   empty="完成后显示 note.md 预览"
                   jobId={job?.job_id}
@@ -1572,21 +1631,23 @@ export function App() {
                 />
               </div>
 
-              <div className="frame-grid" aria-label="关键帧">
-                {previewImages.length === 0 ? (
-                  <div className="empty-frames">
-                    <Image size={20} />
-                    <span>关键帧完成后显示在这里</span>
-                  </div>
-                ) : (
-                  previewImages.map((artifact) => (
-                    <figure key={artifact.path}>
-                      <img alt={artifact.label} src={artifact.asset_url} />
-                      <figcaption>{artifact.label}</figcaption>
-                    </figure>
-                  ))
-                )}
-              </div>
+              <CollapsibleBlock className="frame-preview-block" title="关键帧">
+                <div className="frame-grid" aria-label="关键帧">
+                  {previewImages.length === 0 ? (
+                    <div className="empty-frames">
+                      <Image size={20} />
+                      <span>关键帧完成后显示在这里</span>
+                    </div>
+                  ) : (
+                    previewImages.map((artifact) => (
+                      <figure key={artifact.path}>
+                        <img alt={artifact.label} src={artifact.asset_url} />
+                        <figcaption>{artifact.label}</figcaption>
+                      </figure>
+                    ))
+                  )}
+                </div>
+              </CollapsibleBlock>
             </div>
           </section>
         </div>
@@ -1982,16 +2043,25 @@ export function App() {
         }}
         preview={correctionPreview}
       />
-      {isFrameReviewOpen && job && frameCandidateIndex && (
+      {isFrameReviewOpen && job && frameCandidateIndex && reviewDraft && (
         <FrameReviewModal
           busyCandidateId={frameCandidateBusyId}
           contextByChapter={frameCandidateContextByChapter}
           groups={frameCandidateGroups}
           isBusy={isBusy}
           jobId={job.job_id}
+          noteChunks={noteChunks}
+          onSaveParagraph={(paragraphId, body, selectedFrameIds, status) =>
+            void handleSaveReviewParagraph(paragraphId, body, selectedFrameIds, status)
+          }
+          onRegenerateNote={() => void handleRegenerateNote()}
+          onRegenerateChunk={(chunkId) => void handleRegenerateNoteChunk(chunkId)}
           onClose={() => setIsFrameReviewOpen(false)}
           onReject={(candidateId) => void handleRejectFrameCandidate(candidateId)}
           onSelect={(candidateId) => void handleSelectFrameCandidate(candidateId)}
+          regeneratingChunkId={regeneratingChunkId}
+          reviewDraft={reviewDraft}
+          savingParagraphId={reviewDraftSavingId}
           selectedCount={selectedFrameCandidateCount}
         />
       )}
@@ -2205,15 +2275,45 @@ function formatCandidateTime(value: number) {
   return [hours, minutes, remainingSeconds].map((part) => String(part).padStart(2, "0")).join(":");
 }
 
+function formatCandidateSource(source: FrameCandidate["source"]) {
+  return source === "note_key_moment" ? "笔记关键点" : "兜底推荐";
+}
+
+function findChunkForChapterContext(
+  context: FrameCandidateIndex["chapter_contexts"][number] | undefined,
+  chunks: NoteChunkMeta[]
+) {
+  if (!context || chunks.length === 0) {
+    return null;
+  }
+  const midpoint = (context.start_time + context.end_time) / 2;
+  return (
+    chunks.find((chunk) => rangesOverlap(context.start_time, context.end_time, chunk.start_time, chunk.end_time)) ??
+    chunks.find((chunk) => chunk.start_time <= midpoint && midpoint <= chunk.end_time) ??
+    null
+  );
+}
+
+function rangesOverlap(leftStart: number, leftEnd: number, rightStart: number, rightEnd: number) {
+  return Math.max(leftStart, rightStart) <= Math.min(leftEnd, rightEnd);
+}
+
 function FrameReviewModal({
   busyCandidateId,
   contextByChapter,
   groups,
   isBusy,
   jobId,
+  noteChunks,
   onClose,
+  onRegenerateNote,
+  onRegenerateChunk,
+  onSaveParagraph,
   onReject,
   onSelect,
+  regeneratingChunkId,
+  reviewDraft,
+  savingParagraphId,
   selectedCount
 }: {
   busyCandidateId: string;
@@ -2221,15 +2321,34 @@ function FrameReviewModal({
   groups: [number, FrameCandidate[]][];
   isBusy: boolean;
   jobId: string;
+  noteChunks: NoteChunkIndex | null;
   onClose: () => void;
+  onRegenerateNote: () => void;
+  onRegenerateChunk: (chunkId: string) => void;
+  onSaveParagraph: (
+    paragraphId: string,
+    body: string,
+    selectedFrameIds: string[],
+    status: ReviewDraftParagraphStatus
+  ) => void;
   onReject: (candidateId: string) => void;
   onSelect: (candidateId: string) => void;
+  regeneratingChunkId: string;
+  reviewDraft: ReviewDraft;
+  savingParagraphId: string;
   selectedCount: number;
 }) {
+  const chunks = noteChunks?.chunks ?? [];
+  const candidatesByChapter = new Map(groups);
+  const draftSelectedCount = reviewDraft.paragraphs.reduce(
+    (total, paragraph) => total + paragraph.selected_frame_ids.length,
+    0
+  );
+  const [previewCandidate, setPreviewCandidate] = useState<FrameCandidate | null>(null);
   return (
     <div className="modal-backdrop" onMouseDown={onClose}>
       <section
-        aria-label="审核配图"
+        aria-label="手动审核"
         aria-modal="true"
         className="frame-review-modal"
         onMouseDown={(event) => event.stopPropagation()}
@@ -2237,11 +2356,11 @@ function FrameReviewModal({
       >
         <div className="modal-header">
           <div>
-            <p className="eyebrow">Frame Review</p>
-            <h2>审核配图候选</h2>
+            <p className="eyebrow">Manual Review</p>
+            <h2>手动审核</h2>
           </div>
           <div className="frame-review-header-actions">
-            <span className="mini-badge ok">{selectedCount} 已选</span>
+            <span className="mini-badge ok">{draftSelectedCount || selectedCount} 已选</span>
             <button className="icon-button" onClick={onClose} title="关闭配图审核" type="button">
               <X size={18} />
             </button>
@@ -2249,85 +2368,32 @@ function FrameReviewModal({
         </div>
 
         <div className="modal-body frame-review-body">
-          <p className="frame-review-summary">每章可以选用多张配图；选择会保存到评审数据，最终定稿时一起写入笔记。</p>
+          <p className="frame-review-summary">
+            按段落核对最终文案、字幕依据和配图。这里保存的人工审核稿会作为确认定稿的来源。
+          </p>
           <div className="frame-candidate-groups">
-            {groups.map(([chapterIndex, candidates]) => {
-              const context = contextByChapter.get(chapterIndex);
+            {reviewDraft.paragraphs.map((paragraph) => {
+              const candidates = candidatesByChapter.get(paragraph.chapter_index) ?? [];
+              const context = contextByChapter.get(paragraph.chapter_index);
+              const chunk =
+                chunks.find((item) => rangesOverlap(paragraph.start_time, paragraph.end_time, item.start_time, item.end_time)) ??
+                findChunkForChapterContext(context, chunks);
+              const isRegeneratingThisChunk = Boolean(chunk ? regeneratingChunkId === chunk.id : isBusy);
               return (
-                <section className="frame-candidate-group" key={chapterIndex}>
-                  <div className="frame-candidate-group-head">
-                    <div>
-                      <strong>{context?.title || `第 ${chapterIndex + 1} 章`}</strong>
-                      {context && <span>{formatSecondsRange(context.start_time, context.end_time)}</span>}
-                    </div>
-                    <span>{candidates.length} 个候选</span>
-                  </div>
-                  {context && (
-                    <div className="frame-candidate-context" aria-label="原始段落参考">
-                      <div className="frame-candidate-context-head">
-                        <strong>原始段落参考</strong>
-                        <span>选图时对照本章笔记和字幕原文，避免只看缩略图判断。</span>
-                      </div>
-                      <div>
-                        <strong>笔记原段落</strong>
-                        <p>{context.note_excerpt || "暂无可用笔记段落。"}</p>
-                      </div>
-                      <div>
-                        <strong>字幕原文片段</strong>
-                        <p>{context.subtitle_excerpt || "暂无可用字幕片段。"}</p>
-                      </div>
-                    </div>
-                  )}
-                  <div className="frame-candidate-strip">
-                    {candidates.map((candidate) => {
-                      const isBusyCandidate = busyCandidateId === candidate.id;
-                      const isDuplicate = candidate.risk_flags.includes("duplicate_frame");
-                      return (
-                        <article
-                          className={`frame-candidate-card ${candidate.selected ? "selected" : ""} ${candidate.rejected ? "rejected" : ""}`}
-                          key={candidate.id}
-                        >
-                          <img alt={candidate.reason} src={`/api/jobs/${jobId}/assets/${candidate.path}`} />
-                          <div className="frame-candidate-body">
-                            <div className="frame-candidate-meta">
-                              <span>{formatCandidateTime(candidate.time)}</span>
-                              {candidate.selected && <span className="mini-badge ok">已选</span>}
-                              {candidate.rejected && <span className="mini-badge warn">已拒绝</span>}
-                              {isDuplicate && <span className="mini-badge warn">重复风险</span>}
-                            </div>
-                            <p>{candidate.reason}</p>
-                            <div className="frame-candidate-actions">
-                              <button
-                                className="small-button"
-                                disabled={isBusy || isBusyCandidate}
-                                onClick={() => onSelect(candidate.id)}
-                                type="button"
-                              >
-                                {isBusyCandidate ? (
-                                  <Loader2 className="spin" size={14} />
-                                ) : candidate.selected ? (
-                                  <X size={14} />
-                                ) : (
-                                  <CheckCircle2 size={14} />
-                                )}
-                                {candidate.selected ? "取消" : "选用"}
-                              </button>
-                              <button
-                                className="small-button"
-                                disabled={isBusy || isBusyCandidate || candidate.rejected}
-                                onClick={() => onReject(candidate.id)}
-                                type="button"
-                              >
-                                <X size={14} />
-                                拒绝
-                              </button>
-                            </div>
-                          </div>
-                        </article>
-                      );
-                    })}
-                  </div>
-                </section>
+                <ReviewParagraphEditor
+                  candidates={candidates}
+                  isBusy={isBusy}
+                  isRegenerating={isRegeneratingThisChunk}
+                  isSaving={savingParagraphId === paragraph.id}
+                  jobId={jobId}
+                  key={paragraph.id}
+                  onPreviewCandidate={setPreviewCandidate}
+                  onRegenerate={() => {
+                    chunk ? onRegenerateChunk(chunk.id) : onRegenerateNote();
+                  }}
+                  onSave={onSaveParagraph}
+                  paragraph={paragraph}
+                />
               );
             })}
           </div>
@@ -2339,8 +2405,189 @@ function FrameReviewModal({
           </button>
         </div>
       </section>
+      {previewCandidate && (
+        <div className="frame-image-preview-backdrop" onMouseDown={(event) => event.stopPropagation()}>
+          <section aria-label="候选配图预览" className="frame-image-preview" role="dialog">
+            <div className="frame-image-preview-head">
+              <div>
+                <strong>{formatCandidateTime(previewCandidate.time)}</strong>
+                <span>{previewCandidate.reason}</span>
+              </div>
+              <button className="icon-button" onClick={() => setPreviewCandidate(null)} title="关闭预览" type="button">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="frame-image-preview-body">
+              <img alt={previewCandidate.reason} src={`/api/jobs/${jobId}/assets/${previewCandidate.path}`} />
+              <div className="frame-image-preview-reference">
+                <div>
+                  <strong>笔记依据</strong>
+                  <p>{previewCandidate.note_excerpt || previewCandidate.reason || "暂无笔记依据。"}</p>
+                </div>
+                <div>
+                  <strong>附近字幕</strong>
+                  <p>{previewCandidate.subtitle_excerpt || "暂无该时间点附近字幕。"}</p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
     </div>
   );
+}
+
+function ReviewParagraphEditor({
+  candidates,
+  isBusy,
+  isRegenerating,
+  isSaving,
+  jobId,
+  onPreviewCandidate,
+  onRegenerate,
+  onSave,
+  paragraph
+}: {
+  candidates: FrameCandidate[];
+  isBusy: boolean;
+  isRegenerating: boolean;
+  isSaving: boolean;
+  jobId: string;
+  onPreviewCandidate: (candidate: FrameCandidate) => void;
+  onRegenerate: () => void;
+  onSave: (paragraphId: string, body: string, selectedFrameIds: string[], status: ReviewDraftParagraphStatus) => void;
+  paragraph: ReviewDraftParagraph;
+}) {
+  const [body, setBody] = useState(paragraph.body);
+  const [selectedFrameIds, setSelectedFrameIds] = useState(paragraph.selected_frame_ids);
+  useEffect(() => {
+    setBody(paragraph.body);
+    setSelectedFrameIds(paragraph.selected_frame_ids);
+  }, [paragraph.body, paragraph.id, paragraph.selected_frame_ids]);
+  const selectedSet = new Set(selectedFrameIds);
+  const hasChanges =
+    body.trim() !== paragraph.body.trim() ||
+    selectedFrameIds.join("|") !== paragraph.selected_frame_ids.join("|");
+
+  function toggleFrame(candidateId: string) {
+    setSelectedFrameIds((current) =>
+      current.includes(candidateId) ? current.filter((id) => id !== candidateId) : [...current, candidateId]
+    );
+  }
+
+  return (
+    <section className="frame-candidate-group review-paragraph-group">
+      <div className="frame-candidate-group-head">
+        <div className="frame-candidate-title-line">
+          <strong>{paragraph.title || `第 ${paragraph.chapter_index + 1} 段`}</strong>
+          <span>{formatSecondsRange(paragraph.start_time, paragraph.end_time)}</span>
+          <span className={`mini-badge ${paragraph.status === "approved" ? "ok" : ""}`}>
+            {formatReviewParagraphStatus(paragraph.status)}
+          </span>
+        </div>
+        <div className="frame-candidate-group-actions">
+          <button className="small-button" disabled={isBusy || isRegenerating} onClick={onRegenerate} type="button">
+            {isRegenerating ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
+            重新生成本段文字
+          </button>
+          <button
+            className="small-button strong"
+            disabled={isBusy || isSaving || (!hasChanges && paragraph.status === "approved")}
+            onClick={() => onSave(paragraph.id, body, selectedFrameIds, hasChanges ? "edited" : "approved")}
+            type="button"
+          >
+            {isSaving ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}
+            保存本段
+          </button>
+          <span>{candidates.length} 个候选</span>
+        </div>
+      </div>
+
+      <div className="review-paragraph-layout" aria-label="段落审稿">
+        <label className="frame-candidate-reference-panel review-paragraph-editor">
+          <strong>文案编辑</strong>
+          <textarea value={body} onChange={(event) => setBody(event.target.value)} />
+        </label>
+        <div className="frame-candidate-reference-panel review-subtitle-evidence">
+          <strong>字幕依据</strong>
+          <textarea
+            aria-label="字幕依据内容"
+            className="review-subtitle-textarea"
+            readOnly
+            value={formatReviewSubtitleEvidence(paragraph.subtitle_segments)}
+          />
+        </div>
+
+        <div className="review-frame-column">
+          <strong>配图</strong>
+          {candidates.length === 0 ? (
+            <p className="frame-candidate-empty">本段暂无候选配图。</p>
+          ) : (
+            <div className="frame-candidate-strip review-frame-list">
+              {candidates.map((candidate) => {
+                const isSelected = selectedSet.has(candidate.id);
+                const isDuplicate = candidate.risk_flags.includes("duplicate_frame");
+                return (
+                  <article
+                    className={`frame-candidate-card ${isSelected ? "selected" : ""} ${candidate.rejected ? "rejected" : ""}`}
+                    key={candidate.id}
+                  >
+                    <div className="frame-image-wrap">
+                      <label className="frame-candidate-check">
+                        <input
+                          checked={isSelected}
+                          disabled={isBusy || isSaving}
+                          onChange={() => toggleFrame(candidate.id)}
+                          type="checkbox"
+                        />
+                      </label>
+                      <img alt={candidate.reason} src={`/api/jobs/${jobId}/assets/${candidate.path}`} />
+                      <button
+                        aria-label={`放大预览 ${formatCandidateTime(candidate.time)}`}
+                        className="frame-candidate-zoom"
+                        onClick={() => onPreviewCandidate(candidate)}
+                        title="放大预览"
+                        type="button"
+                      >
+                        <ZoomIn size={15} />
+                      </button>
+                    </div>
+                    <div className="frame-candidate-body">
+                      <div className="frame-candidate-meta">
+                        <span>{formatCandidateTime(candidate.time)}</span>
+                        <span className="mini-badge">{formatCandidateSource(candidate.source)}</span>
+                        {candidate.similarity > 0 && <span className="mini-badge">相似度 {Math.round(candidate.similarity * 100)}%</span>}
+                        {isSelected && <span className="mini-badge ok">已选</span>}
+                        {candidate.rejected && <span className="mini-badge warn">已拒绝</span>}
+                        {isDuplicate && <span className="mini-badge warn">重复风险</span>}
+                      </div>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function formatReviewParagraphStatus(status: ReviewDraftParagraphStatus) {
+  if (status === "approved") {
+    return "已确认";
+  }
+  if (status === "edited") {
+    return "已修改";
+  }
+  return "待审核";
+}
+
+function formatReviewSubtitleEvidence(segments: ReviewDraftParagraph["subtitle_segments"]) {
+  if (segments.length === 0) {
+    return "暂无可用字幕片段。";
+  }
+  return segments.map((segment) => `${formatSecondsRange(segment.start, segment.end)}  ${segment.text}`).join("\n");
 }
 
 function DownloadLink({
@@ -2406,8 +2653,98 @@ function ArtifactDownloadButton({
   );
 }
 
+function QualityStatusControl({ report }: { report: QualityReport }) {
+  const visibleIssues = report.issues.slice(0, 4);
+  return (
+    <div className="quality-status-control">
+      <button className={`quality-status ${report.status}`} type="button">
+        {formatQualityStatus(report.status)}
+      </button>
+      <div className="quality-popover" role="tooltip">
+        <div className="quality-popover-head">
+          <strong>质量复核</strong>
+          <span>覆盖、结构、配图、稳定性</span>
+        </div>
+        <div className="quality-score-grid">
+          <div>
+            <span>覆盖</span>
+            <strong>{formatQualityScore(report.scores.coverage)}</strong>
+          </div>
+          <div>
+            <span>结构</span>
+            <strong>{formatQualityScore(report.scores.structure)}</strong>
+          </div>
+          <div>
+            <span>配图</span>
+            <strong>{formatQualityScore(report.scores.frames)}</strong>
+          </div>
+          <div>
+            <span>稳定性</span>
+            <strong>{formatQualityScore(report.scores.stability)}</strong>
+          </div>
+        </div>
+        {visibleIssues.length > 0 ? (
+          <div className="quality-issues">
+            {visibleIssues.map((issue, index) => (
+              <div className={`quality-issue ${issue.severity}`} key={`${issue.type}-${issue.chapter_index ?? "global"}-${index}`}>
+                <AlertTriangle size={14} />
+                <span>
+                  {issue.chapter_index !== null && issue.chapter_index !== undefined ? `第 ${issue.chapter_index + 1} 章 · ` : ""}
+                  {formatQualityIssueType(issue.type)}：{issue.message}
+                </span>
+              </div>
+            ))}
+            {report.issues.length > visibleIssues.length && (
+              <span className="quality-more">还有 {report.issues.length - visibleIssues.length} 个风险项</span>
+            )}
+          </div>
+        ) : (
+          <p className="quality-empty">没有发现可测量的覆盖或配图风险。</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CollapsibleBlock({
+  children,
+  className = "",
+  defaultCollapsed = false,
+  title,
+  titleAction
+}: {
+  children: React.ReactNode;
+  className?: string;
+  defaultCollapsed?: boolean;
+  title: string;
+  titleAction?: React.ReactNode;
+}) {
+  const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
+  const sectionClassName = className ? `collapsible-block ${className}` : "collapsible-block";
+  return (
+    <section className={sectionClassName}>
+      <div className="preview-title-row">
+        <h3>
+          <button
+            aria-expanded={!isCollapsed}
+            className="collapse-toggle"
+            onClick={() => setIsCollapsed((current) => !current)}
+            type="button"
+          >
+            <ChevronDown className={isCollapsed ? "collapsed" : ""} size={16} />
+            <span>{title}</span>
+          </button>
+        </h3>
+        {titleAction}
+      </div>
+      {!isCollapsed && <div className="collapsible-content">{children}</div>}
+    </section>
+  );
+}
+
 function PreviewBlock({
   assetBasePath,
+  defaultCollapsed,
   title,
   titleAction,
   text,
@@ -2415,6 +2752,7 @@ function PreviewBlock({
   jobId
 }: {
   assetBasePath?: string;
+  defaultCollapsed?: boolean;
   title: string;
   titleAction?: React.ReactNode;
   text: string;
@@ -2422,13 +2760,9 @@ function PreviewBlock({
   jobId?: string;
 }) {
   return (
-    <section className="preview-block">
-      <div className="preview-title-row">
-        <h3>{title}</h3>
-        {titleAction}
-      </div>
-      {text ? <MarkdownPreview assetBasePath={assetBasePath} markdown={text} jobId={jobId} /> : <p>{empty}</p>}
-    </section>
+    <CollapsibleBlock className="preview-block" defaultCollapsed={defaultCollapsed} title={title} titleAction={titleAction}>
+      {text ? <MarkdownPreview assetBasePath={assetBasePath} markdown={text} jobId={jobId} /> : <p className="preview-empty">{empty}</p>}
+    </CollapsibleBlock>
   );
 }
 

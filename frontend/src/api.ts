@@ -1,4 +1,12 @@
-import type { FrameCandidateIndex, JobState, JobSummary, NoteVersionIndex, QualityReport } from "./types";
+import type {
+  FrameCandidateIndex,
+  JobState,
+  JobSummary,
+  NoteVersionIndex,
+  QualityReport,
+  ReviewDraft,
+  ReviewDraftParagraphStatus
+} from "./types";
 
 export async function fetchJob(jobId: string): Promise<JobState> {
   const response = await fetch(`/api/jobs/${jobId}`);
@@ -103,6 +111,34 @@ export async function rejectFrameCandidate(jobId: string, candidateId: string): 
   const response = await fetch(`/api/jobs/${jobId}/frame-candidates/${candidateId}/reject`, { method: "POST" });
   if (!response.ok) {
     throw new Error(await readResponseError(response, "配图候选拒绝失败。"));
+  }
+  return response.json();
+}
+
+export async function fetchReviewDraft(jobId: string): Promise<ReviewDraft> {
+  const response = await fetch(`/api/jobs/${jobId}/review-draft`);
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "人工审核稿读取失败。"));
+  }
+  return response.json();
+}
+
+export async function updateReviewDraftParagraph(
+  jobId: string,
+  paragraphId: string,
+  payload: {
+    body: string;
+    selected_frame_ids: string[];
+    status: ReviewDraftParagraphStatus;
+  }
+): Promise<ReviewDraft> {
+  const response = await fetch(`/api/jobs/${jobId}/review-draft/paragraphs/${paragraphId}`, {
+    body: JSON.stringify(payload),
+    headers: { "Content-Type": "application/json" },
+    method: "PATCH"
+  });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "人工审核稿保存失败。"));
   }
   return response.json();
 }

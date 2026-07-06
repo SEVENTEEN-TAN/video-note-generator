@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 from openai import OpenAI
 
+from . import local_whisper_worker
 from .ffmpeg_tools import probe_duration, split_audio
 from .models import JobConfig, TranscriptPayload, TranscriptSegment, TranscriptionMode
 from .runtime_config import get_configured_external_python, get_configured_model_root
@@ -102,6 +103,8 @@ def transcribe_with_faster_whisper(
                 f"{detail} External worker error: {exc}"
             ) from exc
 
+    device, compute_type = resolve_local_whisper_runtime(config)
+    configure_internal_cuda_dll_paths(device)
     duration = probe_duration(audio_path) or 0.0
     if duration > LOCAL_WHISPER_CHUNK_THRESHOLD_SECONDS:
         if progress_callback:
@@ -131,7 +134,6 @@ def transcribe_with_faster_whisper(
             segments=merged_segments,
         )
 
-    device, compute_type = resolve_local_whisper_runtime(config)
     try:
         model = WhisperModel(
             model_identifier,
@@ -164,6 +166,7 @@ def _transcribe_single_chunk(
     """Transcribe one audio chunk with its own WhisperModel instance."""
     device, compute_type = resolve_local_whisper_runtime(config)
     language = resolve_transcription_language(config)
+    configure_internal_cuda_dll_paths(device)
     model = WhisperModel(
         model_identifier,
         device=device,
@@ -313,6 +316,12 @@ def resolve_local_whisper_runtime(config: JobConfig) -> tuple[str, str]:
     if compute_type == "default":
         compute_type = "int8"
     return device, compute_type
+
+
+def configure_internal_cuda_dll_paths(device: str) -> None:
+    if device.lower() in {"auto", "cuda"}:
+        local_whisper_worker.configure_cuda_dll_paths()
+
 
 def resolve_transcription_language(config: JobConfig) -> str:
     value = str(config.transcription_language or "").strip()

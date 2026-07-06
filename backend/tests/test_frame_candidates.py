@@ -193,6 +193,40 @@ def test_build_frame_candidate_index_includes_chapter_context(tmp_path, monkeypa
     assert "Intro transcript" in index.chapter_contexts[0].subtitle_excerpt
 
 
+def test_frame_candidate_includes_time_aligned_reference_text(tmp_path, monkeypatch) -> None:
+    video_path = write_candidate_job(tmp_path)
+    (tmp_path / "transcript.json").write_text(
+        json.dumps(
+            {
+                "segments": [
+                    {"start": 5, "end": 8, "text": "chapter opening transcript"},
+                    {"start": 38, "end": 42, "text": "candidate moment transcript"},
+                    {"start": 70, "end": 75, "text": "next chapter transcript"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_extract_frame(_video_path: Path, output_path: Path, timestamp: float, _duration: float | None) -> float:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(f"jpg-{timestamp}".encode())
+        return 40.0
+
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+
+    index = build_frame_candidate_index(tmp_path, video_path, duration=120, candidates_per_chapter=1)
+
+    candidate = index.candidates[0]
+    assert "candidate moment transcript" in candidate.subtitle_excerpt
+    assert "chapter opening transcript" not in candidate.subtitle_excerpt
+    assert "Intro slide" in candidate.note_excerpt
+    assert "candidate moment transcript" in index.chapter_contexts[0].subtitle_excerpt
+    assert "chapter opening transcript" not in index.chapter_contexts[0].subtitle_excerpt
+
+
 def test_load_legacy_frame_candidate_index_backfills_chapter_context(tmp_path) -> None:
     write_candidate_job(tmp_path)
     (tmp_path / "transcript.json").write_text(

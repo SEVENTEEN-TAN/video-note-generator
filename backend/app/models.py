@@ -187,6 +187,8 @@ class FrameCandidate(BaseModel):
     time: float
     path: str
     reason: str
+    note_excerpt: str = ""
+    subtitle_excerpt: str = ""
     source: Literal["note_key_moment", "chapter_fallback"]
     hash: str
     duplicate_of: str | None = None
@@ -208,6 +210,35 @@ class FrameCandidateChapterContext(BaseModel):
 class FrameCandidateIndex(BaseModel):
     candidates: list[FrameCandidate] = Field(default_factory=list)
     chapter_contexts: list[FrameCandidateChapterContext] = Field(default_factory=list)
+
+
+class ReviewSubtitleSegment(BaseModel):
+    start: float
+    end: float
+    text: str
+
+
+class ReviewDraftParagraph(BaseModel):
+    id: str
+    chapter_index: int
+    title: str
+    start_time: float
+    end_time: float
+    body: str = ""
+    subtitle_segments: list[ReviewSubtitleSegment] = Field(default_factory=list)
+    selected_frame_ids: list[str] = Field(default_factory=list)
+    status: Literal["needs_review", "edited", "approved"] = "needs_review"
+
+
+class ReviewDraft(BaseModel):
+    title: str = ""
+    paragraphs: list[ReviewDraftParagraph] = Field(default_factory=list)
+
+
+class ReviewDraftParagraphUpdate(BaseModel):
+    body: str
+    selected_frame_ids: list[str] = Field(default_factory=list)
+    status: Literal["needs_review", "edited", "approved"] = "edited"
 
 
 class TranscriptCorrectionRequest(BaseModel):

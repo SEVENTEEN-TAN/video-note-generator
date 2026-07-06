@@ -74,6 +74,24 @@ def test_note_style_and_extras_are_injected_into_prompts() -> None:
     assert "Return only valid JSON with this shape:" in transcript_prompt
 
 
+def test_chunk_prompt_can_include_adjacent_context_for_targeted_regeneration() -> None:
+    prompt = build_chunk_prompt(
+        "lesson.mp4",
+        30.0,
+        "zh",
+        6,
+        2,
+        3,
+        [TranscriptSegment(start=10, end=20, text="target paragraph content")],
+        adjacent_context="Previous chunk: setup.\nNext chunk: consequence.",
+    )
+
+    assert "Adjacent context for continuity" in prompt
+    assert "Previous chunk: setup." in prompt
+    assert "Next chunk: consequence." in prompt
+    assert "Use adjacent context only to keep continuity" in prompt
+
+
 def test_note_style_and_extras_are_injected_into_reduce_prompt() -> None:
     config = JobConfig(
         transcription_mode=TranscriptionMode.local_faster_whisper,

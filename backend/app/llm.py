@@ -908,6 +908,7 @@ def build_chunk_prompt(
     note_style: str = NoteStyle.detailed.value,
     extras: str = "",
     prior_context: str = "",
+    adjacent_context: str = "",
 ) -> str:
     transcript = "\n".join(render_transcript_lines(segments))
     duration_text = seconds_to_hhmmss(duration or 0) if duration else "unknown"
@@ -918,6 +919,11 @@ def build_chunk_prompt(
         if prior_context
         else ""
     )
+    adjacent_context_block = (
+        f"\nAdjacent context for continuity:\n{adjacent_context}\n"
+        if adjacent_context
+        else ""
+    )
     return f"""
 Video filename: {original_filename}
 Video duration: {duration_text}
@@ -925,10 +931,12 @@ Transcript chunk: {chunk_index} of {chunk_count}
 Target note language: {note_language}
 {style_guidance}
 {context_block}
+{adjacent_context_block}
 
 Create compact professional notes for only this transcript chunk.
 Use absolute timestamps exactly as shown. Do not invent facts from other chunks.
 Do not repeat content already covered in prior context. Build on it instead.
+Use adjacent context only to keep continuity with the previous and next chunk; rewrite only this transcript chunk.
 Choose at most {per_chunk_moments} key moments.
 {TIMESTAMP_FIELD_INSTRUCTION}
 

@@ -253,6 +253,8 @@ export type FrameCandidate = {
   time: number;
   path: string;
   reason: string;
+  note_excerpt: string;
+  subtitle_excerpt: string;
   source: "note_key_moment" | "chapter_fallback";
   hash: string;
   duplicate_of?: string | null;
@@ -274,6 +276,31 @@ export type FrameCandidateChapterContext = {
 export type FrameCandidateIndex = {
   candidates: FrameCandidate[];
   chapter_contexts: FrameCandidateChapterContext[];
+};
+
+export type ReviewSubtitleSegment = {
+  start: number;
+  end: number;
+  text: string;
+};
+
+export type ReviewDraftParagraphStatus = "needs_review" | "edited" | "approved";
+
+export type ReviewDraftParagraph = {
+  id: string;
+  chapter_index: number;
+  title: string;
+  start_time: number;
+  end_time: number;
+  body: string;
+  subtitle_segments: ReviewSubtitleSegment[];
+  selected_frame_ids: string[];
+  status: ReviewDraftParagraphStatus;
+};
+
+export type ReviewDraft = {
+  title: string;
+  paragraphs: ReviewDraftParagraph[];
 };
 
 declare global {

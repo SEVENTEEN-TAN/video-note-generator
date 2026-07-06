@@ -53,6 +53,8 @@ from .models import (
     NoteLanguage,
     NoteStyle,
     QualityReport,
+    ReviewDraft,
+    ReviewDraftParagraphUpdate,
     TranscriptionLanguage,
     NoteVersionIndex,
     NoteVersionSelection,
@@ -86,6 +88,7 @@ from .runtime_status import get_runtime_status
 from .runtime_paths import get_frontend_dist_dir, get_outputs_root
 from .review_quality import build_quality_report, write_quality_report
 from .review_finalization import finalize_reviewed_note, is_note_review_pending, mark_note_review_pending
+from .review_drafts import get_or_build_review_draft, update_review_draft_paragraph
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
 from .subtitles import transcript_segments_from_payload
 from .task_debug_log import TaskDebugLog
@@ -658,6 +661,38 @@ def reject_job_frame_candidate(job_id: str, candidate_id: str) -> FrameCandidate
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     store.refresh_artifacts(job_id)
     return index
+
+
+@app.get("/api/jobs/{job_id}/review-draft", response_model=ReviewDraft)
+def get_job_review_draft(job_id: str) -> ReviewDraft:
+    job_dir = safe_job_dir(job_id)
+    try:
+        draft = get_or_build_review_draft(job_dir)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    store.refresh_artifacts(job_id)
+    return draft
+
+
+@app.patch("/api/jobs/{job_id}/review-draft/paragraphs/{paragraph_id}", response_model=ReviewDraft)
+def update_job_review_draft_paragraph(
+    job_id: str,
+    paragraph_id: str,
+    update: ReviewDraftParagraphUpdate,
+) -> ReviewDraft:
+    job_dir = safe_job_dir(job_id)
+    try:
+        draft = update_review_draft_paragraph(
+            job_dir,
+            paragraph_id,
+            body=update.body,
+            selected_frame_ids=update.selected_frame_ids,
+            status=update.status,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    store.refresh_artifacts(job_id)
+    return draft
 
 
 @app.post("/api/jobs/{job_id}/finalize", response_model=JobPublicState)

@@ -25,6 +25,7 @@ from backend.app.review_finalization import (
     finalize_reviewed_note,
     mark_note_review_pending,
 )
+from backend.app.review_drafts import build_review_draft, update_review_draft_paragraph
 
 
 def seed_review_job(job_dir: Path) -> None:
@@ -102,6 +103,26 @@ def test_finalize_reviewed_note_applies_selected_frames_and_removes_marker(tmp_p
     assert "![Selected intro frame](frames/frame_001.jpg)" in note_text
     assert "![Selected advanced frame](frames/frame_002.jpg)" in note_text
     assert "![old](frames/frame_001.jpg)" not in note_text
+
+
+def test_finalize_reviewed_note_uses_human_review_draft_body(tmp_path) -> None:
+    seed_review_job(tmp_path)
+    draft = build_review_draft(tmp_path)
+    update_review_draft_paragraph(
+        tmp_path,
+        draft.paragraphs[0].id,
+        body="Human approved intro.",
+        selected_frame_ids=["chapter_001_candidate_001"],
+        status="approved",
+    )
+    mark_note_review_pending(tmp_path)
+
+    finalize_reviewed_note(tmp_path)
+
+    note_text = (tmp_path / "note.md").read_text(encoding="utf-8-sig")
+    assert "Human approved intro." in note_text
+    assert "Intro detail." not in note_text
+    assert "![Selected intro frame](frames/frame_001.jpg)" in note_text
 
 
 def test_finalize_reviewed_note_requires_pending_marker(tmp_path) -> None:

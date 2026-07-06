@@ -6,8 +6,9 @@ from collections import defaultdict
 from pathlib import Path
 
 from .frame_candidates import load_frame_candidate_index
-from .models import FrameCandidate
+from .models import FrameCandidate, ReviewDraft
 from .note_versions import get_note_version, load_note_version_index, resolve_job_relative_path
+from .review_drafts import load_review_draft
 from .time_utils import seconds_to_hhmmss
 
 
@@ -29,12 +30,17 @@ def finalize_reviewed_note(job_dir: Path) -> None:
     marker = job_dir / NOTE_REVIEW_PENDING_MARKER
     if not marker.exists():
         raise PermissionError("note review is not pending.")
-    selected = _selected_candidates(job_dir)
+    review_draft = load_review_draft(job_dir)
+    selected = _selected_candidates_from_review_draft(job_dir, review_draft) if review_draft else _selected_candidates(job_dir)
     if not selected:
         raise ValueError("No selected frame candidates.")
     frame_map = _copy_selected_frames(job_dir, selected)
     source_note = (job_dir / "note.md").read_text(encoding="utf-8-sig")
-    final_note = _render_note_with_selected_frames(source_note, selected, frame_map)
+    final_note = (
+        _render_note_with_review_draft(source_note, review_draft, selected, frame_map)
+        if review_draft
+        else _render_note_with_selected_frames(source_note, selected, frame_map)
+    )
     (job_dir / "note.md").write_text(final_note, encoding="utf-8-sig")
     _sync_active_note_version(job_dir, final_note)
     marker.unlink()
@@ -46,6 +52,25 @@ def _selected_candidates(job_dir: Path) -> list[FrameCandidate]:
         raise FileNotFoundError("Frame candidates are not available.")
     return sorted(
         [candidate for candidate in index.candidates if candidate.selected and not candidate.rejected],
+        key=lambda candidate: (candidate.chapter_index, candidate.time, candidate.id),
+    )
+
+
+def _selected_candidates_from_review_draft(job_dir: Path, draft: ReviewDraft | None) -> list[FrameCandidate]:
+    if draft is None:
+        return _selected_candidates(job_dir)
+    index = load_frame_candidate_index(job_dir)
+    if index is None:
+        raise FileNotFoundError("Frame candidates are not available.")
+    candidate_by_id = {candidate.id: candidate for candidate in index.candidates}
+    selected_ids: list[str] = []
+    for paragraph in draft.paragraphs:
+        selected_ids.extend(paragraph.selected_frame_ids)
+    missing_ids = [candidate_id for candidate_id in selected_ids if candidate_id not in candidate_by_id]
+    if missing_ids:
+        raise FileNotFoundError(f"Selected frame candidate is missing: {missing_ids[0]}")
+    return sorted(
+        [candidate_by_id[candidate_id] for candidate_id in selected_ids],
         key=lambda candidate: (candidate.chapter_index, candidate.time, candidate.id),
     )
 
@@ -92,6 +117,48 @@ def _render_note_with_selected_frames(
         if current_chapter >= 0 and current_chapter not in inserted_chapters and TIME_RANGE_PATTERN.search(line):
             rendered.extend(_candidate_markdown_lines(by_chapter.get(current_chapter, []), frame_map))
             inserted_chapters.add(current_chapter)
+    return "\n".join(rendered).rstrip() + "\n"
+
+
+def _render_note_with_review_draft(
+    note_text: str,
+    draft: ReviewDraft,
+    selected: list[FrameCandidate],
+    frame_map: dict[str, str],
+) -> str:
+    by_chapter: dict[int, list[FrameCandidate]] = defaultdict(list)
+    for candidate in selected:
+        by_chapter[candidate.chapter_index].append(candidate)
+    paragraphs_by_chapter = {paragraph.chapter_index: paragraph for paragraph in draft.paragraphs}
+
+    rendered: list[str] = []
+    current_chapter = -1
+    inserted_chapters: set[int] = set()
+    skipping_old_body = False
+    for line in note_text.splitlines():
+        if HEADING_PATTERN.match(line):
+            current_chapter += 1
+            skipping_old_body = False
+            rendered.append(line)
+            continue
+        if current_chapter >= 0 and current_chapter in paragraphs_by_chapter:
+            paragraph = paragraphs_by_chapter[current_chapter]
+            if _is_existing_frame_line(line):
+                continue
+            if current_chapter not in inserted_chapters and TIME_RANGE_PATTERN.search(line):
+                rendered.append(line)
+                rendered.extend(_candidate_markdown_lines(by_chapter.get(current_chapter, []), frame_map))
+                body = paragraph.body.strip()
+                if body:
+                    rendered.extend(["", body, ""])
+                inserted_chapters.add(current_chapter)
+                skipping_old_body = True
+                continue
+            if skipping_old_body:
+                continue
+        if _is_existing_frame_line(line):
+            continue
+        rendered.append(line)
     return "\n".join(rendered).rstrip() + "\n"
 
 

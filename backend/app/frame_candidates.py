@@ -45,6 +45,7 @@ def build_frame_candidate_index(
 ) -> FrameCandidateIndex:
     note_text = (job_dir / "note.md").read_text(encoding="utf-8-sig")
     chapters = _parse_candidate_chapters(note_text, duration)
+    transcript = _load_transcript(job_dir)
     candidates: list[FrameCandidate] = []
     selected_by_chapter: set[int] = set()
     prior_hashes: list[tuple[str, str]] = []
@@ -67,6 +68,8 @@ def build_frame_candidate_index(
                     time=actual_time,
                     path=rel_path,
                     reason=seed.reason,
+                    note_excerpt=seed.reason,
+                    subtitle_excerpt=_subtitle_excerpt_around_time(transcript, actual_time),
                     source=seed.source,
                     hash=hash_value,
                     duplicate_of=duplicate_of,
@@ -77,7 +80,10 @@ def build_frame_candidate_index(
                 )
             )
             prior_hashes.append((candidate_id, hash_value))
-    return FrameCandidateIndex(candidates=candidates, chapter_contexts=_chapter_contexts(job_dir, chapters))
+    return FrameCandidateIndex(
+        candidates=candidates,
+        chapter_contexts=_chapter_contexts(job_dir, chapters, _candidate_times_by_chapter(candidates)),
+    )
 
 
 def write_frame_candidate_index(job_dir: Path, index: FrameCandidateIndex) -> Path:
@@ -95,7 +101,7 @@ def load_frame_candidate_index(job_dir: Path) -> FrameCandidateIndex | None:
         index = FrameCandidateIndex.model_validate_json(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
-    return _with_chapter_contexts(job_dir, index)
+    return _with_chapter_contexts(job_dir, _with_candidate_references(job_dir, index))
 
 
 def select_frame_candidate(job_dir: Path, candidate_id: str, frame_limit: int | None = None) -> FrameCandidateIndex:
@@ -204,10 +210,20 @@ def _candidate_seeds(chapter: CandidateChapter, limit: int) -> list[CandidateSee
     return unique
 
 
-def _chapter_contexts(job_dir: Path, chapters: list[CandidateChapter]) -> list[FrameCandidateChapterContext]:
+def _chapter_contexts(
+    job_dir: Path,
+    chapters: list[CandidateChapter],
+    candidate_times_by_chapter: dict[int, list[float]] | None = None,
+) -> list[FrameCandidateChapterContext]:
     transcript = _load_transcript(job_dir)
     contexts: list[FrameCandidateChapterContext] = []
     for chapter in chapters:
+        candidate_times = candidate_times_by_chapter.get(chapter.index, []) if candidate_times_by_chapter else []
+        subtitle_excerpt = (
+            _subtitle_excerpt_around_time(transcript, candidate_times[0])
+            if candidate_times
+            else _subtitle_excerpt_for_range(transcript, chapter.start_time, chapter.end_time)
+        )
         contexts.append(
             FrameCandidateChapterContext(
                 chapter_index=chapter.index,
@@ -215,17 +231,42 @@ def _chapter_contexts(job_dir: Path, chapters: list[CandidateChapter]) -> list[F
                 start_time=chapter.start_time,
                 end_time=chapter.end_time,
                 note_excerpt=_note_excerpt_for_chapter(job_dir, chapter.title),
-                subtitle_excerpt=_subtitle_excerpt_for_range(transcript, chapter.start_time, chapter.end_time),
+                subtitle_excerpt=subtitle_excerpt,
             )
         )
     return contexts
 
 
 def _with_chapter_contexts(job_dir: Path, index: FrameCandidateIndex) -> FrameCandidateIndex:
-    if index.chapter_contexts:
-        return index
     chapters = _chapters_for_existing_index(job_dir, index)
-    return index.model_copy(update={"chapter_contexts": _chapter_contexts(job_dir, chapters)})
+    if not chapters:
+        return index
+    return index.model_copy(
+        update={"chapter_contexts": _chapter_contexts(job_dir, chapters, _candidate_times_by_chapter(index.candidates))}
+    )
+
+
+def _with_candidate_references(job_dir: Path, index: FrameCandidateIndex) -> FrameCandidateIndex:
+    transcript = _load_transcript(job_dir)
+    candidates: list[FrameCandidate] = []
+    changed = False
+    for candidate in index.candidates:
+        note_excerpt = candidate.note_excerpt or candidate.reason
+        subtitle_excerpt = candidate.subtitle_excerpt or _subtitle_excerpt_around_time(transcript, candidate.time)
+        changed = changed or note_excerpt != candidate.note_excerpt or subtitle_excerpt != candidate.subtitle_excerpt
+        candidates.append(candidate.model_copy(update={"note_excerpt": note_excerpt, "subtitle_excerpt": subtitle_excerpt}))
+    if not changed:
+        return index
+    return index.model_copy(update={"candidates": candidates})
+
+
+def _candidate_times_by_chapter(candidates: list[FrameCandidate]) -> dict[int, list[float]]:
+    times_by_chapter: dict[int, list[float]] = {}
+    for candidate in candidates:
+        times_by_chapter.setdefault(candidate.chapter_index, []).append(candidate.time)
+    for times in times_by_chapter.values():
+        times.sort()
+    return times_by_chapter
 
 
 def _chapters_for_existing_index(job_dir: Path, index: FrameCandidateIndex) -> list[CandidateChapter]:
@@ -301,6 +342,25 @@ def _subtitle_excerpt_for_range(transcript: TranscriptPayload, start_time: float
         if segment.text.strip() and segment.end >= start_time and segment.start <= end_time
     ]
     return " ".join(lines)[:260]
+
+
+def _subtitle_excerpt_around_time(transcript: TranscriptPayload, timestamp: float, window_seconds: float = 30.0) -> str:
+    start_time = max(0.0, timestamp - window_seconds)
+    end_time = timestamp + window_seconds
+    lines = [
+        segment.text.strip()
+        for segment in transcript.segments
+        if segment.text.strip() and segment.end >= start_time and segment.start <= end_time
+    ]
+    if not lines:
+        nearest = min(
+            (segment for segment in transcript.segments if segment.text.strip()),
+            key=lambda segment: abs(((segment.start + segment.end) / 2) - timestamp),
+            default=None,
+        )
+        if nearest is not None:
+            lines = [nearest.text.strip()]
+    return " ".join(lines)[:320]
 
 
 def _find_time_range(lines: list[str], duration: float | None) -> tuple[float, float]:
