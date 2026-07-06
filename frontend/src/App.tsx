@@ -62,6 +62,7 @@ import {
 import {
   downloadArtifact,
   deriveDownloadFilename,
+  finalizeJob,
   fetchJob,
   fetchFrameCandidates,
   fetchJobHistory,
@@ -130,6 +131,8 @@ export function App() {
   const [frameCandidateIndex, setFrameCandidateIndex] = useState<FrameCandidateIndex | null>(null);
   const [frameCandidateError, setFrameCandidateError] = useState("");
   const [frameCandidateBusyId, setFrameCandidateBusyId] = useState("");
+  const [isFinalizingJob, setIsFinalizingJob] = useState(false);
+  const [finalizeError, setFinalizeError] = useState("");
   const videoInputRef = useRef<HTMLInputElement | null>(null);
 
   async function pollTaskState<T extends PollableTaskState>(
@@ -193,7 +196,15 @@ export function App() {
   }
 
   const isTranscriptCorrectionActive = isCorrectingTranscript || isApplyingCorrection || Boolean(correctionPreview);
-  const isBusy = job?.status === "pending" || job?.status === "running" || isSubmitting || isRegenerating || isConfirmingSubtitles || isRegeneratingSubtitles || isTranscriptCorrectionActive;
+  const isBusy =
+    job?.status === "pending" ||
+    job?.status === "running" ||
+    isSubmitting ||
+    isRegenerating ||
+    isConfirmingSubtitles ||
+    isRegeneratingSubtitles ||
+    isTranscriptCorrectionActive ||
+    isFinalizingJob;
   const isLocalTranscription = transcriptionMode === "local_faster_whisper";
   const runtimeLocalStatus = health?.runtime?.faster_whisper;
   const selectedLocalModelAvailable =
@@ -248,6 +259,8 @@ export function App() {
     setFrameCandidateIndex(null);
     setFrameCandidateError("");
     setFrameCandidateBusyId("");
+    setIsFinalizingJob(false);
+    setFinalizeError("");
   }
 
   function clearVideoInput() {
@@ -346,6 +359,7 @@ export function App() {
     }
     if (job.status === "succeeded" || job.status === "failed") {
       setIsRegenerating(false);
+      setIsFinalizingJob(false);
     }
     if (!job.artifacts.some((artifact) => artifact.path === "note.md")) {
       setNoteVersions(null);
@@ -532,6 +546,23 @@ export function App() {
       setFrameCandidateError(error instanceof Error ? error.message : "配图候选拒绝失败。");
     } finally {
       setFrameCandidateBusyId("");
+    }
+  }
+
+  async function handleFinalizeJob() {
+    if (!job?.job_id) {
+      return;
+    }
+    setIsFinalizingJob(true);
+    setFinalizeError("");
+    try {
+      const nextJob = await finalizeJob(job.job_id);
+      setJob(nextJob);
+      await refreshJobHistory();
+    } catch (error) {
+      setFinalizeError(error instanceof Error ? error.message : "确认定稿失败。");
+    } finally {
+      setIsFinalizingJob(false);
     }
   }
 
@@ -1525,6 +1556,24 @@ export function App() {
               <p className="inline-warning">
                 <AlertTriangle size={15} />
                 {frameCandidateError}
+              </p>
+            )}
+            {job?.status === "awaiting_note_review" && (
+              <section className="note-review-gate" aria-label="确认定稿">
+                <div>
+                  <strong>等待人工复核</strong>
+                  <span>确认覆盖、关键要点和配图后，再生成最终 ZIP。你仍可以在上方选择或拒绝候选配图。</span>
+                </div>
+                <button className="small-button strong" disabled={isBusy} onClick={() => void handleFinalizeJob()} type="button">
+                  {isFinalizingJob ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
+                  确认定稿并生成 ZIP
+                </button>
+              </section>
+            )}
+            {finalizeError && (
+              <p className="inline-error">
+                <AlertTriangle size={15} />
+                {finalizeError}
               </p>
             )}
             {job && (job.status === "running" || job.status === "pending") && (

@@ -6,7 +6,7 @@ export type LocalWhisperDevice = "auto" | "cpu" | "cuda";
 export type LocalWhisperComputeType = "default" | "int8" | "int8_float16" | "float16" | "float32";
 export type RuntimePathSource = "environment" | "settings" | "default" | "missing";
 export type PythonPackageInstallMode = "default" | "user";
-export type JobStatus = "pending" | "running" | "awaiting_subtitle_confirmation" | "succeeded" | "failed";
+export type JobStatus = "pending" | "running" | "awaiting_subtitle_confirmation" | "awaiting_note_review" | "succeeded" | "failed";
 
 export type Artifact = {
   label: string;

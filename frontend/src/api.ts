@@ -106,3 +106,11 @@ export async function rejectFrameCandidate(jobId: string, candidateId: string): 
   }
   return response.json();
 }
+
+export async function finalizeJob(jobId: string): Promise<JobState> {
+  const response = await fetch(`/api/jobs/${jobId}/finalize`, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "确认定稿失败。"));
+  }
+  return response.json();
+}

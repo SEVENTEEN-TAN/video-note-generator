@@ -7,6 +7,7 @@ export const statusText: Record<JobStatus, string> = {
   pending: "等待",
   running: "处理中",
   awaiting_subtitle_confirmation: "待确认字幕",
+  awaiting_note_review: "待复核笔记",
   succeeded: "完成",
   failed: "失败"
 };
