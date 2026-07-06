@@ -1,4 +1,4 @@
-import type { JobState, JobSummary, NoteVersionIndex } from "./types";
+import type { JobState, JobSummary, NoteVersionIndex, QualityReport } from "./types";
 
 export async function fetchJob(jobId: string): Promise<JobState> {
   const response = await fetch(`/api/jobs/${jobId}`);
@@ -71,6 +71,14 @@ export async function fetchNoteVersions(jobId: string): Promise<NoteVersionIndex
   const response = await fetch(`/api/jobs/${jobId}/note-versions`);
   if (!response.ok) {
     throw new Error("笔记版本读取失败。");
+  }
+  return response.json();
+}
+
+export async function fetchQualityReport(jobId: string): Promise<QualityReport> {
+  const response = await fetch(`/api/jobs/${jobId}/quality-report`);
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "质量报告读取失败。"));
   }
   return response.json();
 }

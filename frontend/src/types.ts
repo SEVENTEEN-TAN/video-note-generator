@@ -213,6 +213,39 @@ export type PreviewImage = {
   asset_url: string;
 };
 
+export type QualityScores = {
+  coverage: number;
+  structure: number;
+  frames: number;
+  stability: number;
+};
+
+export type QualityIssue = {
+  severity: "info" | "warning" | "error";
+  type: string;
+  message: string;
+  chapter_index?: number | null;
+  frame_ids: string[];
+};
+
+export type ChapterQualityReport = {
+  chapter_index: number;
+  title: string;
+  start_time: number;
+  end_time: number;
+  transcript_chars: number;
+  note_chars: number;
+  selected_frame_count: number;
+  issues: string[];
+};
+
+export type QualityReport = {
+  status: "ready" | "review_recommended" | "needs_attention";
+  scores: QualityScores;
+  issues: QualityIssue[];
+  chapter_reports: ChapterQualityReport[];
+};
+
 declare global {
   interface Window {
     pywebview?: {

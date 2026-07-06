@@ -40,6 +40,7 @@ import type {
   PollableTaskState,
   PythonPackageInstallMode,
   PreviewImage,
+  QualityReport,
   RuntimeState,
   TranscriptCorrectionPreview,
   TranscriptionLanguage,
@@ -62,6 +63,7 @@ import {
   fetchJob,
   fetchJobHistory,
   fetchNoteVersions,
+  fetchQualityReport,
   readResponseError
 } from "./api";
 import { extractMarkdownImages, parseMarkdown, resolvePreviewAssetUrl } from "./markdown";
@@ -118,6 +120,8 @@ export function App() {
   const [subtitleGateError, setSubtitleGateError] = useState("");
   const [noteChunks, setNoteChunks] = useState<NoteChunkIndex | null>(null);
   const [regeneratingChunkId, setRegeneratingChunkId] = useState("");
+  const [qualityReport, setQualityReport] = useState<QualityReport | null>(null);
+  const [qualityReportError, setQualityReportError] = useState("");
   const videoInputRef = useRef<HTMLInputElement | null>(null);
 
   async function pollTaskState<T extends PollableTaskState>(
@@ -395,6 +399,35 @@ export function App() {
       cancelled = true;
     };
   }, [job, previewVersionId]);
+
+  useEffect(() => {
+    const currentJobId = job?.job_id;
+    const hasNote = Boolean(job?.artifacts.some((artifact) => artifact.path === "note.md"));
+    if (!currentJobId || !hasNote) {
+      setQualityReport(null);
+      setQualityReportError("");
+      return;
+    }
+
+    let cancelled = false;
+    fetchQualityReport(currentJobId)
+      .then((report) => {
+        if (!cancelled) {
+          setQualityReport(report);
+          setQualityReportError("");
+        }
+      })
+      .catch((error: Error) => {
+        if (!cancelled) {
+          setQualityReport(null);
+          setQualityReportError(error.message);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [job]);
 
 
   useEffect(() => {
