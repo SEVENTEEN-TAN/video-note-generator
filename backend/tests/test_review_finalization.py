@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from zipfile import ZipFile
 
 import pytest
 
 from backend.app.frame_candidates import write_frame_candidate_index
 from backend.app.models import FrameCandidate, FrameCandidateIndex
+from backend.app.processor import create_zip
 from backend.app.review_finalization import (
     NOTE_REVIEW_PENDING_MARKER,
     finalize_reviewed_note,
@@ -95,3 +97,20 @@ def test_finalize_reviewed_note_requires_pending_marker(tmp_path) -> None:
 
     with pytest.raises(PermissionError):
         finalize_reviewed_note(tmp_path)
+
+
+def test_create_zip_includes_review_reports(tmp_path) -> None:
+    (tmp_path / "note.md").write_text("# Demo", encoding="utf-8")
+    (tmp_path / "review").mkdir()
+    (tmp_path / "review" / "quality_report.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "review" / "quality_report.md").write_text("# Quality Report", encoding="utf-8")
+    (tmp_path / "review" / "frame_candidates.json").write_text('{"candidates":[]}', encoding="utf-8")
+
+    zip_path = create_zip(tmp_path)
+
+    with ZipFile(zip_path) as archive:
+        names = set(archive.namelist())
+
+    assert "review/quality_report.json" in names
+    assert "review/quality_report.md" in names
+    assert "review/frame_candidates.json" in names
