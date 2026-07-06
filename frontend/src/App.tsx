@@ -497,7 +497,7 @@ export function App() {
 
 
   useEffect(() => {
-    if (!job || job.status !== "succeeded") {
+    if (!job || (job.status !== "succeeded" && job.status !== "awaiting_note_review")) {
       setNoteChunks(null);
       return;
     }
