@@ -44,6 +44,7 @@ from .models import (
     JobStatus,
     NoteLanguage,
     NoteStyle,
+    QualityReport,
     TranscriptionLanguage,
     NoteVersionIndex,
     NoteVersionSelection,
@@ -68,6 +69,7 @@ from .processor import (
 )
 from .runtime_status import get_runtime_status
 from .runtime_paths import get_frontend_dist_dir, get_outputs_root
+from .review_quality import build_quality_report, write_quality_report
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
 from .subtitles import transcript_segments_from_payload
 from .task_debug_log import TaskDebugLog
@@ -578,6 +580,19 @@ def preview_note(job_id: str) -> str:
 @app.get("/api/jobs/{job_id}/preview/subtitles", response_class=PlainTextResponse)
 def preview_subtitles(job_id: str) -> str:
     return read_job_text_file(job_id, "subtitles.md")
+
+
+@app.get("/api/jobs/{job_id}/quality-report", response_model=QualityReport)
+def get_quality_report(job_id: str) -> QualityReport:
+    job_dir = safe_job_dir(job_id)
+    if not (job_dir / "note.md").exists():
+        raise HTTPException(status_code=400, detail="quality report requires note.md.")
+    if not (job_dir / "transcript.json").exists():
+        raise HTTPException(status_code=400, detail="quality report requires transcript.json.")
+    report = build_quality_report(job_dir)
+    write_quality_report(job_dir, report)
+    store.refresh_artifacts(job_id)
+    return report
 
 
 @app.get("/api/jobs/{job_id}/assets/{asset_path:path}")

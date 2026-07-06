@@ -3,6 +3,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+from backend.app import main
+from backend.app.job_store import JobStore
+from backend.app.main import app
 from backend.app.models import ChapterQualityReport, QualityIssue, QualityReport, QualityScores
 from backend.app.review_quality import build_quality_report, write_quality_report
 
@@ -185,3 +190,49 @@ def test_write_quality_report_persists_json_and_markdown(tmp_path) -> None:
     assert "Quality Report" in paths.markdown_path.read_text(encoding="utf-8")
     saved = json.loads(paths.json_path.read_text(encoding="utf-8"))
     assert saved["status"] in {"ready", "review_recommended", "needs_attention"}
+
+
+def test_quality_report_endpoint_generates_and_returns_report(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    job_id = "quality-job"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir()
+    write_transcript(job_dir)
+    (job_dir / "note.md").write_text(
+        "\n".join(
+            [
+                "# Course",
+                "",
+                "### Chapter",
+                "",
+                "`00:00:00 - 00:02:00`",
+                "",
+                "![frame](frames/frame_001.jpg)",
+                "",
+                "A detailed enough section " * 120,
+            ]
+        ),
+        encoding="utf-8-sig",
+    )
+
+    response = TestClient(app).get(f"/api/jobs/{job_id}/quality-report")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] in {"ready", "review_recommended", "needs_attention"}
+    assert (job_dir / "review" / "quality_report.json").exists()
+    assert (job_dir / "review" / "quality_report.md").exists()
+
+
+def test_quality_report_endpoint_rejects_job_without_note(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    job_dir = tmp_path / "no-note-job"
+    job_dir.mkdir()
+    write_transcript(job_dir)
+
+    response = TestClient(app).get("/api/jobs/no-note-job/quality-report")
+
+    assert response.status_code == 400
+    assert "note.md" in response.json()["detail"]

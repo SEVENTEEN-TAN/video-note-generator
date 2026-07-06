@@ -155,6 +155,24 @@ def test_list_jobs_returns_disk_history_with_note_version_counts(tmp_path, monke
     ]
 
 
+def test_refresh_artifacts_includes_quality_report_files(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    job_dir = tmp_path / "quality-artifacts"
+    job_dir.mkdir()
+    review_dir = job_dir / "review"
+    review_dir.mkdir()
+    (review_dir / "quality_report.json").write_text("{}", encoding="utf-8")
+    (review_dir / "quality_report.md").write_text("# Quality Report", encoding="utf-8")
+
+    artifacts = main.store.refresh_artifacts("quality-artifacts")
+
+    assert {artifact.path for artifact in artifacts} >= {
+        "review/quality_report.json",
+        "review/quality_report.md",
+    }
+
+
 def test_list_jobs_orders_recent_activity_before_newer_creation_time(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))

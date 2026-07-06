@@ -115,6 +115,19 @@ class JobStore:
                 artifacts.append(
                     Artifact(label=debug_path.name, path=rel, kind="log", asset_url=f"/api/jobs/{job_id}/assets/{rel}")
                 )
+        review_dir = job_dir / "review"
+        if review_dir.exists():
+            review_candidates = [
+                ("quality_report.json", "质量报告 JSON", "json"),
+                ("quality_report.md", "质量报告 Markdown", "markdown"),
+            ]
+            for filename, label, kind in review_candidates:
+                review_path = review_dir / filename
+                if review_path.exists():
+                    rel = review_path.relative_to(job_dir).as_posix()
+                    artifacts.append(
+                        Artifact(label=label, path=rel, kind=kind, asset_url=f"/api/jobs/{job_id}/assets/{rel}")
+                    )
         with self._lock:
             state = self._jobs.get(job_id)
             if state:
