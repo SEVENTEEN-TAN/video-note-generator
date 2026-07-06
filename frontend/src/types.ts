@@ -246,6 +246,25 @@ export type QualityReport = {
   chapter_reports: ChapterQualityReport[];
 };
 
+export type FrameCandidate = {
+  id: string;
+  chapter_index: number;
+  time: number;
+  path: string;
+  reason: string;
+  source: "note_key_moment" | "chapter_fallback";
+  hash: string;
+  duplicate_of?: string | null;
+  similarity: number;
+  risk_flags: string[];
+  selected: boolean;
+  rejected: boolean;
+};
+
+export type FrameCandidateIndex = {
+  candidates: FrameCandidate[];
+};
+
 declare global {
   interface Window {
     pywebview?: {

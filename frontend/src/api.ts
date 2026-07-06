@@ -1,4 +1,4 @@
-import type { JobState, JobSummary, NoteVersionIndex, QualityReport } from "./types";
+import type { FrameCandidateIndex, JobState, JobSummary, NoteVersionIndex, QualityReport } from "./types";
 
 export async function fetchJob(jobId: string): Promise<JobState> {
   const response = await fetch(`/api/jobs/${jobId}`);
@@ -79,6 +79,30 @@ export async function fetchQualityReport(jobId: string): Promise<QualityReport> 
   const response = await fetch(`/api/jobs/${jobId}/quality-report`);
   if (!response.ok) {
     throw new Error(await readResponseError(response, "质量报告读取失败。"));
+  }
+  return response.json();
+}
+
+export async function fetchFrameCandidates(jobId: string): Promise<FrameCandidateIndex> {
+  const response = await fetch(`/api/jobs/${jobId}/frame-candidates`);
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "配图候选读取失败。"));
+  }
+  return response.json();
+}
+
+export async function selectFrameCandidate(jobId: string, candidateId: string): Promise<FrameCandidateIndex> {
+  const response = await fetch(`/api/jobs/${jobId}/frame-candidates/${candidateId}/select`, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "配图候选选择失败。"));
+  }
+  return response.json();
+}
+
+export async function rejectFrameCandidate(jobId: string, candidateId: string): Promise<FrameCandidateIndex> {
+  const response = await fetch(`/api/jobs/${jobId}/frame-candidates/${candidateId}/reject`, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(await readResponseError(response, "配图候选拒绝失败。"));
   }
   return response.json();
 }

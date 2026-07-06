@@ -23,6 +23,8 @@ import type { ChangeEvent, Dispatch, SetStateAction } from "react";
 import type {
   Artifact,
   CudaDependencyInstallState,
+  FrameCandidate,
+  FrameCandidateIndex,
   HealthState,
   JobState,
   JobStatus,
@@ -61,9 +63,12 @@ import {
   downloadArtifact,
   deriveDownloadFilename,
   fetchJob,
+  fetchFrameCandidates,
   fetchJobHistory,
   fetchNoteVersions,
   fetchQualityReport,
+  rejectFrameCandidate,
+  selectFrameCandidate,
   readResponseError
 } from "./api";
 import { extractMarkdownImages, parseMarkdown, resolvePreviewAssetUrl } from "./markdown";
@@ -122,6 +127,9 @@ export function App() {
   const [regeneratingChunkId, setRegeneratingChunkId] = useState("");
   const [qualityReport, setQualityReport] = useState<QualityReport | null>(null);
   const [qualityReportError, setQualityReportError] = useState("");
+  const [frameCandidateIndex, setFrameCandidateIndex] = useState<FrameCandidateIndex | null>(null);
+  const [frameCandidateError, setFrameCandidateError] = useState("");
+  const [frameCandidateBusyId, setFrameCandidateBusyId] = useState("");
   const videoInputRef = useRef<HTMLInputElement | null>(null);
 
   async function pollTaskState<T extends PollableTaskState>(
@@ -212,6 +220,15 @@ export function App() {
       asset_url: artifact.asset_url
     }));
   }, [images, job, notePreview, previewAssetBasePath, previewVersion]);
+  const frameCandidateGroups = useMemo(() => {
+    const groups = new Map<number, FrameCandidate[]>();
+    for (const candidate of frameCandidateIndex?.candidates ?? []) {
+      const group = groups.get(candidate.chapter_index) ?? [];
+      group.push(candidate);
+      groups.set(candidate.chapter_index, group);
+    }
+    return Array.from(groups.entries()).sort(([left], [right]) => left - right);
+  }, [frameCandidateIndex]);
 
   function resetTaskContext() {
     setJob(null);
@@ -226,6 +243,11 @@ export function App() {
     setIsCorrectingTranscript(false);
     setIsApplyingCorrection(false);
     setIsRegenerating(false);
+    setQualityReport(null);
+    setQualityReportError("");
+    setFrameCandidateIndex(null);
+    setFrameCandidateError("");
+    setFrameCandidateBusyId("");
   }
 
   function clearVideoInput() {
@@ -429,6 +451,36 @@ export function App() {
     };
   }, [job]);
 
+  useEffect(() => {
+    const currentJobId = job?.job_id;
+    const hasNote = Boolean(job?.artifacts.some((artifact) => artifact.path === "note.md"));
+    if (!currentJobId || !hasNote) {
+      setFrameCandidateIndex(null);
+      setFrameCandidateError("");
+      setFrameCandidateBusyId("");
+      return;
+    }
+
+    let cancelled = false;
+    fetchFrameCandidates(currentJobId)
+      .then((index) => {
+        if (!cancelled) {
+          setFrameCandidateIndex(index);
+          setFrameCandidateError("");
+        }
+      })
+      .catch((error: Error) => {
+        if (!cancelled) {
+          setFrameCandidateIndex(null);
+          setFrameCandidateError(error.message);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [job]);
+
 
   useEffect(() => {
     if (!job || job.status !== "succeeded") {
@@ -452,6 +504,36 @@ export function App() {
       cancelled = true;
     };
   }, [job?.job_id, job?.status]);
+
+  async function handleSelectFrameCandidate(candidateId: string) {
+    if (!job?.job_id) {
+      return;
+    }
+    setFrameCandidateBusyId(candidateId);
+    try {
+      setFrameCandidateIndex(await selectFrameCandidate(job.job_id, candidateId));
+      setFrameCandidateError("");
+    } catch (error) {
+      setFrameCandidateError(error instanceof Error ? error.message : "配图候选选择失败。");
+    } finally {
+      setFrameCandidateBusyId("");
+    }
+  }
+
+  async function handleRejectFrameCandidate(candidateId: string) {
+    if (!job?.job_id) {
+      return;
+    }
+    setFrameCandidateBusyId(candidateId);
+    try {
+      setFrameCandidateIndex(await rejectFrameCandidate(job.job_id, candidateId));
+      setFrameCandidateError("");
+    } catch (error) {
+      setFrameCandidateError(error instanceof Error ? error.message : "配图候选拒绝失败。");
+    } finally {
+      setFrameCandidateBusyId("");
+    }
+  }
 
   function handleVideoChange(event: ChangeEvent<HTMLInputElement>) {
     const selectedVideo = event.target.files?.[0] ?? null;
@@ -1375,6 +1457,76 @@ export function App() {
                 {qualityReportError}
               </p>
             )}
+            {frameCandidateIndex && frameCandidateIndex.candidates.length > 0 && job && (
+              <section className="frame-candidate-panel" aria-label="配图候选">
+                <div className="quality-panel-head">
+                  <div>
+                    <strong>配图候选</strong>
+                    <span>默认避开重复画面；你可以为每章选用或拒绝候选图，选择会保存到评审数据。</span>
+                  </div>
+                  <span className="quality-status ready">{frameCandidateIndex.candidates.filter((candidate) => candidate.selected).length} 已选</span>
+                </div>
+                <div className="frame-candidate-groups">
+                  {frameCandidateGroups.map(([chapterIndex, candidates]) => (
+                    <div className="frame-candidate-group" key={chapterIndex}>
+                      <div className="frame-candidate-group-head">
+                        <strong>第 {chapterIndex + 1} 章</strong>
+                        <span>{candidates.length} 个候选</span>
+                      </div>
+                      <div className="frame-candidate-strip">
+                        {candidates.map((candidate) => {
+                          const isBusyCandidate = frameCandidateBusyId === candidate.id;
+                          const isDuplicate = candidate.risk_flags.includes("duplicate_frame");
+                          return (
+                            <article
+                              className={`frame-candidate-card ${candidate.selected ? "selected" : ""} ${candidate.rejected ? "rejected" : ""}`}
+                              key={candidate.id}
+                            >
+                              <img alt={candidate.reason} src={`/api/jobs/${job.job_id}/assets/${candidate.path}`} />
+                              <div className="frame-candidate-body">
+                                <div className="frame-candidate-meta">
+                                  <span>{formatCandidateTime(candidate.time)}</span>
+                                  {candidate.selected && <span className="mini-badge ok">已选</span>}
+                                  {candidate.rejected && <span className="mini-badge warn">已拒绝</span>}
+                                  {isDuplicate && <span className="mini-badge warn">重复风险</span>}
+                                </div>
+                                <p>{candidate.reason}</p>
+                                <div className="frame-candidate-actions">
+                                  <button
+                                    className="small-button"
+                                    disabled={isBusy || isBusyCandidate || candidate.selected}
+                                    onClick={() => void handleSelectFrameCandidate(candidate.id)}
+                                    type="button"
+                                  >
+                                    {isBusyCandidate ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}
+                                    选用
+                                  </button>
+                                  <button
+                                    className="small-button"
+                                    disabled={isBusy || isBusyCandidate || candidate.rejected}
+                                    onClick={() => void handleRejectFrameCandidate(candidate.id)}
+                                    type="button"
+                                  >
+                                    <X size={14} />
+                                    拒绝
+                                  </button>
+                                </div>
+                              </div>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
+            {frameCandidateError && (
+              <p className="inline-warning">
+                <AlertTriangle size={15} />
+                {frameCandidateError}
+              </p>
+            )}
             {job && (job.status === "running" || job.status === "pending") && (
               <div className="job-progress-bar" aria-label="处理进度">
                 <div className="job-progress-info">
@@ -2018,6 +2170,14 @@ function formatQualityIssueType(type: string) {
     generation_instability: "生成不稳定"
   };
   return labels[type] ?? type;
+}
+
+function formatCandidateTime(value: number) {
+  const seconds = Math.max(0, Math.floor(value));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  return [hours, minutes, remainingSeconds].map((part) => String(part).padStart(2, "0")).join(":");
 }
 
 function DownloadLink({

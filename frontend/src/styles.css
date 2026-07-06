@@ -1387,6 +1387,103 @@ textarea:focus {
   font-size: 12px;
 }
 
+.frame-candidate-panel {
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  padding: 12px;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.frame-candidate-groups {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.frame-candidate-group {
+  display: grid;
+  gap: 8px;
+}
+
+.frame-candidate-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.frame-candidate-group-head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.frame-candidate-group-head span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.frame-candidate-strip {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 8px;
+}
+
+.frame-candidate-card {
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.frame-candidate-card.selected {
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+.frame-candidate-card.rejected {
+  opacity: 0.72;
+}
+
+.frame-candidate-card img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+  background: #e2e8f0;
+}
+
+.frame-candidate-body {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+}
+
+.frame-candidate-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.frame-candidate-body p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.frame-candidate-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.frame-candidate-actions .small-button {
+  min-width: 0;
+  padding: 5px 7px;
+  font-size: 12px;
+}
+
 .markdown-preview > :first-child {
   margin-top: 0;
 }
