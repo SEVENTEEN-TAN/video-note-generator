@@ -4,8 +4,12 @@ from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
+from fastapi.testclient import TestClient
 
+from backend.app import main
 from backend.app.frame_candidates import write_frame_candidate_index
+from backend.app.job_store import JobStore
+from backend.app.main import app
 from backend.app.models import FrameCandidate, FrameCandidateIndex
 from backend.app.processor import create_zip
 from backend.app.review_finalization import (
@@ -114,3 +118,43 @@ def test_create_zip_includes_review_reports(tmp_path) -> None:
     assert "review/quality_report.json" in names
     assert "review/quality_report.md" in names
     assert "review/frame_candidates.json" in names
+
+
+def test_finalize_endpoint_writes_zip_and_returns_succeeded_state(tmp_path, monkeypatch) -> None:
+    outputs_root = tmp_path / "outputs"
+    job_id = "finalize-job"
+    job_dir = outputs_root / job_id
+    job_dir.mkdir(parents=True)
+    seed_review_job(job_dir)
+    (job_dir / "transcript.json").write_text(
+        '{"text":"hello","segments":[{"start":0,"end":1,"text":"hello"}]}',
+        encoding="utf-8",
+    )
+    mark_note_review_pending(job_dir)
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    store.update(job_id, status=main.JobStatus.awaiting_note_review, step="等待复核笔记", progress=92)
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
+    monkeypatch.setattr(main, "store", store)
+
+    response = TestClient(app).post(f"/api/jobs/{job_id}/finalize")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "succeeded"
+    assert (job_dir / "download.zip").exists()
+    assert (job_dir / "review" / "quality_report.json").exists()
+
+
+def test_finalize_endpoint_rejects_job_without_pending_review(tmp_path, monkeypatch) -> None:
+    outputs_root = tmp_path / "outputs"
+    job_id = "not-pending-finalize"
+    job_dir = outputs_root / job_id
+    job_dir.mkdir(parents=True)
+    seed_review_job(job_dir)
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
+    monkeypatch.setattr(main, "store", JobStore(outputs_root))
+
+    response = TestClient(app).post(f"/api/jobs/{job_id}/finalize")
+
+    assert response.status_code == 409

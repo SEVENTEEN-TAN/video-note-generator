@@ -84,6 +84,7 @@ from .processor import (
 from .runtime_status import get_runtime_status
 from .runtime_paths import get_frontend_dist_dir, get_outputs_root
 from .review_quality import build_quality_report, write_quality_report
+from .review_finalization import finalize_reviewed_note, is_note_review_pending
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
 from .subtitles import transcript_segments_from_payload
 from .task_debug_log import TaskDebugLog
@@ -653,6 +654,28 @@ def reject_job_frame_candidate(job_id: str, candidate_id: str) -> FrameCandidate
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     store.refresh_artifacts(job_id)
     return index
+
+
+@app.post("/api/jobs/{job_id}/finalize", response_model=JobPublicState)
+def finalize_job(job_id: str) -> JobPublicState:
+    job_dir = safe_job_dir(job_id)
+    if not is_note_review_pending(job_dir):
+        raise HTTPException(status_code=409, detail="note review is not pending.")
+    try:
+        finalize_reviewed_note(job_dir)
+        report = build_quality_report(job_dir)
+        write_quality_report(job_dir, report)
+        create_zip(job_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    store.refresh_artifacts(job_id)
+    if not store.get(job_id):
+        store.load_from_disk(job_id)
+    store.update(job_id, status=JobStatus.succeeded, step="完成", progress=100, error="")
+    state = store.get(job_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return state
 
 
 @app.get("/api/jobs/{job_id}/assets/{asset_path:path}")
