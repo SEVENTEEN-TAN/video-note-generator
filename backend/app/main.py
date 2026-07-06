@@ -68,6 +68,7 @@ from .note_chunks import (
 )
 from .note_versions import (
     activate_note_version,
+    create_note_version_from_draft,
     find_source_video,
     get_note_version,
     load_note_version_index,
@@ -84,7 +85,7 @@ from .processor import (
 from .runtime_status import get_runtime_status
 from .runtime_paths import get_frontend_dist_dir, get_outputs_root
 from .review_quality import build_quality_report, write_quality_report
-from .review_finalization import finalize_reviewed_note, is_note_review_pending
+from .review_finalization import finalize_reviewed_note, is_note_review_pending, mark_note_review_pending
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
 from .subtitles import transcript_segments_from_payload
 from .task_debug_log import TaskDebugLog
@@ -756,10 +757,8 @@ def regenerate_note_chunk(
 
 
 def _regenerate_chunk_job(job_id: str, job_dir: Path, config: JobConfig, chunk_id: str) -> None:
-    from .processor import create_zip, write_job_metadata, SUBTITLES_PENDING_MARKER
-    from .note_versions import regenerate_note_version_from_draft
+    from .processor import write_job_metadata
     from .task_debug_log import TaskDebugLog
-    from .llm import reduce_note_drafts
     from .subtitles import transcript_segments_from_payload
     import json as _json
 
@@ -778,19 +777,25 @@ def _regenerate_chunk_job(job_id: str, job_dir: Path, config: JobConfig, chunk_i
         draft = regenerate_chunk_and_reduce(job_dir, config, duration, segments, chunk_id, system_prompt)
         debug_log.event("regenerate_note_chunk", "succeeded", chunk_id=chunk_id)
         write_job_metadata(job_id=job_id, job_dir=job_dir, config=config, title=draft.title, duration=duration)
-        # Rebuild the active note version with the new draft
-        from .note_versions import load_note_version_index, activate_note_version
-        version_index = load_note_version_index(job_dir)
-        if version_index.active_version_id:
-            version_dir = job_dir / "note_versions" / version_index.active_version_id
-            version_dir.mkdir(parents=True, exist_ok=True)
-            (version_dir / "note.md").write_text(
-                draft.markdown_body or draft.summary,
-                encoding="utf-8-sig",
-            )
-        create_zip(job_dir)
+        stale_zip = job_dir / "download.zip"
+        if stale_zip.exists():
+            stale_zip.unlink()
+        video_path = find_source_video(job_dir)
+        duration_value = float(duration) if duration is not None else None
+        create_note_version_from_draft(
+            job_dir=job_dir,
+            video_path=video_path,
+            draft=draft,
+            duration=duration_value,
+            config=config,
+        )
+        frame_candidates = build_frame_candidate_index(job_dir, video_path, duration=duration_value)
+        write_frame_candidate_index(job_dir, frame_candidates)
+        quality_report = build_quality_report(job_dir)
+        write_quality_report(job_dir, quality_report)
+        mark_note_review_pending(job_dir)
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.succeeded, step="完成", progress=100)
+        store.update(job_id, status=JobStatus.awaiting_note_review, step="等待复核笔记", progress=92)
     except Exception as exc:
         debug_log.exception("regenerate_note_chunk", "failed", exc)
         store.refresh_artifacts(job_id)
