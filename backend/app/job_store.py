@@ -167,7 +167,11 @@ class JobStore:
             progress=100,
             error=(
                 None
-                if status in (JobStatus.succeeded, JobStatus.awaiting_subtitle_confirmation)
+                if status in (
+                    JobStatus.succeeded,
+                    JobStatus.awaiting_subtitle_confirmation,
+                    JobStatus.awaiting_note_review,
+                )
                 else failure_error
                 or "历史任务缺少完整笔记输出，可能在上次生成中断。"
             ),
@@ -177,6 +181,9 @@ class JobStore:
             updated_at=timestamp,
             stage_elapsed_seconds=0,
         )
+        if status == JobStatus.awaiting_note_review:
+            state.step = "等待复核笔记"
+            state.progress = 92
         with self._lock:
             self._jobs[job_id] = state
         return state
@@ -281,6 +288,8 @@ def _infer_disk_job_status(job_dir: Path, artifacts: list[Artifact], version_ind
         return JobStatus.failed
 
     artifact_paths = {artifact.path for artifact in artifacts}
+    if (job_dir / ".note-review.pending").exists():
+        return JobStatus.awaiting_note_review
     if "note.md" in artifact_paths:
         return JobStatus.succeeded
     if "subtitles.md" in artifact_paths and (job_dir / "subtitles.pending").exists():

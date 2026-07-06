@@ -1469,6 +1469,26 @@ def test_get_job_loads_disk_history_when_job_is_not_in_memory(tmp_path, monkeypa
     assert {artifact["path"] for artifact in payload["artifacts"]} == {"metadata.json", "note.md", "subtitles.md"}
 
 
+def test_get_job_loads_note_review_pending_state_from_disk(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    write_history_job(
+        tmp_path,
+        "note-review-job",
+        created_at="2026-07-06T00:00:00+00:00",
+        title="Review",
+        original_filename="review.mp4",
+    )
+    (tmp_path / "note-review-job" / ".note-review.pending").write_text("1", encoding="utf-8")
+
+    response = TestClient(app).get("/api/jobs/note-review-job")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "awaiting_note_review"
+    assert payload["progress"] == 92
+
+
 def test_get_job_uses_latest_debug_activity_as_loaded_timestamp(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))

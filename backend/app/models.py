@@ -12,6 +12,7 @@ class JobStatus(str, Enum):
     pending = "pending"
     running = "running"
     awaiting_subtitle_confirmation = "awaiting_subtitle_confirmation"
+    awaiting_note_review = "awaiting_note_review"
     succeeded = "succeeded"
     failed = "failed"
 
