@@ -101,6 +101,7 @@ export function App() {
   const [extras, setExtras] = useState("");
   const [frameLimit, setFrameLimit] = useState(6);
   const [video, setVideo] = useState<File | null>(null);
+  const [subtitle, setSubtitle] = useState<File | null>(null);
   const [job, setJob] = useState<JobState | null>(null);
   const [notePreview, setNotePreview] = useState("");
   const [subtitlePreview, setSubtitlePreview] = useState("");
@@ -145,6 +146,7 @@ export function App() {
   const [isFinalizingJob, setIsFinalizingJob] = useState(false);
   const [finalizeError, setFinalizeError] = useState("");
   const videoInputRef = useRef<HTMLInputElement | null>(null);
+  const subtitleInputRef = useRef<HTMLInputElement | null>(null);
 
   async function pollTaskState<T extends PollableTaskState>(
     url: string,
@@ -217,6 +219,7 @@ export function App() {
     isTranscriptCorrectionActive ||
     isFinalizingJob;
   const isLocalTranscription = transcriptionMode === "local_faster_whisper";
+  const hasUploadedSubtitle = Boolean(subtitle);
   const runtimeLocalStatus = health?.runtime?.faster_whisper;
   const selectedLocalModelAvailable =
     !isLocalTranscription || !health?.runtime || health.runtime.local_models.models.includes(transcriptionModel);
@@ -302,6 +305,12 @@ export function App() {
   function clearVideoInput() {
     if (videoInputRef.current) {
       videoInputRef.current.value = "";
+    }
+  }
+
+  function clearSubtitleInput() {
+    if (subtitleInputRef.current) {
+      subtitleInputRef.current.value = "";
     }
   }
 
@@ -700,6 +709,37 @@ export function App() {
     event.currentTarget.value = "";
   }
 
+  function handleSubtitleChange(event: ChangeEvent<HTMLInputElement>) {
+    const selectedSubtitle = event.target.files?.[0] ?? null;
+    if (!selectedSubtitle) {
+      return;
+    }
+
+    if (!selectedSubtitle.name.toLowerCase().endsWith(".srt")) {
+      setSubmitError("当前仅支持上传 .srt 字幕文件。");
+      event.currentTarget.value = "";
+      return;
+    }
+
+    if (
+      hasTaskContext() &&
+      !window.confirm("当前页面已有任务内容。选择新字幕会清空当前页面并准备创建新任务，历史任务仍可在左侧重新载入。是否继续？")
+    ) {
+      event.currentTarget.value = "";
+      return;
+    }
+
+    setSubmitError("");
+    resetTaskContext();
+    setSubtitle(selectedSubtitle);
+    event.currentTarget.value = "";
+  }
+
+  function handleClearSubtitle() {
+    setSubtitle(null);
+    clearSubtitleInput();
+  }
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
     setSubmitError("");
@@ -708,38 +748,47 @@ export function App() {
       setSubmitError("请先选择视频文件。");
       return;
     }
-    if (!isLocalTranscription && !transcriptionApiKey.trim()) {
-      setSubmitError("请填写字幕转写 API Key。");
-      return;
-    }
     if (!noteApiKey.trim()) {
       setSubmitError("请填写笔记生成 API Key。");
       return;
     }
-    if (!transcriptionModel.trim() || !noteModel.trim()) {
-      setSubmitError("字幕转写模型和笔记生成模型都不能为空。");
+    if (!noteModel.trim()) {
+      setSubmitError("笔记生成模型不能为空。");
       return;
     }
-    if (!selectedLocalModelAvailable) {
-      const shouldDownload = window.confirm(
-        `当前模型目录未发现 ${transcriptionModel}。是否现在下载到 ${health?.runtime?.local_models.root ?? "本地模型目录"}？`
-      );
-      if (shouldDownload) {
-        void handleDownloadLocalModel();
-      } else {
-        setSubmitError(`请先下载 ${transcriptionModel}，或切换远端字幕转写。`);
+    if (!hasUploadedSubtitle) {
+      if (!isLocalTranscription && !transcriptionApiKey.trim()) {
+        setSubmitError("请填写字幕转写 API Key。");
+        return;
       }
-      return;
-    }
-    if (!localTranscriptionReady) {
-      setSubmitError(runtimeLocalStatus?.install_hint || runtimeLocalStatus?.worker_error || "本地转写环境未就绪，请先补齐依赖。");
-      return;
+      if (!transcriptionModel.trim()) {
+        setSubmitError("字幕转写模型不能为空。");
+        return;
+      }
+      if (!selectedLocalModelAvailable) {
+        const shouldDownload = window.confirm(
+          `当前模型目录未发现 ${transcriptionModel}。是否现在下载到 ${health?.runtime?.local_models.root ?? "本地模型目录"}？`
+        );
+        if (shouldDownload) {
+          void handleDownloadLocalModel();
+        } else {
+          setSubmitError(`请先下载 ${transcriptionModel}，或切换远端字幕转写。`);
+        }
+        return;
+      }
+      if (!localTranscriptionReady) {
+        setSubmitError(runtimeLocalStatus?.install_hint || runtimeLocalStatus?.worker_error || "本地转写环境未就绪，请先补齐依赖。");
+        return;
+      }
     }
 
     resetTaskContext();
 
     const formData = new FormData();
     formData.append("video", video);
+    if (subtitle) {
+      formData.append("subtitle", subtitle);
+    }
     formData.append("transcription_mode", transcriptionMode);
     formData.append("transcription_language", transcriptionLanguage);
     formData.append("transcription_api_key", isLocalTranscription ? "" : transcriptionApiKey);
@@ -1208,7 +1257,9 @@ export function App() {
     setSubmitError("");
     resetTaskContext();
     setVideo(null);
+    setSubtitle(null);
     clearVideoInput();
+    clearSubtitleInput();
     try {
       setJob(await fetchJob(jobId));
     } catch (error) {
@@ -1230,7 +1281,9 @@ export function App() {
       if (job?.job_id === jobId) {
         resetTaskContext();
         setVideo(null);
+        setSubtitle(null);
         clearVideoInput();
+        clearSubtitleInput();
       }
       await refreshJobHistory();
     } catch (error) {
@@ -1307,18 +1360,38 @@ export function App() {
           <PanelTitle icon={<Upload size={18} />} title="视频与笔记要求" />
 
           <div className="config-main">
-            <div className="field video-config-block">
-              <span className="field-label">视频文件</span>
-              <label className="drop-zone">
-                <input
-                  accept=".mp4,.mov,.mkv,.webm,.avi,video/*"
-                  ref={videoInputRef}
-                  type="file"
-                  onChange={handleVideoChange}
-                />
-                <Upload size={18} />
-                <span>{video ? video.name : "选择文件"}</span>
-              </label>
+            <div className="video-config-block">
+              <div className="upload-field">
+                <label className="drop-zone">
+                  <input
+                    accept=".mp4,.mov,.mkv,.webm,.avi,video/*"
+                    ref={videoInputRef}
+                    type="file"
+                    onChange={handleVideoChange}
+                  />
+                  <Upload size={18} />
+                  <span>{video ? `视频文件：${video.name}` : "视频文件：选择文件"}</span>
+                </label>
+              </div>
+              <div className="upload-field subtitle-upload-field">
+                <div className="subtitle-upload-row">
+                  <label className="drop-zone subtitle-drop-zone">
+                    <input
+                      accept=".srt"
+                      ref={subtitleInputRef}
+                      type="file"
+                      onChange={handleSubtitleChange}
+                    />
+                    <Captions size={18} />
+                    <span>{subtitle ? `已有字幕（可选）：${subtitle.name}` : "已有字幕（可选）：选择 SRT 字幕"}</span>
+                  </label>
+                  {subtitle && (
+                    <button className="icon-button subtitle-clear-button" onClick={handleClearSubtitle} title="移除字幕" type="button">
+                      <X size={16} />
+                    </button>
+                  )}
+                </div>
+              </div>
             </div>
 
             <div className="quick-settings">
@@ -1632,7 +1705,7 @@ export function App() {
               </div>
 
               <CollapsibleBlock className="frame-preview-block" title="关键帧">
-                <div className="frame-grid" aria-label="关键帧">
+                <div className={previewImages.length === 0 ? "frame-grid empty-frame-grid" : "frame-grid"} aria-label="关键帧">
                   {previewImages.length === 0 ? (
                     <div className="empty-frames">
                       <Image size={20} />
@@ -2190,17 +2263,17 @@ function PanelTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
 
 function StepList({ job }: { job: JobState | null }) {
   const steps = [
-    { label: "音频分离", threshold: 15 },
-    { label: "字幕生成", threshold: 35 },
-    { label: "笔记生成", threshold: 60 },
-    { label: "关键帧抽取", threshold: 78 },
-    { label: "Markdown 输出", threshold: 90 }
+    { label: "分析视频", threshold: 10, activeSteps: ["分析视频", "音频分离"] },
+    { label: "准备字幕", threshold: 35, activeSteps: ["字幕生成", "解析字幕"] },
+    { label: "笔记生成", threshold: 60, activeSteps: ["笔记生成", "重新生成笔记", "重新生成笔记块"] },
+    { label: "关键帧抽取", threshold: 78, activeSteps: ["关键帧抽取"] },
+    { label: "Markdown 输出", threshold: 90, activeSteps: ["生成复核资料", "完成"] }
   ];
   return (
     <ol className="step-list">
       {steps.map((step, index) => {
         const done = (job?.progress ?? 0) >= step.threshold && job?.status !== "failed";
-        const active = job?.step === step.label;
+        const active = Boolean(job?.step && step.activeSteps.includes(job.step));
         return (
           <li className={done ? "done" : active ? "active" : ""} key={step.label}>
             <strong>{index + 1}</strong>

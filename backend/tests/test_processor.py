@@ -10,7 +10,7 @@ import pytest
 from backend.app import processor
 from backend.app.ffmpeg_tools import FFmpegError, run_ffmpeg
 from backend.app.job_store import JobStore
-from backend.app.models import Chapter, FrameCandidateIndex, JobConfig, JobStatus, KeyMoment, NoteDraft, NoteLanguage
+from backend.app.models import Chapter, FrameCandidateIndex, JobConfig, JobStatus, KeyMoment, NoteDraft, NoteLanguage, TranscriptionMode
 
 
 def test_create_zip_includes_debug_logs(tmp_path) -> None:
@@ -26,6 +26,71 @@ def test_create_zip_includes_debug_logs(tmp_path) -> None:
         names = set(archive.namelist())
     assert "debug.log" in names
     assert "debug/note-model-response-attempt-1.txt" in names
+
+
+def test_process_uploaded_subtitle_job_writes_transcript_without_audio_extraction(tmp_path, monkeypatch) -> None:
+    job_id = "uploaded-subtitle-job"
+    outputs_root = tmp_path / "outputs"
+    job_dir = outputs_root / job_id
+    source_dir = job_dir / "source_video"
+    subtitle_dir = job_dir / "source_subtitles"
+    source_dir.mkdir(parents=True)
+    subtitle_dir.mkdir(parents=True)
+    video_path = source_dir / "input.mp4"
+    subtitle_path = subtitle_dir / "input.srt"
+    video_path.write_bytes(b"video")
+    subtitle_path.write_text(
+        "1\n00:00:00,000 --> 00:00:01,500\nhello world\n\n"
+        "2\n00:00:02,000 --> 00:00:03,000\nsecond line\n",
+        encoding="utf-8",
+    )
+
+    def fail_unexpected_call(*_args, **_kwargs) -> None:
+        raise AssertionError("uploaded subtitle jobs must not extract audio or transcribe")
+
+    monkeypatch.setattr(processor, "probe_duration", lambda _path: 12.5)
+    monkeypatch.setattr(processor, "extract_mp3", fail_unexpected_call)
+    monkeypatch.setattr(processor, "transcribe_audio", fail_unexpected_call)
+
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_api_key="",
+        transcription_base_url="",
+        transcription_model="small",
+        note_api_key="secret-note-key",
+        note_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        note_model="qwen-plus",
+        note_language=NoteLanguage.zh,
+        frame_limit=1,
+        original_filename="input.mp4",
+    )
+
+    processor.process_uploaded_subtitle_job(
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        subtitle_path=subtitle_path,
+        uploaded_subtitle_filename="input.srt",
+        config=config,
+        store=store,
+    )
+
+    state = store.get(job_id)
+    assert state is not None
+    assert state.status == JobStatus.awaiting_subtitle_confirmation
+    assert not (job_dir / "audio.mp3").exists()
+    assert (job_dir / "transcript.json").exists()
+    assert (job_dir / "subtitles.srt").exists()
+    assert (job_dir / "subtitles.vtt").exists()
+    assert (job_dir / "subtitles.md").exists()
+    assert (job_dir / "subtitles.pending").exists()
+    assert "hello world" in (job_dir / "subtitles.md").read_text(encoding="utf-8-sig")
+    metadata = json.loads((job_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["duration_seconds"] == 12.5
+    assert metadata["subtitle_source"] == "uploaded"
+    assert metadata["uploaded_subtitle_filename"] == "input.srt"
 
 
 def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> None:

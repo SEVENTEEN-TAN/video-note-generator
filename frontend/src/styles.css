@@ -66,7 +66,8 @@ a {
   gap: 18px;
   grid-template-columns: minmax(240px, auto) minmax(420px, 1fr) auto;
   margin: 0 auto 14px;
-  max-width: 1500px;
+  max-width: none;
+  width: 100%;
 }
 
 .topbar-brand {
@@ -110,7 +111,8 @@ a {
   display: grid;
   gap: 16px;
   margin: 0 auto;
-  max-width: 1500px;
+  max-width: none;
+  width: 100%;
 }
 
 .workspace-bottom {
@@ -201,24 +203,30 @@ a {
   align-items: end;
   display: grid;
   gap: 8px 12px;
-  grid-template-areas:
-    "video settings submit"
-    "extras extras extras";
-  grid-template-columns: minmax(250px, 0.76fr) minmax(540px, 2fr) minmax(168px, 0.42fr);
+  grid-template-areas: "video settings extras submit";
+  grid-template-columns: minmax(430px, 1.05fr) minmax(540px, 1.15fr) minmax(260px, 0.75fr) minmax(152px, 0.35fr);
 }
 
-.video-config-block {
+.task-config-panel .config-main .video-config-block {
+  align-items: end;
   align-self: end;
+  display: grid;
+  gap: 8px 10px;
   grid-area: video;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  min-width: 0;
+}
+
+.upload-field {
   min-width: 0;
 }
 
 .quick-settings {
   align-items: end;
   display: grid;
-  gap: 10px;
+  gap: 8px;
   grid-area: settings;
-  grid-template-columns: minmax(170px, 0.82fr) minmax(260px, 1.2fr) minmax(170px, 0.64fr);
+  grid-template-columns: minmax(146px, 0.72fr) minmax(220px, 1.15fr) minmax(154px, 0.65fr);
   min-width: 0;
 }
 
@@ -236,6 +244,12 @@ a {
   min-height: 42px;
   padding: 6px 12px;
   text-align: left;
+}
+
+.task-config-panel .drop-zone span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .config-main .field {
@@ -318,6 +332,30 @@ a {
   font-weight: 800;
   max-width: 100%;
   overflow-wrap: anywhere;
+}
+
+.subtitle-upload-field {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.subtitle-upload-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+}
+
+.subtitle-upload-row .drop-zone {
+  min-width: 0;
+}
+
+.subtitle-clear-button {
+  align-self: stretch;
+  height: auto;
+  min-height: 42px;
 }
 
 .drop-zone small,
@@ -2094,6 +2132,11 @@ textarea:focus {
   padding: 12px;
 }
 
+.frame-preview-block .empty-frame-grid {
+  display: block;
+  padding: 0;
+}
+
 .frame-preview-block .collapsible-content {
   max-height: 520px;
   overflow: auto;
@@ -2136,6 +2179,15 @@ textarea:focus {
   min-height: 124px;
 }
 
+.frame-preview-block .empty-frames {
+  background: #ffffff;
+  border: 0;
+  border-radius: 0;
+  justify-content: flex-start;
+  min-height: auto;
+  padding: 14px 12px;
+}
+
 .spin {
   animation: spin 0.9s linear infinite;
 }
@@ -2153,10 +2205,10 @@ textarea:focus {
 
   .task-config-panel .config-main {
     grid-template-areas:
-      "video settings"
-      "extras extras"
-      "submit submit";
-    grid-template-columns: minmax(250px, 0.7fr) minmax(0, 1.6fr);
+      "video video"
+      "settings submit"
+      "extras extras";
+    grid-template-columns: minmax(0, 1fr) minmax(168px, 220px);
   }
 
   .config-submit-block {
@@ -2181,6 +2233,10 @@ textarea:focus {
 
   .quick-settings {
     grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .task-config-panel .config-main .video-config-block {
+    grid-template-columns: 1fr;
   }
 
   .config-submit-block {

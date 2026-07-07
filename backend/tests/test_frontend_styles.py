@@ -19,6 +19,8 @@ def test_result_panel_uses_compact_review_actions_and_collapsible_outputs() -> N
     step_progress_rule = _css_rule(".step-progress-bar")
     modal_backdrop_rule = _css_rule(".modal-backdrop")
     frame_preview_content_rule = _css_rule(".frame-preview-block .collapsible-content")
+    frame_empty_grid_rule = _css_rule(".frame-preview-block .empty-frame-grid")
+    frame_empty_state_rule = _css_rule(".frame-preview-block .empty-frames")
     popover_rule = _css_rule(".quality-popover")
     hovered_block_rule = _css_rule(".collapsible-block:hover")
     context_paragraph_rule = _css_rule(".frame-candidate-context p")
@@ -49,6 +51,10 @@ def test_result_panel_uses_compact_review_actions_and_collapsible_outputs() -> N
     assert "height:" in step_progress_rule
     assert "overflow: auto" in frame_preview_content_rule
     assert "max-height:" in frame_preview_content_rule
+    assert "display: block" in frame_empty_grid_rule
+    assert "padding: 0" in frame_empty_grid_rule
+    assert "min-height: auto" in frame_empty_state_rule
+    assert "justify-content: flex-start" in frame_empty_state_rule
     assert "z-index: 1000" in popover_rule
     assert "z-index:" in hovered_block_rule
     assert "z-index: 2000" in modal_backdrop_rule
@@ -150,18 +156,47 @@ def test_result_panel_uses_compact_review_actions_and_collapsible_outputs() -> N
     assert "collapsible-block" in app_text
     assert 'className="collapse-toggle"' in app_text
     assert 'className="frame-preview-block"' in app_text
+    assert '"frame-grid empty-frame-grid"' in app_text
     assert note_action_index < note_preview_index < subtitle_preview_index < frame_block_index
     assert scroll_start < subtitle_preview_index < subtitle_action_index < result_panel_end
-    assert scroll_start < frame_block_index < app_text.index('className="frame-grid"', frame_block_index) < result_panel_end
+    assert scroll_start < frame_block_index < app_text.index('className={previewImages.length === 0', frame_block_index) < result_panel_end
     assert 'filename={job.download_filename ?? `video-note-${job.job_id}.zip`}' in app_text
     for marker in (
         'className="chunk-manager"',
         'className="note-review-gate"',
         'className="preview-stack"',
-        'className="frame-grid"',
+        'className={previewImages.length === 0',
     ):
         marker_index = app_text.index(marker)
         assert scroll_start < marker_index < result_panel_end, marker
+
+
+def test_video_upload_block_overrides_compact_field_grid() -> None:
+    topbar_rule = _css_rule(".topbar")
+    workspace_rule = _css_rule(".workspace-grid")
+    config_main_rule = _css_rule(".task-config-panel .config-main")
+    video_config_rule = _css_rule(".task-config-panel .config-main .video-config-block")
+    quick_settings_rule = _css_rule(".quick-settings")
+    upload_field_rule = _css_rule(".upload-field")
+    app_text = (REPO_ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+
+    assert "max-width: none" in topbar_rule
+    assert "width: 100%" in topbar_rule
+    assert "max-width: none" in workspace_rule
+    assert "width: 100%" in workspace_rule
+    assert '"video settings extras submit"' in config_main_rule
+    assert "minmax(540px" in config_main_rule
+    assert "display: grid" in video_config_rule
+    assert "grid-template-columns: minmax(0, 1fr) minmax(0, 1fr)" in video_config_rule
+    assert "gap: 8px" in quick_settings_rule
+    assert "minmax(146px" in quick_settings_rule
+    assert "minmax(220px" in quick_settings_rule
+    assert "minmax(154px" in quick_settings_rule
+    assert "grid-template-columns" not in upload_field_rule
+    assert '<span className="field-label">视频文件</span>' not in app_text
+    assert '<span className="field-label">已有字幕（可选）</span>' not in app_text
+    assert "视频文件：选择文件" in app_text
+    assert "已有字幕（可选）：选择 SRT 字幕" in app_text
 
 
 def test_frontend_api_error_messages_are_readable_chinese() -> None:

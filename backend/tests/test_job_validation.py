@@ -1,10 +1,11 @@
 ﻿from __future__ import annotations
 
+import json
 import os
 
 from fastapi.testclient import TestClient
 
-from backend.app import main
+from backend.app import main, processor
 from backend.app.job_store import JobStore
 from backend.app.main import app
 from backend.app.models import Chapter, JobStatus, KeyMoment, NoteDraft
@@ -41,7 +42,7 @@ def test_create_job_rejects_invalid_config_before_creating_output_dir(tmp_path, 
         "/api/jobs",
         data={
             "transcription_mode": "local_faster_whisper",
-            "transcription_model": "small",
+            "transcription_model": "",
             "local_whisper_device": "gpu",
             "note_api_key": "note-key",
             "note_base_url": "https://api.openai.com/v1",
@@ -488,6 +489,83 @@ def test_create_job_repairs_mojibake_uploaded_filename(tmp_path, monkeypatch) ->
     jobs = TestClient(app).get("/api/jobs").json()["jobs"]
     assert jobs[0]["title"] == "第二课：经典卷积神经网络.mp4"
     assert jobs[0]["original_filename"] == "第二课：经典卷积神经网络.mp4"
+
+
+def test_create_job_with_uploaded_srt_skips_transcription_and_awaits_confirmation(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(processor, "probe_duration", lambda _path: 33.0)
+
+    def fail_unexpected_call(*_args, **_kwargs) -> None:
+        raise AssertionError("uploaded subtitle jobs must not use transcription setup or transcription task")
+
+    monkeypatch.setattr(main, "resolve_local_faster_whisper_model", fail_unexpected_call)
+    monkeypatch.setattr(main, "process_transcription_job", fail_unexpected_call)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "local_faster_whisper",
+            "transcription_model": "small",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "frame_limit": "6",
+        },
+        files={
+            "video": ("input.mp4", b"fake video", "video/mp4"),
+            "subtitle": (
+                "input.srt",
+                b"1\n00:00:00,000 --> 00:00:01,500\nhello world\n",
+                "application/x-subrip",
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    job_id = response.json()["job_id"]
+    job_dir = tmp_path / job_id
+    state = TestClient(app).get(f"/api/jobs/{job_id}").json()
+    assert state["status"] == "awaiting_subtitle_confirmation"
+    assert not (job_dir / "audio.mp3").exists()
+    assert "hello world" in (job_dir / "subtitles.md").read_text(encoding="utf-8-sig")
+    transcript = json.loads((job_dir / "transcript.json").read_text(encoding="utf-8"))
+    assert transcript["segments"] == [{"start": 0.0, "end": 1.5, "text": "hello world"}]
+    metadata = json.loads((job_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert metadata["subtitle_source"] == "uploaded"
+    assert metadata["uploaded_subtitle_filename"] == "input.srt"
+
+
+def test_create_job_rejects_non_srt_uploaded_subtitle_before_creating_output_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(main, "process_transcription_job", lambda **_kwargs: None)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_base_url": "https://api.openai.com/v1",
+            "transcription_model": "whisper-1",
+            "note_api_key": "note-key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "frame_limit": "6",
+        },
+        files={
+            "video": ("input.mp4", b"fake video", "video/mp4"),
+            "subtitle": ("input.txt", b"not srt", "text/plain"),
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Unsupported subtitle format" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
 
 
 

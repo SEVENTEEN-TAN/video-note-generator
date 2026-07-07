@@ -79,6 +79,7 @@ from .note_versions import (
 from .processor import (
     continue_job_to_notes,
     create_zip,
+    process_uploaded_subtitle_job,
     process_transcription_job,
     regenerate_note_job,
     regenerate_subtitles_job,
@@ -99,6 +100,7 @@ OUTPUTS_ROOT = get_outputs_root()
 OUTPUTS_ROOT.mkdir(parents=True, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {".mp4", ".mov", ".mkv", ".webm", ".avi"}
+ALLOWED_SUBTITLE_EXTENSIONS = {".srt"}
 
 app = FastAPI(title="Video Note Generator MVP")
 app.add_middleware(
@@ -200,6 +202,13 @@ def validate_video_extension(filename: str | None) -> str:
     return suffix
 
 
+def validate_subtitle_extension(filename: str | None) -> str:
+    suffix = Path(filename or "").suffix.lower()
+    if suffix not in ALLOWED_SUBTITLE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Unsupported subtitle format. Use .srt.")
+    return suffix
+
+
 def build_job_config_or_400(
     *,
     transcription_mode: TranscriptionMode,
@@ -217,15 +226,16 @@ def build_job_config_or_400(
     extras: str = "",
     frame_limit: int = 6,
     original_filename: str = "video",
+    require_transcription: bool = True,
 ) -> JobConfig:
-    uses_remote_transcription = transcription_mode != TranscriptionMode.local_faster_whisper
+    uses_remote_transcription = require_transcription and transcription_mode != TranscriptionMode.local_faster_whisper
     if uses_remote_transcription and not transcription_api_key.strip():
         raise HTTPException(status_code=400, detail="Transcription API Key is required.")
     if uses_remote_transcription and not transcription_base_url.strip():
         raise HTTPException(status_code=400, detail="Transcription Base URL is required.")
     if not note_api_key.strip():
         raise HTTPException(status_code=400, detail="Note API Key is required.")
-    if not transcription_model.strip():
+    if require_transcription and not transcription_model.strip():
         raise HTTPException(status_code=400, detail="Transcription model is required.")
     if not note_model.strip():
         raise HTTPException(status_code=400, detail="Note model is required.")
@@ -234,10 +244,10 @@ def build_job_config_or_400(
 
     try:
         return JobConfig(
-            transcription_mode=transcription_mode,
-            transcription_api_key=transcription_api_key,
-            transcription_base_url=transcription_base_url,
-            transcription_model=transcription_model,
+            transcription_mode=transcription_mode if require_transcription else TranscriptionMode.local_faster_whisper,
+            transcription_api_key=transcription_api_key if require_transcription else "",
+            transcription_base_url=transcription_base_url if require_transcription else "",
+            transcription_model=transcription_model.strip() or "uploaded-subtitle",
             local_whisper_device=local_whisper_device,
             local_whisper_compute_type=local_whisper_compute_type,
             transcription_language=transcription_language,
@@ -354,6 +364,7 @@ async def create_job(
     background_tasks: BackgroundTasks,
     video: Annotated[UploadFile, File()],
     note_language: Annotated[NoteLanguage, Form()],
+    subtitle: Annotated[UploadFile | None, File()] = None,
     note_style: Annotated[NoteStyle, Form()] = NoteStyle.detailed,
     extras: Annotated[str, Form()] = "",
     transcription_mode: Annotated[TranscriptionMode, Form()] = TranscriptionMode.audio_transcriptions,
@@ -369,6 +380,13 @@ async def create_job(
     frame_limit: Annotated[int, Form()] = 6,
 ) -> dict:
     suffix = validate_video_extension(video.filename)
+    has_uploaded_subtitle = bool(subtitle and subtitle.filename)
+    subtitle_suffix = validate_subtitle_extension(subtitle.filename) if has_uploaded_subtitle and subtitle else ""
+    uploaded_subtitle_filename = (
+        normalize_uploaded_filename(subtitle.filename, fallback="subtitles.srt")
+        if has_uploaded_subtitle and subtitle
+        else ""
+    )
     config = build_job_config_or_400(
         transcription_mode=transcription_mode,
         transcription_api_key=transcription_api_key,
@@ -385,23 +403,32 @@ async def create_job(
         extras=extras,
         frame_limit=frame_limit,
         original_filename=video.filename or f"input{suffix}",
+        require_transcription=not has_uploaded_subtitle,
     )
-    ensure_local_transcription_ready(config)
+    if not has_uploaded_subtitle:
+        ensure_local_transcription_ready(config)
 
     job_id = uuid.uuid4().hex
     job_dir = OUTPUTS_ROOT / job_id
     source_dir = job_dir / "source_video"
     video_path = source_dir / f"input{suffix}"
+    subtitle_path = job_dir / "source_subtitles" / f"input{subtitle_suffix}" if has_uploaded_subtitle else None
     try:
         source_dir.mkdir(parents=True, exist_ok=True)
         with video_path.open("wb") as target:
             shutil.copyfileobj(video.file, target)
+        if has_uploaded_subtitle and subtitle and subtitle_path:
+            subtitle_path.parent.mkdir(parents=True, exist_ok=True)
+            with subtitle_path.open("wb") as target:
+                shutil.copyfileobj(subtitle.file, target)
         write_job_metadata(
             job_id=job_id,
             job_dir=job_dir,
             config=config,
             title=config.original_filename,
             duration=None,
+            subtitle_source="uploaded" if has_uploaded_subtitle else "transcribed",
+            uploaded_subtitle_filename=uploaded_subtitle_filename,
         )
         TaskDebugLog(job_dir).event(
             "create_job",
@@ -410,6 +437,9 @@ async def create_job(
             original_filename=config.original_filename,
             video_path=str(video_path),
             video_size_bytes=video_path.stat().st_size,
+            subtitle_path=str(subtitle_path) if subtitle_path else "",
+            subtitle_size_bytes=subtitle_path.stat().st_size if subtitle_path and subtitle_path.exists() else None,
+            uploaded_subtitle_filename=uploaded_subtitle_filename,
             transcription_mode=config.transcription_mode.value,
             transcription_model=config.transcription_model,
             note_model=config.note_model,
@@ -421,14 +451,26 @@ async def create_job(
         raise HTTPException(status_code=400, detail=f"Cannot create job files: {exc}") from exc
     sync_store_outputs_root()
     store.create(job_id)
-    background_tasks.add_task(
-        process_transcription_job,
-        job_id=job_id,
-        job_dir=job_dir,
-        video_path=video_path,
-        config=config,
-        store=store,
-    )
+    if has_uploaded_subtitle and subtitle_path:
+        background_tasks.add_task(
+            process_uploaded_subtitle_job,
+            job_id=job_id,
+            job_dir=job_dir,
+            video_path=video_path,
+            subtitle_path=subtitle_path,
+            uploaded_subtitle_filename=uploaded_subtitle_filename,
+            config=config,
+            store=store,
+        )
+    else:
+        background_tasks.add_task(
+            process_transcription_job,
+            job_id=job_id,
+            job_dir=job_dir,
+            video_path=video_path,
+            config=config,
+            store=store,
+        )
     return {"job_id": job_id}
 
 

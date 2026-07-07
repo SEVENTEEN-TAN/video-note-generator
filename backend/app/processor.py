@@ -22,7 +22,7 @@ from .note_versions import (
 )
 from .review_finalization import NOTE_REVIEW_PENDING_MARKER, mark_note_review_pending
 from .review_quality import build_quality_report, write_quality_report
-from .subtitles import transcript_segments_from_payload, write_subtitle_files
+from .subtitles import SubtitleParseError, parse_srt_file, transcript_segments_from_payload, write_subtitle_files
 from .task_debug_log import TaskDebugLog
 from .transcription import TranscriptionError, transcribe_audio
 
@@ -66,8 +66,16 @@ def write_job_metadata(
     config: JobConfig,
     title: str,
     duration: float | None,
+    subtitle_source: str | None = None,
+    uploaded_subtitle_filename: str | None = None,
 ) -> dict:
     existing = _read_metadata(job_dir)
+    resolved_subtitle_source = subtitle_source or str(existing.get("subtitle_source") or "transcribed")
+    resolved_uploaded_subtitle_filename = (
+        uploaded_subtitle_filename
+        if uploaded_subtitle_filename is not None
+        else str(existing.get("uploaded_subtitle_filename") or "")
+    )
     metadata = {
         "job_id": job_id,
         "created_at": str(existing.get("created_at") or datetime.now(timezone.utc).isoformat()),
@@ -84,6 +92,8 @@ def write_job_metadata(
         "extras_present": bool(config.extras),
         "extras_length": len(config.extras),
         "frame_limit": config.frame_limit,
+        "subtitle_source": resolved_subtitle_source,
+        "uploaded_subtitle_filename": resolved_uploaded_subtitle_filename,
         "duration_seconds": duration,
         "title": title.strip() or config.original_filename,
     }
@@ -217,6 +227,8 @@ def process_transcription_job(
             config=config,
             title=config.original_filename,
             duration=duration,
+            subtitle_source="transcribed",
+            uploaded_subtitle_filename="",
         )
         (job_dir / SUBTITLES_PENDING_MARKER).write_text("1", encoding="utf-8")
         store.refresh_artifacts(job_id)
@@ -229,6 +241,81 @@ def process_transcription_job(
         debug_log.event("process_transcription_job", "awaiting_confirmation")
     except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
         debug_log.exception("process_transcription_job", "failed", exc)
+        store.refresh_artifacts(job_id)
+        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
+
+
+def process_uploaded_subtitle_job(
+    *,
+    job_id: str,
+    job_dir: Path,
+    video_path: Path,
+    subtitle_path: Path,
+    uploaded_subtitle_filename: str,
+    config: JobConfig,
+    store: JobStore,
+) -> None:
+    debug_log = TaskDebugLog(job_dir)
+    debug_log.event(
+        "process_uploaded_subtitle_job",
+        "started",
+        job_id=job_id,
+        job_dir=str(job_dir),
+        video_path=str(video_path),
+        video_size_bytes=_file_size(video_path),
+        subtitle_path=str(subtitle_path),
+        subtitle_size_bytes=_file_size(subtitle_path),
+        uploaded_subtitle_filename=uploaded_subtitle_filename,
+        config=_config_debug_summary(config),
+    )
+    try:
+        debug_log.event("probe_duration", "starting", video_path=str(video_path))
+        store.update(job_id, status=JobStatus.running, step="分析视频", progress=10)
+        duration = probe_duration(video_path)
+        debug_log.event("probe_duration", "succeeded", duration_seconds=duration)
+
+        store.update(job_id, step="解析字幕", progress=30)
+        debug_log.event("parse_uploaded_subtitle", "starting", subtitle_path=str(subtitle_path))
+        segments = parse_srt_file(subtitle_path)
+        transcript_payload = {
+            "text": "\n".join(segment.text for segment in segments),
+            "segments": [segment.model_dump() for segment in segments],
+        }
+        transcript_path = job_dir / "transcript.json"
+        transcript_path.write_text(
+            json.dumps(transcript_payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        debug_log.event(
+            "parse_uploaded_subtitle",
+            "succeeded",
+            segment_count=len(segments),
+            transcript_size_bytes=_file_size(transcript_path),
+        )
+
+        debug_log.event("write_subtitles", "starting", segment_count=len(segments))
+        write_subtitle_files(segments, job_dir)
+        debug_log.event("write_subtitles", "succeeded", segment_count=len(segments))
+        write_job_metadata(
+            job_id=job_id,
+            job_dir=job_dir,
+            config=config,
+            title=config.original_filename,
+            duration=duration,
+            subtitle_source="uploaded",
+            uploaded_subtitle_filename=uploaded_subtitle_filename,
+        )
+        (job_dir / SUBTITLES_PENDING_MARKER).write_text("1", encoding="utf-8")
+        store.refresh_artifacts(job_id)
+        store.update(
+            job_id,
+            status=JobStatus.awaiting_subtitle_confirmation,
+            step="等待确认字幕",
+            progress=40,
+        )
+        debug_log.event("process_uploaded_subtitle_job", "awaiting_confirmation")
+    except (FFmpegError, SubtitleParseError, ProcessingError, OSError, Exception) as exc:
+        debug_log.exception("process_uploaded_subtitle_job", "failed", exc)
         store.refresh_artifacts(job_id)
         store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
 
@@ -388,6 +475,8 @@ def regenerate_subtitles_job(
             config=config,
             title=config.original_filename,
             duration=duration,
+            subtitle_source="transcribed",
+            uploaded_subtitle_filename="",
         )
         (job_dir / SUBTITLES_PENDING_MARKER).write_text("1", encoding="utf-8")
         store.refresh_artifacts(job_id)

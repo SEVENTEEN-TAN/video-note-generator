@@ -1,5 +1,44 @@
+import pytest
+
 from backend.app.models import TranscriptSegment
-from backend.app.subtitles import render_srt, render_subtitle_markdown, render_vtt, transcript_segments_from_payload
+from backend.app.subtitles import (
+    SubtitleParseError,
+    parse_srt_content,
+    render_srt,
+    render_subtitle_markdown,
+    render_vtt,
+    transcript_segments_from_payload,
+)
+
+
+def test_parse_srt_content_accepts_utf8_bom_and_multiline_text() -> None:
+    content = (
+        "\ufeff1\r\n"
+        "00:00:00,960 --> 00:00:01,160\r\n"
+        "好\r\n"
+        "\r\n"
+        "2\r\n"
+        "00:00:01,160 --> 00:00:03,840\r\n"
+        "第一行\r\n"
+        "第二行\r\n"
+    )
+
+    segments = parse_srt_content(content)
+
+    assert segments == [
+        TranscriptSegment(start=0.96, end=1.16, text="好"),
+        TranscriptSegment(start=1.16, end=3.84, text="第一行 第二行"),
+    ]
+
+
+def test_parse_srt_content_raises_for_empty_subtitles() -> None:
+    with pytest.raises(SubtitleParseError, match="No usable SRT subtitle cues"):
+        parse_srt_content("")
+
+
+def test_parse_srt_content_raises_when_no_valid_cues() -> None:
+    with pytest.raises(SubtitleParseError, match="No usable SRT subtitle cues"):
+        parse_srt_content("hello\nnot a timestamp\n")
 
 
 def test_transcript_segments_from_payload() -> None:
