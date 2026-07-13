@@ -93,6 +93,8 @@ def run_session_request(request_path: Path) -> int:
     model_root = Path(require_session_text(request, "model_root")).expanduser()
     device = require_session_text(request, "device")
     compute_type = require_session_text(request, "compute_type")
+    cpu_threads = require_session_int(request, "cpu_threads", minimum=1)
+    num_workers = require_session_int(request, "num_workers", minimum=1)
     language_value = request.get("language")
     if not isinstance(language_value, str):
         raise RuntimeError("Session request field 'language' must be a string.")
@@ -116,6 +118,8 @@ def run_session_request(request_path: Path) -> int:
         device=device,
         compute_type=compute_type,
         download_root=str(model_root),
+        cpu_threads=cpu_threads,
+        num_workers=num_workers,
     )
     emit_event({"type": "ready"})
 

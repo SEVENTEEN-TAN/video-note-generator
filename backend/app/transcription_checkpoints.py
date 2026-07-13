@@ -129,6 +129,11 @@ class TranscriptionCheckpointSession:
             raise ValueError(f"Unknown chunk index: {index}")
         return self.results_dir / f"chunk_{index:04d}.json"
 
+    def result_path(self, index: int) -> Path:
+        """Return the canonical result path used by local worker sessions."""
+
+        return self._result_path(index)
+
     def completed_indices(self) -> set[int]:
         completed: set[int] = set()
         for index in self._chunks_by_index:

@@ -2,6 +2,9 @@
 from types import SimpleNamespace
 from pathlib import Path
 
+import io
+import json
+
 import pytest
 from pydantic import ValidationError
 
@@ -814,6 +817,264 @@ def test_external_faster_whisper_worker_reports_progress_before_blocking_run(tmp
 
     assert parsed.text == "中文正常"
     assert updates == [("字幕生成中：外部 Faster Whisper worker 转写中", 38)]
+
+
+def test_prepared_external_whisper_uses_one_session_and_merges_absolute_offsets(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"public audio")
+    model_root = tmp_path / "models"
+    write_model_files(model_root / "small")
+    chunk_dir = tmp_path / "work" / "asr" / "chunks"
+    chunk_dir.mkdir(parents=True)
+    first_chunk = chunk_dir / "chunk_000.flac"
+    second_chunk = chunk_dir / "chunk_001.flac"
+    first_chunk.write_bytes(b"first")
+    second_chunk.write_bytes(b"second")
+    worker_path = tmp_path / "worker.py"
+    worker_path.write_text("# worker", encoding="utf-8")
+    monkeypatch.setattr(transcription, "WhisperModel", None)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(model_root))
+    monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: worker_path)
+
+    requests: list[dict] = []
+    commands: list[list[str]] = []
+
+    class CompletedSessionProcess:
+        def __init__(self, command, **kwargs) -> None:
+            commands.append(command)
+            request = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
+            requests.append(request)
+            events = [{"type": "ready"}]
+            for chunk in request["chunks"]:
+                text = "first" if chunk["index"] == 0 else "second"
+                result_path = Path(chunk["result_path"])
+                result_path.parent.mkdir(parents=True, exist_ok=True)
+                result_path.write_text(
+                    json.dumps(
+                        {
+                            "text": text,
+                            "segments": [{"start": 0, "end": 10, "text": text}],
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                events.extend(
+                    [
+                        {"type": "progress", "chunk_index": chunk["index"], "segment_end": 10},
+                        {"type": "chunk_complete", "chunk_index": chunk["index"]},
+                    ]
+                )
+            events.append({"type": "complete"})
+            self.stdout = io.StringIO("".join(json.dumps(event) + "\n" for event in events))
+            self.stderr = io.StringIO("")
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(transcription.subprocess, "Popen", CompletedSessionProcess)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+    prepared = PreparedAudio(
+        mp3_path=audio_path,
+        chunks=[
+            ChunkSpec(index=0, start=0, end=600, path=first_chunk),
+            ChunkSpec(index=1, start=600, end=1200, path=second_chunk),
+        ],
+        duration=1200,
+    )
+    updates: list[tuple[str, int]] = []
+
+    result = transcription.transcribe_with_faster_whisper(
+        audio_path,
+        config,
+        tmp_path,
+        prepared_audio=prepared,
+        hardware_profile=HardwareProfile(8, 16 * 1024**3, False, None),
+        progress_callback=lambda step, progress: updates.append((step, progress)),
+    )
+
+    assert len(commands) == 1
+    assert commands[0][-2] == "--session-request"
+    assert result.text == "first second"
+    assert [segment.start for segment in result.segments] == [0.0, 600.0]
+    request = requests[0]
+    assert request["device"] == "cpu"
+    assert request["compute_type"] == "int8"
+    assert request["cpu_threads"] == 8
+    assert request["num_workers"] == 1
+    assert request["beam_size"] == 3
+    assert request["best_of"] == 2
+    assert [chunk["index"] for chunk in request["chunks"]] == [0, 1]
+    assert any("00:10:10 / 00:20:00" in step for step, _progress in updates)
+    assert not Path(commands[0][-1]).exists()
+
+
+def test_prepared_external_whisper_excludes_completed_checkpoint_chunks(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"public audio")
+    model_root = tmp_path / "models"
+    write_model_files(model_root / "small")
+    chunk_dir = tmp_path / "work" / "asr" / "chunks"
+    chunk_dir.mkdir(parents=True)
+    first_chunk = chunk_dir / "chunk_000.flac"
+    second_chunk = chunk_dir / "chunk_001.flac"
+    first_chunk.write_bytes(b"first")
+    second_chunk.write_bytes(b"second")
+    worker_path = tmp_path / "worker.py"
+    worker_path.write_text("# worker", encoding="utf-8")
+    monkeypatch.setattr(transcription, "WhisperModel", None)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(model_root))
+    monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: worker_path)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+    prepared = PreparedAudio(
+        mp3_path=audio_path,
+        chunks=[
+            ChunkSpec(index=0, start=0, end=600, path=first_chunk),
+            ChunkSpec(index=1, start=600, end=1200, path=second_chunk),
+        ],
+        duration=1200,
+    )
+    hardware = HardwareProfile(8, 16 * 1024**3, False, None)
+    plan = transcription.resolve_execution_plan(config, prepared.duration, hardware)
+    checkpoint = transcription.open_checkpoint_session(tmp_path / "work" / "asr", audio_path, plan, prepared.chunks)
+    checkpoint.write_result(
+        0,
+        TranscriptPayload(text="cached", segments=[TranscriptSegment(start=0, end=5, text="cached")]),
+    )
+    requests: list[dict] = []
+
+    class ResumeSessionProcess:
+        def __init__(self, command, **kwargs) -> None:
+            request = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
+            requests.append(request)
+            assert [chunk["index"] for chunk in request["chunks"]] == [1]
+            result_path = Path(request["chunks"][0]["result_path"])
+            result_path.write_text(
+                json.dumps({"text": "resumed", "segments": [{"start": 0, "end": 7, "text": "resumed"}]}),
+                encoding="utf-8",
+            )
+            self.stdout = io.StringIO(
+                json.dumps({"type": "chunk_complete", "chunk_index": 1}) + "\n"
+                + json.dumps({"type": "complete"}) + "\n"
+            )
+            self.stderr = io.StringIO("")
+            self.returncode = 0
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    monkeypatch.setattr(transcription.subprocess, "Popen", ResumeSessionProcess)
+
+    result = transcription.transcribe_with_faster_whisper(
+        audio_path,
+        config,
+        tmp_path,
+        prepared_audio=prepared,
+        hardware_profile=hardware,
+    )
+
+    assert len(requests) == 1
+    assert result.text == "cached resumed"
+    assert [segment.start for segment in result.segments] == [0.0, 600.0]
+
+
+def test_prepared_external_whisper_cancellation_terminates_then_kills_worker(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"public audio")
+    model_root = tmp_path / "models"
+    write_model_files(model_root / "small")
+    chunk_path = tmp_path / "work" / "asr" / "chunks" / "chunk_000.flac"
+    chunk_path.parent.mkdir(parents=True)
+    chunk_path.write_bytes(b"chunk")
+    worker_path = tmp_path / "worker.py"
+    worker_path.write_text("# worker", encoding="utf-8")
+    monkeypatch.setattr(transcription, "WhisperModel", None)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(model_root))
+    monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: worker_path)
+    process_holder: dict[str, object] = {}
+    request_paths: list[Path] = []
+
+    class HangingSessionProcess:
+        def __init__(self, command, **kwargs) -> None:
+            request_paths.append(Path(command[-1]))
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+            self.terminated = False
+            self.killed = False
+            process_holder["process"] = self
+
+        def poll(self):
+            return -9 if self.killed else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            if self.killed:
+                return -9
+            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+
+    monkeypatch.setattr(transcription.subprocess, "Popen", HangingSessionProcess)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+    prepared = PreparedAudio(
+        mp3_path=audio_path,
+        chunks=[ChunkSpec(index=0, start=0, end=600, path=chunk_path)],
+        duration=600,
+    )
+
+    with pytest.raises(transcription.TranscriptionCancelled):
+        transcription.transcribe_with_faster_whisper(
+            audio_path,
+            config,
+            tmp_path,
+            prepared_audio=prepared,
+            hardware_profile=HardwareProfile(8, 16 * 1024**3, False, None),
+            is_cancelled=lambda: "process" in process_holder,
+        )
+
+    process = process_holder["process"]
+    assert process.terminated is True
+    assert process.killed is True
+    assert request_paths and not request_paths[0].exists()
 
 
 def test_audio_transcriptions_reports_chunk_progress(monkeypatch, tmp_path) -> None:

@@ -19,6 +19,8 @@ def _write_session_request(path: Path, *, model_root: Path, chunks: list[dict]) 
                 "model_root": str(model_root),
                 "device": "cuda",
                 "compute_type": "float16",
+                "cpu_threads": 6,
+                "num_workers": 1,
                 "language": "zh",
                 "beam_size": 7,
                 "best_of": 4,
@@ -88,7 +90,13 @@ def test_session_loads_model_once_writes_results_in_numeric_order_and_emits_even
     assert len(model_initializations) == 1
     assert model_initializations[0] == (
         (f"resolved:small:{model_root}",),
-        {"device": "cuda", "compute_type": "float16", "download_root": str(model_root)},
+        {
+            "device": "cuda",
+            "compute_type": "float16",
+            "download_root": str(model_root),
+            "cpu_threads": 6,
+            "num_workers": 1,
+        },
     )
     assert [call[0] for call in transcribe_calls] == [str(first_audio), str(second_audio)]
     assert all(
