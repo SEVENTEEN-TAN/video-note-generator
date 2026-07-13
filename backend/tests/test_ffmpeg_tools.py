@@ -11,6 +11,7 @@ from backend.app.ffmpeg_tools import (
     FFmpegCancelled,
     FFmpegError,
     extract_frame,
+    extract_frames,
     get_ffmpeg_path,
     prepare_audio_artifacts,
     load_prepared_audio_artifacts,
@@ -94,6 +95,35 @@ def test_run_ffmpeg_cancellation_terminates_and_reaps_active_process(monkeypatch
     assert lifecycle == ["terminate", "wait", "kill", "wait"]
 
 
+def test_windows_ffmpeg_cancellation_uses_taskkill_for_process_tree(monkeypatch) -> None:
+    commands: list[list[str]] = []
+
+    class TreeProcess:
+        pid = 1234
+
+        def __init__(self) -> None:
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+    process = TreeProcess()
+
+    def fake_run(command, **_kwargs):
+        commands.append(command)
+        process.returncode = -9
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(ffmpeg_tools.sys, "platform", "win32")
+    monkeypatch.setattr(ffmpeg_tools.subprocess, "run", fake_run)
+
+    assert ffmpeg_tools._terminate_ffmpeg_process(process) is True
+    assert commands == [["taskkill", "/PID", "1234", "/T", "/F"]]
+
+
 def test_extract_frame_falls_back_when_short_video_seek_has_no_frame(tmp_path) -> None:
     video_path = tmp_path / "short.mp4"
     frame_path = tmp_path / "frame.jpg"
@@ -123,6 +153,27 @@ def test_extract_frame_falls_back_when_short_video_seek_has_no_frame(tmp_path) -
     assert actual_time == pytest.approx(0)
     assert frame_path.exists()
     assert frame_path.stat().st_size > 0
+
+
+def test_extract_frames_batches_multiple_timestamps_in_one_ffmpeg_call(tmp_path, monkeypatch) -> None:
+    video_path = Path("input.mp4")
+    first = tmp_path / "first.jpg"
+    second = tmp_path / "second.jpg"
+    commands: list[list[str]] = []
+
+    def fake_run(args, **_kwargs):
+        commands.append(args)
+        first.write_bytes(b"first")
+        second.write_bytes(b"second")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ffmpeg_tools, "run_ffmpeg", fake_run)
+
+    actual = extract_frames(video_path, [(first, 5.0), (second, 10.0)], duration=20)
+
+    assert len(commands) == 1
+    assert commands[0].count("-i") == 1
+    assert actual == {first: 5.0, second: 10.0}
 
 
 def test_prepare_long_local_audio_uses_one_source_read_and_flac_chunks(tmp_path, monkeypatch) -> None:

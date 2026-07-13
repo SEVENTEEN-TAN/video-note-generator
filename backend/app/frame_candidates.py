@@ -13,7 +13,7 @@ from pathlib import Path
 from collections.abc import Callable
 from uuid import uuid4
 
-from .ffmpeg_tools import extract_frame, require_ffmpeg
+from .ffmpeg_tools import extract_frame, extract_frames, require_ffmpeg
 from .models import FrameCandidate, FrameCandidateChapterContext, FrameCandidateIndex, TranscriptPayload
 
 
@@ -69,6 +69,21 @@ def build_frame_candidate_index(
         selected_by_chapter: set[int] = set()
         prior_hashes: list[tuple[str, str]] = []
         reusable_note_frames = _reusable_note_frames(job_dir, note_text)
+        batched_times: dict[Path, float] = {}
+        if is_cancelled is not None and "is_cancelled" in inspect.signature(extract_frame).parameters:
+            batch_requests: list[tuple[Path, float]] = []
+            for chapter in chapters:
+                for candidate_number, seed in enumerate(_candidate_seeds(chapter, candidates_per_chapter), start=1):
+                    if reusable_note_frames.get(round(seed.time)) is not None:
+                        continue
+                    relative_frame = Path(f"chapter_{chapter.index + 1:03d}") / f"candidate_{candidate_number:03d}.jpg"
+                    batch_requests.append((temporary_root / relative_frame, seed.time))
+            batched_times = extract_frames(
+                video_path,
+                batch_requests,
+                duration,
+                is_cancelled=is_cancelled,
+            )
         for chapter in chapters:
             for candidate_number, seed in enumerate(_candidate_seeds(chapter, candidates_per_chapter), start=1):
                 if is_cancelled and is_cancelled():
@@ -81,6 +96,8 @@ def build_frame_candidate_index(
                 if reusable is not None and reusable.exists():
                     _materialize_reused_frame(reusable, output_path)
                     actual_time = seed.time
+                elif output_path in batched_times:
+                    actual_time = batched_times[output_path]
                 else:
                     actual_time = _extract_frame_with_cancellation(
                         video_path,

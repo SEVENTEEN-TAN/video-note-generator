@@ -200,18 +200,46 @@ def activate_note_version(job_dir: Path, version_id: str) -> NoteVersionIndex:
     if not source_frames.exists() or not source_frames.is_dir():
         raise FileNotFoundError(f"Note version frames are missing: {version_id}")
 
-    index = set_note_version_selection(job_dir, current_index.selected_version_ids, version_id)
-    version = get_note_version(index, version_id)
-    if not version:
-        raise FileNotFoundError(f"Note version not found: {version_id}")
-
-    shutil.copyfile(source_note, job_dir / "note.md")
-
+    selected_ids = list(current_index.selected_version_ids)
+    if version_id not in selected_ids:
+        selected_ids.append(version_id)
+    next_index = NoteVersionIndex(
+        active_version_id=version_id,
+        selected_version_ids=selected_ids,
+        versions=current_index.versions,
+    )
+    root_note = job_dir / "note.md"
     root_frames = job_dir / "frames"
-    if root_frames.exists():
-        shutil.rmtree(root_frames)
-    shutil.copytree(source_frames, root_frames)
-    return index
+    token = uuid4().hex
+    temporary_note = job_dir / f".note.{token}.tmp"
+    temporary_frames = job_dir / f".frames.{token}.tmp"
+    backup_note = job_dir / f".note.{token}.backup"
+    backup_frames = job_dir / f".frames.{token}.backup"
+    try:
+        shutil.copyfile(source_note, temporary_note)
+        shutil.copytree(source_frames, temporary_frames)
+        if root_note.exists():
+            root_note.replace(backup_note)
+        if root_frames.exists():
+            root_frames.replace(backup_frames)
+        temporary_note.replace(root_note)
+        temporary_frames.replace(root_frames)
+        try:
+            index = write_note_version_index(job_dir, next_index)
+        except Exception:
+            root_note.unlink(missing_ok=True)
+            shutil.rmtree(root_frames, ignore_errors=True)
+            if backup_note.exists():
+                backup_note.replace(root_note)
+            if backup_frames.exists():
+                backup_frames.replace(root_frames)
+            raise
+        backup_note.unlink(missing_ok=True)
+        shutil.rmtree(backup_frames, ignore_errors=True)
+        return index
+    finally:
+        temporary_note.unlink(missing_ok=True)
+        shutil.rmtree(temporary_frames, ignore_errors=True)
 
 
 def ensure_root_note_has_version(job_dir: Path) -> NoteVersionIndex:

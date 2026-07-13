@@ -192,6 +192,36 @@ def test_frame_candidate_failure_leaves_no_partial_candidate_directory(tmp_path,
     assert not list(review_dir.glob(".frame_candidates.*.tmp"))
 
 
+def test_pipeline_frame_candidates_batch_uncached_times(tmp_path, monkeypatch) -> None:
+    video_path = write_candidate_job(tmp_path)
+    batch_calls: list[list[tuple[Path, float]]] = []
+
+    def real_signature_extract(_video, _output, _timestamp, _duration, *, is_cancelled=None):
+        raise AssertionError("successful batch must avoid per-frame FFmpeg")
+
+    def fake_extract_frames(_video, requests, _duration, *, is_cancelled=None):
+        batch_calls.append(requests)
+        for path, timestamp in requests:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(f"batch-{timestamp}".encode())
+        return dict(requests)
+
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", real_signature_extract)
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frames", fake_extract_frames)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+
+    index = build_frame_candidate_index(
+        tmp_path,
+        video_path,
+        duration=120,
+        candidates_per_chapter=2,
+        is_cancelled=lambda: False,
+    )
+
+    assert len(batch_calls) == 1
+    assert len(batch_calls[0]) == len(index.candidates)
+
+
 def test_frame_candidate_index_persists_and_mutations_update_choices(tmp_path, monkeypatch) -> None:
     video_path = write_candidate_job(tmp_path)
 

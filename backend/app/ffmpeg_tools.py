@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import math
+import os
 import re
+import signal
 import shutil
 import subprocess
 import sys
@@ -354,6 +356,48 @@ def extract_frame(
     raise FFmpegError(f"Frame extraction failed after trying {attempted}. Last error: {detail}")
 
 
+def extract_frames(
+    video_path: Path,
+    requests: list[tuple[Path, float]],
+    duration: float | None,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> dict[Path, float]:
+    """Extract several independent stills with one FFmpeg process when possible."""
+
+    if not requests:
+        return {}
+    resolved: list[tuple[Path, float]] = []
+    args = ["-y", "-hide_banner", "-i", str(video_path)]
+    for output_path, timestamp in requests:
+        safe_time = max(0.0, timestamp)
+        if duration and duration > 1:
+            safe_time = clamp_seconds(safe_time, 0.25, max(0.25, duration - 0.25))
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.unlink(missing_ok=True)
+        resolved.append((output_path, safe_time))
+        args.extend(["-ss", f"{safe_time:.3f}", "-frames:v", "1", "-q:v", "2", str(output_path)])
+    try:
+        _run_ffmpeg_with_optional_cancellation(args, is_cancelled)
+        if all(path.exists() and path.stat().st_size > 0 for path, _time in resolved):
+            return {path: actual_time for path, actual_time in resolved}
+    except FFmpegCancelled:
+        raise
+    except FFmpegError:
+        pass
+
+    results = {}
+    for output_path, timestamp in resolved:
+        results[output_path] = extract_frame(
+            video_path,
+            output_path,
+            timestamp,
+            duration,
+            is_cancelled=is_cancelled,
+        )
+    return results
+
+
 def _frame_seek_candidates(safe_time: float) -> list[float]:
     candidates = [safe_time]
     if safe_time > 0:
@@ -411,7 +455,12 @@ def _run_cancellable_ffmpeg_process(
         "errors": "replace",
     }
     if sys.platform == "win32":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        kwargs["creationflags"] = (
+            getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200)
+        )
+    else:
+        kwargs["start_new_session"] = True
     process = subprocess.Popen(command, **kwargs)
     while True:
         if is_cancelled():
@@ -428,6 +477,32 @@ def _run_cancellable_ffmpeg_process(
 def _terminate_ffmpeg_process(process: subprocess.Popen) -> bool:
     if process.poll() is not None:
         return True
+    pid = getattr(process, "pid", None)
+    if isinstance(pid, int) and pid > 0:
+        if sys.platform == "win32":
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000),
+                    check=False,
+                )
+                process.wait(timeout=2.0)
+                return process.poll() is not None
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        else:
+            try:
+                os.killpg(os.getpgid(pid), signal.SIGTERM)
+                process.wait(timeout=1.0)
+                return process.poll() is not None
+            except (OSError, subprocess.TimeoutExpired):
+                try:
+                    os.killpg(os.getpgid(pid), signal.SIGKILL)
+                    process.wait(timeout=1.0)
+                    return process.poll() is not None
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
     process.terminate()
     try:
         process.wait(timeout=1.0)
