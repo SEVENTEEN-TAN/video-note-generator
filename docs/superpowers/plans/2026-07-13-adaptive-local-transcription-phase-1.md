@@ -77,12 +77,15 @@ class TranscriptionExecutionPlan:
     num_workers: int
     beam_size: int
     best_of: int
+    vad_filter: bool
+    vad_min_silence_ms: int
+    vad_threshold: float
     chunk_seconds: int
     chunk_overlap_seconds: float
     checkpoint_enabled: bool
 ```
 
-Fast uses beam/best-of 1/1, balanced 3/2, accurate 5/3. Up to 1800 seconds uses one chunk, up to 7200 uses 900-second chunks, longer uses 600-second chunks. Explicit runtime values override auto; auto CUDA uses float16, auto CPU int8. Persist mode with balanced default.
+Fast uses beam/best-of 1/1, balanced 3/2, accurate 5/3. All phase-one presets enable VAD with 500 ms minimum silence and threshold 0.5; these values are part of the fingerprint because changing them can change transcript output. Up to 1800 seconds uses one chunk, up to 7200 uses 900-second chunks, longer uses 600-second chunks. Explicit runtime values override auto; auto CUDA uses float16, auto CPU int8. Persist mode with balanced default.
 
 - [ ] **Step 4: Run `pytest backend/tests/test_transcription_plans.py backend/tests/test_settings.py -q`**; expect pass.
 
