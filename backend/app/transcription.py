@@ -129,8 +129,9 @@ def transcribe_with_faster_whisper(
             ) from exc
 
     duration = float(prepared_audio.duration if prepared_audio else (probe_duration(audio_path) or 0.0))
-    profile = hardware_profile or _default_hardware_profile(config)
-    plan = resolve_execution_plan(config, duration, profile)
+    effective_config = _config_with_runtime_overrides(config)
+    profile = hardware_profile or _default_hardware_profile(effective_config)
+    plan = resolve_execution_plan(effective_config, duration, profile)
     chunks = _local_chunk_specs(
         audio_path,
         work_dir,
@@ -171,7 +172,7 @@ def transcribe_with_faster_whisper(
                 model,
                 chunk,
                 plan,
-                config,
+                effective_config,
                 total_duration=duration,
                 is_cancelled=cancellation,
                 progress_callback=progress_callback,
@@ -262,6 +263,20 @@ def _default_hardware_profile(config: JobConfig) -> HardwareProfile:
         memory_bytes=None,
         cuda_available=cuda_available,
         cuda_memory_bytes=None,
+    )
+
+
+def _config_with_runtime_overrides(config: JobConfig) -> JobConfig:
+    configured_device = str(config.local_whisper_device or "").strip()
+    configured_compute_type = str(config.local_whisper_compute_type or "").strip()
+    if configured_device and configured_compute_type:
+        return config
+    resolved_device, resolved_compute_type = resolve_local_whisper_runtime(config)
+    return config.model_copy(
+        update={
+            "local_whisper_device": configured_device or resolved_device,
+            "local_whisper_compute_type": configured_compute_type or resolved_compute_type,
+        }
     )
 
 
@@ -502,9 +517,14 @@ def faster_whisper_segments_to_payload(
 ) -> TranscriptPayload:
     segments: list[TranscriptSegment] = []
     full_text_parts: list[str] = []
-    for item in segments_raw:
+    iterator = iter(segments_raw)
+    while True:
         if is_cancelled is not None:
             _raise_if_transcription_cancelled(is_cancelled)
+        try:
+            item = next(iterator)
+        except StopIteration:
+            break
         start = max(0.0, float(getattr(item, "start", 0) or 0))
         end = max(start, float(getattr(item, "end", start) or start))
         if on_segment is not None:
