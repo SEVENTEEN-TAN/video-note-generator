@@ -7,9 +7,11 @@ import math
 import os
 import queue
 import re
+import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from pathlib import Path
 from collections.abc import Callable
 
@@ -17,7 +19,7 @@ from openai import OpenAI
 
 from . import local_whisper_worker
 from .ffmpeg_tools import PreparedAudio, probe_duration, split_audio
-from .models import JobConfig, TranscriptPayload, TranscriptSegment, TranscriptionMode
+from .models import JobConfig, TranscriptPayload, TranscriptSegment, TranscriptionMode, TranscriptionWorkProgress
 from .runtime_config import get_configured_external_python, get_configured_model_root
 from .runtime_paths import get_bundle_root
 from .time_utils import seconds_to_hhmmss
@@ -31,8 +33,13 @@ LOCAL_WHISPER_CHUNK_THRESHOLD_SECONDS = 1800  # chunk long audio above 30 minute
 REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json")
 FASTER_WHISPER_VOCABULARY_FILES = ("vocabulary.txt", "vocabulary.json")
 TRANSCRIPTION_WRAPPER_KEYS = ("data", "result", "output", "transcript")
+EXTERNAL_WORKER_SHUTDOWN_GRACE_SECONDS = 2.0
+EXTERNAL_WORKER_MIN_PIPE_DRAIN_SECONDS = 0.05
 ProgressCallback = Callable[[str, int], None]
+WorkProgressCallback = Callable[[TranscriptionWorkProgress], None]
 CancellationCallback = Callable[[], bool]
+_EXTERNAL_WORKERS_LOCK = threading.Lock()
+_UNREAPED_EXTERNAL_WORKERS: dict[str, subprocess.Popen] = {}
 
 
 def load_internal_whisper_model() -> tuple[object | None, str]:
@@ -78,6 +85,7 @@ def transcribe_audio(
     prepared_audio: PreparedAudio | None = None,
     is_cancelled: CancellationCallback | None = None,
     hardware_profile: HardwareProfile | None = None,
+    work_progress_callback: WorkProgressCallback | None = None,
 ) -> dict:
     if config.transcription_mode == TranscriptionMode.chat_audio:
         payload = transcribe_with_chat_audio(audio_path, config, work_dir, progress_callback=progress_callback)
@@ -90,6 +98,7 @@ def transcribe_audio(
             prepared_audio=prepared_audio,
             is_cancelled=is_cancelled,
             hardware_profile=hardware_profile,
+            work_progress_callback=work_progress_callback,
         )
     else:
         payload = transcribe_with_audio_endpoint(audio_path, config, work_dir, progress_callback=progress_callback)
@@ -105,6 +114,7 @@ def transcribe_with_faster_whisper(
     prepared_audio: PreparedAudio | None = None,
     is_cancelled: CancellationCallback | None = None,
     hardware_profile: HardwareProfile | None = None,
+    work_progress_callback: WorkProgressCallback | None = None,
 ) -> TranscriptPayload:
     cancellation = is_cancelled or (lambda: False)
     _raise_if_transcription_cancelled(cancellation)
@@ -125,6 +135,7 @@ def transcribe_with_faster_whisper(
                     progress_callback=progress_callback,
                     is_cancelled=cancellation,
                     hardware_profile=hardware_profile,
+                    work_progress_callback=work_progress_callback,
                 )
             return transcribe_with_external_faster_whisper(
                 audio_path,
@@ -145,8 +156,7 @@ def transcribe_with_faster_whisper(
 
     duration = float(prepared_audio.duration if prepared_audio else (probe_duration(audio_path) or 0.0))
     effective_config = _config_with_runtime_overrides(config)
-    profile = hardware_profile or _default_hardware_profile(effective_config)
-    plan = resolve_execution_plan(effective_config, duration, profile)
+    plan = resolve_local_transcription_plan(effective_config, duration, hardware_profile)
     chunks = _local_chunk_specs(
         audio_path,
         work_dir,
@@ -158,10 +168,35 @@ def transcribe_with_faster_whisper(
     session = open_checkpoint_session(work_dir / "work" / "asr", audio_path, plan, chunks)
     completed = session.completed_indices()
     pending = [chunk for chunk in session.chunks if chunk.index not in completed]
+    cache_hits = len(completed)
+    completed_seconds = max((chunk.end for chunk in session.chunks if chunk.index in completed), default=0.0)
     if not pending:
+        _emit_work_progress(
+            work_progress_callback,
+            completed_seconds=duration,
+            total_seconds=duration,
+            completed_chunks=len(chunks),
+            total_chunks=len(chunks),
+            current_chunk=None,
+            cache_hits=cache_hits,
+            plan=plan,
+        )
         return session.merge_results()
 
     _raise_if_transcription_cancelled(cancellation)
+    session_started = time.monotonic()
+    baseline_seconds = completed_seconds
+    completed_count = cache_hits
+    _emit_work_progress(
+        work_progress_callback,
+        completed_seconds=completed_seconds,
+        total_seconds=duration,
+        completed_chunks=completed_count,
+        total_chunks=len(chunks),
+        current_chunk=pending[0].index,
+        cache_hits=cache_hits,
+        plan=plan,
+    )
     if progress_callback:
         progress_callback(f"字幕生成中：加载 Faster Whisper 模型 {model_name}", 36)
     configure_internal_cuda_dll_paths(plan.device)
@@ -191,9 +226,37 @@ def transcribe_with_faster_whisper(
                 total_duration=duration,
                 is_cancelled=cancellation,
                 progress_callback=progress_callback,
+                on_segment_end=(
+                    lambda end, current_chunk=chunk, current_completed=completed_count: _emit_timed_work_progress(
+                        work_progress_callback,
+                        completed_seconds=min(duration, current_chunk.start + end),
+                        total_seconds=duration,
+                        completed_chunks=current_completed,
+                        total_chunks=len(chunks),
+                        current_chunk=current_chunk.index,
+                        cache_hits=cache_hits,
+                        plan=plan,
+                        started_at=session_started,
+                        baseline_seconds=baseline_seconds,
+                    )
+                ),
             )
             _raise_if_transcription_cancelled(cancellation)
             session.write_result(chunk.index, payload)
+            completed_count += 1
+            next_chunk = pending[ordinal].index if ordinal < len(pending) else None
+            _emit_timed_work_progress(
+                work_progress_callback,
+                completed_seconds=min(duration, chunk.end),
+                total_seconds=duration,
+                completed_chunks=completed_count,
+                total_chunks=len(chunks),
+                current_chunk=next_chunk,
+                cache_hits=cache_hits,
+                plan=plan,
+                started_at=session_started,
+                baseline_seconds=baseline_seconds,
+            )
         return session.merge_results()
     except TranscriptionCancelled:
         raise
@@ -210,6 +273,7 @@ def _transcribe_chunk_with_model(
     total_duration: float,
     is_cancelled: CancellationCallback,
     progress_callback: ProgressCallback | None,
+    on_segment_end: Callable[[float], None] | None = None,
 ) -> TranscriptPayload:
     language = resolve_transcription_language(config)
     segments_raw, _info = model.transcribe(
@@ -223,18 +287,20 @@ def _transcribe_chunk_with_model(
         beam_size=plan.beam_size,
         best_of=plan.best_of,
     )
-    return faster_whisper_segments_to_payload(
-        segments_raw,
-        is_cancelled=is_cancelled,
-        on_segment=(
-            lambda end: progress_callback(
+    def report_segment(end: float) -> None:
+        if progress_callback and total_duration > 0:
+            progress_callback(
                 f"字幕生成中：已处理 {seconds_to_hhmmss(min(total_duration, chunk.start + end))} / "
                 f"{seconds_to_hhmmss(total_duration)}",
                 _transcription_percent(chunk.start + end, total_duration),
             )
-            if progress_callback and total_duration > 0
-            else None
-        ),
+        if on_segment_end:
+            on_segment_end(end)
+
+    return faster_whisper_segments_to_payload(
+        segments_raw,
+        is_cancelled=is_cancelled,
+        on_segment=report_segment if progress_callback or on_segment_end else None,
     )
 
 
@@ -281,6 +347,16 @@ def _default_hardware_profile(config: JobConfig) -> HardwareProfile:
     )
 
 
+def resolve_local_transcription_plan(
+    config: JobConfig,
+    duration_seconds: float,
+    hardware_profile: HardwareProfile | None = None,
+) -> TranscriptionExecutionPlan:
+    effective_config = _config_with_runtime_overrides(config)
+    profile = hardware_profile or _default_hardware_profile(effective_config)
+    return resolve_execution_plan(effective_config, duration_seconds, profile)
+
+
 def _config_with_runtime_overrides(config: JobConfig) -> JobConfig:
     configured_device = str(config.local_whisper_device or "").strip()
     configured_compute_type = str(config.local_whisper_compute_type or "").strip()
@@ -305,6 +381,73 @@ def _transcription_percent(completed_seconds: float, total_seconds: float) -> in
         return 38
     fraction = max(0.0, min(1.0, completed_seconds / total_seconds))
     return max(38, min(60, 35 + int(fraction * 25)))
+
+
+def _emit_work_progress(
+    callback: WorkProgressCallback | None,
+    *,
+    completed_seconds: float,
+    total_seconds: float,
+    completed_chunks: int,
+    total_chunks: int,
+    current_chunk: int | None,
+    cache_hits: int,
+    plan: TranscriptionExecutionPlan,
+    realtime_factor: float | None = None,
+    eta_seconds: float | None = None,
+) -> None:
+    if callback is None:
+        return
+    callback(
+        TranscriptionWorkProgress(
+            completed_seconds=max(0.0, min(total_seconds, completed_seconds)) if total_seconds > 0 else 0.0,
+            total_seconds=max(0.0, total_seconds),
+            completed_chunks=max(0, min(total_chunks, completed_chunks)),
+            total_chunks=max(0, total_chunks),
+            current_chunk=current_chunk,
+            realtime_factor=realtime_factor,
+            eta_seconds=eta_seconds,
+            resumable=plan.checkpoint_enabled,
+            cache_hits=max(0, cache_hits),
+            device=plan.device,
+            compute_type=plan.compute_type,
+        )
+    )
+
+
+def _emit_timed_work_progress(
+    callback: WorkProgressCallback | None,
+    *,
+    completed_seconds: float,
+    total_seconds: float,
+    completed_chunks: int,
+    total_chunks: int,
+    current_chunk: int | None,
+    cache_hits: int,
+    plan: TranscriptionExecutionPlan,
+    started_at: float,
+    baseline_seconds: float,
+) -> None:
+    processed_seconds = max(0.0, completed_seconds - baseline_seconds)
+    elapsed_seconds = max(0.0, time.monotonic() - started_at)
+    realtime_factor = elapsed_seconds / processed_seconds if processed_seconds > 0 else None
+    eta_seconds = (
+        max(0.0, total_seconds - completed_seconds) * realtime_factor
+        if realtime_factor is not None
+        else None
+    )
+    _emit_work_progress(
+        callback,
+        completed_seconds=completed_seconds,
+        total_seconds=total_seconds,
+        completed_chunks=completed_chunks,
+        total_chunks=total_chunks,
+        current_chunk=current_chunk,
+        cache_hits=cache_hits,
+        plan=plan,
+        realtime_factor=realtime_factor,
+        eta_seconds=eta_seconds,
+    )
 
 
 
@@ -362,16 +505,28 @@ def _transcribe_prepared_with_external_faster_whisper(
     progress_callback: ProgressCallback | None,
     is_cancelled: CancellationCallback,
     hardware_profile: HardwareProfile | None,
+    work_progress_callback: WorkProgressCallback | None,
 ) -> TranscriptPayload:
     duration = float(prepared_audio.duration)
     effective_config = _config_with_runtime_overrides(config)
-    profile = hardware_profile or _default_hardware_profile(effective_config)
-    plan = resolve_execution_plan(effective_config, duration, profile)
+    plan = resolve_local_transcription_plan(effective_config, duration, hardware_profile)
     chunks = list(prepared_audio.chunks)
     session = open_checkpoint_session(work_dir / "work" / "asr", audio_path, plan, chunks)
     completed = session.completed_indices()
     pending = [chunk for chunk in session.chunks if chunk.index not in completed]
+    cache_hits = len(completed)
+    completed_seconds = max((chunk.end for chunk in session.chunks if chunk.index in completed), default=0.0)
     if not pending:
+        _emit_work_progress(
+            work_progress_callback,
+            completed_seconds=duration,
+            total_seconds=duration,
+            completed_chunks=len(chunks),
+            total_chunks=len(chunks),
+            current_chunk=None,
+            cache_hits=cache_hits,
+            plan=plan,
+        )
         return session.merge_results()
 
     _raise_if_transcription_cancelled(is_cancelled)
@@ -381,6 +536,17 @@ def _transcribe_prepared_with_external_faster_whisper(
     worker_path = get_local_whisper_worker_path()
     if not worker_path.exists():
         raise TranscriptionError(f"External Faster Whisper worker script was not found: {worker_path}")
+
+    worker_key = _external_worker_key(session.checkpoint_dir)
+    if _has_active_external_worker_key(worker_key):
+        raise TranscriptionError("A previous external Faster Whisper worker is still shutting down for this job.")
+    run_dir = Path(tempfile.mkdtemp(dir=session.checkpoint_dir, prefix="external_worker_run_"))
+    run_results_dir = run_dir / "results"
+    run_results_dir.mkdir(parents=True, exist_ok=True)
+    result_paths = {
+        chunk.index: run_results_dir / f"chunk_{chunk.index:04d}.json"
+        for chunk in pending
+    }
 
     request = {
         "model": effective_config.transcription_model.strip() or "small",
@@ -399,12 +565,12 @@ def _transcribe_prepared_with_external_faster_whisper(
             {
                 "index": chunk.index,
                 "audio_path": str(chunk.path.resolve()),
-                "result_path": str(session.result_path(chunk.index).resolve()),
+                "result_path": str(result_paths[chunk.index].resolve()),
             }
             for chunk in pending
         ],
     }
-    request_path = _write_external_session_request(session.checkpoint_dir, request)
+    request_path = _write_external_session_request(run_dir, request)
     process: subprocess.Popen | None = None
     try:
         if progress_callback:
@@ -429,17 +595,31 @@ def _transcribe_prepared_with_external_faster_whisper(
             duration=duration,
             progress_callback=progress_callback,
             is_cancelled=is_cancelled,
+            work_progress_callback=work_progress_callback,
+            plan=plan,
+            cache_hits=cache_hits,
+            total_chunks=len(chunks),
+            initial_completed_seconds=completed_seconds,
+            result_paths=result_paths,
+            worker_key=worker_key,
         )
         return session.merge_results()
-    except BaseException:
-        if process is not None and process.poll() is None:
-            _terminate_external_worker(process)
+    except BaseException as exc:
+        if process is not None and process.poll() is None and not _is_registered_external_worker(worker_key, process):
+            if not _terminate_external_worker(process):
+                _register_unreaped_external_worker(worker_key, process)
+                message = f"{exc} External Faster Whisper worker could not be reaped; its outputs remain isolated."
+                if isinstance(exc, TranscriptionCancelled):
+                    raise TranscriptionCancelled(message) from exc
+                raise TranscriptionError(message) from exc
         raise
     finally:
         try:
             request_path.unlink()
         except FileNotFoundError:
             pass
+        if process is None or process.poll() is not None:
+            shutil.rmtree(run_dir, ignore_errors=True)
 
 
 def _write_external_session_request(directory: Path, request: dict) -> Path:
@@ -473,6 +653,13 @@ def _consume_external_session(
     duration: float,
     progress_callback: ProgressCallback | None,
     is_cancelled: CancellationCallback,
+    work_progress_callback: WorkProgressCallback | None,
+    plan: TranscriptionExecutionPlan,
+    cache_hits: int,
+    total_chunks: int,
+    initial_completed_seconds: float,
+    result_paths: dict[int, Path],
+    worker_key: str,
 ) -> None:
     stdout_queue: queue.Queue[str | None] = queue.Queue()
     stderr_parts: list[str] = []
@@ -483,12 +670,17 @@ def _consume_external_session(
             if process.stdout is not None:
                 for line in process.stdout:
                     stdout_queue.put(line)
+        except (OSError, ValueError):
+            pass
         finally:
             stdout_queue.put(None)
 
     def read_stderr() -> None:
-        if process.stderr is not None:
-            stderr_parts.append(process.stderr.read())
+        try:
+            if process.stderr is not None:
+                stderr_parts.append(process.stderr.read())
+        except (OSError, ValueError):
+            pass
 
     stdout_thread = threading.Thread(target=read_stdout, name="external-whisper-stdout", daemon=True)
     stderr_thread = threading.Thread(target=read_stderr, name="external-whisper-stderr", daemon=True)
@@ -497,10 +689,23 @@ def _consume_external_session(
     stdout_done = False
     complete_seen = False
     worker_error = ""
+    session_started = time.monotonic()
+    completed_indexes: set[int] = set()
+    terminal_deadline: float | None = None
+    forced_terminal_shutdown = False
+    _emit_work_progress(
+        work_progress_callback,
+        completed_seconds=initial_completed_seconds,
+        total_seconds=duration,
+        completed_chunks=cache_hits,
+        total_chunks=total_chunks,
+        current_chunk=pending[0].index,
+        cache_hits=cache_hits,
+        plan=plan,
+    )
 
     while True:
         if is_cancelled():
-            _terminate_external_worker(process)
             raise TranscriptionCancelled("Local transcription was cancelled.")
         try:
             line = stdout_queue.get(timeout=0.1)
@@ -522,33 +727,83 @@ def _consume_external_session(
                         f"字幕生成中：已处理 {seconds_to_hhmmss(completed_seconds)} / {seconds_to_hhmmss(duration)}",
                         _transcription_percent(completed_seconds, duration),
                     )
+                _emit_timed_work_progress(
+                    work_progress_callback,
+                    completed_seconds=min(duration, chunks_by_index[chunk_index].start + segment_end),
+                    total_seconds=duration,
+                    completed_chunks=cache_hits + len(completed_indexes),
+                    total_chunks=total_chunks,
+                    current_chunk=chunk_index,
+                    cache_hits=cache_hits,
+                    plan=plan,
+                    started_at=session_started,
+                    baseline_seconds=initial_completed_seconds,
+                )
             elif event_type == "chunk_complete":
                 chunk_index = _external_event_chunk_index(event, chunks_by_index)
-                if session.load_result(chunk_index) is None:
-                    raise TranscriptionError(
-                        f"External Faster Whisper worker produced an invalid result for chunk {chunk_index}."
-                    )
+                payload = _load_external_session_result(result_paths[chunk_index], chunk_index)
+                session.write_result(chunk_index, payload)
+                completed_indexes.add(chunk_index)
+                remaining = [chunk.index for chunk in pending if chunk.index not in completed_indexes]
+                _emit_timed_work_progress(
+                    work_progress_callback,
+                    completed_seconds=min(duration, chunks_by_index[chunk_index].end),
+                    total_seconds=duration,
+                    completed_chunks=cache_hits + len(completed_indexes),
+                    total_chunks=total_chunks,
+                    current_chunk=remaining[0] if remaining else None,
+                    cache_hits=cache_hits,
+                    plan=plan,
+                    started_at=session_started,
+                    baseline_seconds=initial_completed_seconds,
+                )
             elif event_type == "complete":
                 complete_seen = True
+                terminal_deadline = terminal_deadline or _external_worker_shutdown_deadline()
             elif event_type == "error":
                 worker_error = str(event.get("message") or "External Faster Whisper worker failed.")
+                terminal_deadline = terminal_deadline or _external_worker_shutdown_deadline()
 
         return_code = process.poll()
         if return_code is not None and stdout_done and stdout_queue.empty():
             break
+        if return_code is not None and terminal_deadline is None:
+            terminal_deadline = _external_worker_shutdown_deadline()
+        if stdout_done and return_code is None and terminal_deadline is None:
+            terminal_deadline = _external_worker_shutdown_deadline()
+        if terminal_deadline is not None and time.monotonic() >= terminal_deadline:
+            if return_code is None:
+                forced_terminal_shutdown = True
+                if not _terminate_external_worker(process):
+                    _register_unreaped_external_worker(worker_key, process)
+                    raise TranscriptionError(
+                        "External Faster Whisper worker did not exit after its terminal event and could not be reaped."
+                    )
+            break
 
-    stdout_thread.join(timeout=1.0)
-    stderr_thread.join(timeout=1.0)
-    return_code = process.wait(timeout=1.0)
+    stdout_thread.join(timeout=0.2)
+    stderr_thread.join(timeout=0.2)
+    if stdout_thread.is_alive() or stderr_thread.is_alive():
+        _force_close_external_worker_pipe_fds(process)
+        stdout_thread.join(timeout=1.0)
+        stderr_thread.join(timeout=1.0)
+    _close_external_worker_pipes(process)
+    return_code = process.poll()
+    if return_code is None:
+        return_code = process.wait(timeout=1.0)
     stderr_text = "".join(stderr_parts).strip()
-    if return_code != 0 or worker_error:
+    if worker_error:
         message = worker_error or stderr_text or "External Faster Whisper worker failed."
+        raise TranscriptionError(message[-2000:])
+    if return_code != 0 and not (forced_terminal_shutdown and complete_seen):
+        message = stderr_text or "External Faster Whisper worker failed."
         raise TranscriptionError(message[-2000:])
     if not complete_seen:
         raise TranscriptionError("External Faster Whisper worker ended without a complete event.")
-    invalid = [chunk.index for chunk in pending if session.load_result(chunk.index) is None]
-    if invalid:
-        raise TranscriptionError(f"External Faster Whisper worker left invalid chunk results: {invalid}")
+    for chunk in pending:
+        if session.load_result(chunk.index) is None:
+            payload = _load_external_session_result(result_paths[chunk.index], chunk.index)
+            session.write_result(chunk.index, payload)
 
 
 def _parse_external_session_event(line: str) -> dict:
@@ -578,9 +833,26 @@ def _external_event_finite_number(event: dict, field_name: str) -> float:
     return number
 
 
-def _terminate_external_worker(process: subprocess.Popen) -> None:
+def _load_external_session_result(result_path: Path, chunk_index: int) -> TranscriptPayload:
+    try:
+        return TranscriptPayload.model_validate_json(result_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, UnicodeDecodeError, ValueError) as exc:
+        raise TranscriptionError(
+            f"External Faster Whisper worker produced an invalid result for chunk {chunk_index}."
+        ) from exc
+
+
+def _external_worker_shutdown_deadline() -> float:
+    return time.monotonic() + max(
+        EXTERNAL_WORKER_MIN_PIPE_DRAIN_SECONDS,
+        EXTERNAL_WORKER_SHUTDOWN_GRACE_SECONDS,
+    )
+
+
+def _terminate_external_worker(process: subprocess.Popen) -> bool:
     if process.poll() is not None:
-        return
+        _close_external_worker_pipes(process)
+        return True
     process.terminate()
     try:
         process.wait(timeout=2.0)
@@ -589,7 +861,78 @@ def _terminate_external_worker(process: subprocess.Popen) -> None:
         try:
             process.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
+            return False
+    _close_external_worker_pipes(process)
+    return process.poll() is not None
+
+
+def _close_external_worker_pipes(process: subprocess.Popen) -> None:
+    for stream in (process.stdout, process.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except (OSError, ValueError):
             pass
+
+
+def _force_close_external_worker_pipe_fds(process: subprocess.Popen) -> None:
+    for stream in (process.stdout, process.stderr):
+        if stream is None:
+            continue
+        try:
+            os.close(stream.fileno())
+            continue
+        except (AttributeError, OSError, ValueError):
+            pass
+        try:
+            stream.close()
+        except (OSError, ValueError):
+            pass
+
+
+def _external_worker_key(checkpoint_dir: Path) -> str:
+    return str(checkpoint_dir.resolve()).casefold()
+
+
+def _is_registered_external_worker(worker_key: str, process: subprocess.Popen) -> bool:
+    with _EXTERNAL_WORKERS_LOCK:
+        return _UNREAPED_EXTERNAL_WORKERS.get(worker_key) is process
+
+
+def _has_active_external_worker_key(worker_key: str) -> bool:
+    with _EXTERNAL_WORKERS_LOCK:
+        process = _UNREAPED_EXTERNAL_WORKERS.get(worker_key)
+        if process is None:
+            return False
+        if process.poll() is None:
+            return True
+        _UNREAPED_EXTERNAL_WORKERS.pop(worker_key, None)
+    _close_external_worker_pipes(process)
+    return False
+
+
+def has_active_external_worker(job_dir: Path) -> bool:
+    return _has_active_external_worker_key(
+        _external_worker_key(job_dir / "work" / "asr" / "transcription_checkpoints")
+    )
+
+
+def _register_unreaped_external_worker(worker_key: str, process: subprocess.Popen) -> None:
+    with _EXTERNAL_WORKERS_LOCK:
+        _UNREAPED_EXTERNAL_WORKERS[worker_key] = process
+
+    def reap() -> None:
+        try:
+            process.wait()
+        except Exception:
+            return
+        _close_external_worker_pipes(process)
+        with _EXTERNAL_WORKERS_LOCK:
+            if _UNREAPED_EXTERNAL_WORKERS.get(worker_key) is process:
+                _UNREAPED_EXTERNAL_WORKERS.pop(worker_key, None)
+
+    threading.Thread(target=reap, name="external-whisper-reaper", daemon=True).start()
 
 
 def _transcribe_single_external_chunk(

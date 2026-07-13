@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import shutil
 import subprocess
@@ -188,6 +189,46 @@ def prepare_audio_artifacts(
 
     resolved_duration = duration if duration_known else max((chunk.end for chunk in chunks), default=0.0)
     return PreparedAudio(mp3_path=mp3_path, chunks=chunks, duration=resolved_duration)
+
+
+def load_prepared_audio_artifacts(
+    mp3_path: Path,
+    asr_dir: Path,
+    chunk_seconds: int,
+    *,
+    duration_seconds: float,
+) -> PreparedAudio:
+    """Validate and reuse local-ASR artifacts without changing checkpoint signatures."""
+
+    if not mp3_path.exists() or mp3_path.stat().st_size == 0:
+        raise FFmpegError("Reusable MP3 audio is missing or empty.")
+    chunk_paths = sorted((asr_dir / "chunks").glob("chunk_*.flac"), key=_flac_chunk_index)
+    if not chunk_paths:
+        raise FFmpegError("Reusable local ASR chunks are missing.")
+    indexes = [_flac_chunk_index(path) for path in chunk_paths]
+    if indexes != list(range(len(indexes))):
+        raise FFmpegError("Reusable local ASR chunks are incomplete or non-contiguous.")
+    if chunk_seconds <= 0 and len(chunk_paths) != 1:
+        raise FFmpegError("Reusable unchunked local ASR audio must contain exactly one FLAC file.")
+    empty_chunks = [path.name for path in chunk_paths if path.stat().st_size == 0]
+    if empty_chunks:
+        raise FFmpegError(f"Reusable local ASR audio contains an empty FLAC chunk: {', '.join(empty_chunks)}")
+
+    duration = max(0.0, float(duration_seconds))
+    expected_chunk_count = 1 if chunk_seconds <= 0 else max(1, math.ceil(duration / chunk_seconds))
+    if len(chunk_paths) != expected_chunk_count:
+        raise FFmpegError(
+            f"Reusable local ASR chunk count does not match the current plan: "
+            f"expected {expected_chunk_count}, found {len(chunk_paths)}."
+        )
+    chunks = []
+    for index, chunk_path in enumerate(chunk_paths):
+        start = float(index * chunk_seconds) if chunk_seconds > 0 else 0.0
+        end = min(duration, start + chunk_seconds) if chunk_seconds > 0 else duration
+        chunks.append(ChunkSpec(index=index, start=start, end=max(start, end), path=chunk_path))
+    if duration > 0 and chunks[-1].start >= duration:
+        raise FFmpegError("Reusable local ASR chunks do not match the current duration or chunk plan.")
+    return PreparedAudio(mp3_path=mp3_path, chunks=chunks, duration=duration)
 
 
 def _flac_chunk_index(path: Path) -> int:

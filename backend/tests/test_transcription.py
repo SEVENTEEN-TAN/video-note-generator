@@ -4,6 +4,7 @@ from pathlib import Path
 
 import io
 import json
+from threading import Event
 
 import pytest
 from pydantic import ValidationError
@@ -1020,6 +1021,7 @@ def test_prepared_external_whisper_cancellation_terminates_then_kills_worker(tmp
     monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: worker_path)
     process_holder: dict[str, object] = {}
     request_paths: list[Path] = []
+    lifecycle: list[str] = []
 
     class HangingSessionProcess:
         def __init__(self, command, **kwargs) -> None:
@@ -1034,12 +1036,15 @@ def test_prepared_external_whisper_cancellation_terminates_then_kills_worker(tmp
             return -9 if self.killed else None
 
         def terminate(self):
+            lifecycle.append("terminate")
             self.terminated = True
 
         def kill(self):
+            lifecycle.append("kill")
             self.killed = True
 
         def wait(self, timeout=None):
+            lifecycle.append("wait")
             if self.killed:
                 return -9
             raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
@@ -1074,7 +1079,280 @@ def test_prepared_external_whisper_cancellation_terminates_then_kills_worker(tmp
     process = process_holder["process"]
     assert process.terminated is True
     assert process.killed is True
+    assert lifecycle == ["terminate", "wait", "kill", "wait"]
     assert request_paths and not request_paths[0].exists()
+
+
+def test_prepared_external_whisper_bounds_shutdown_after_complete_event(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"public audio")
+    model_root = tmp_path / "models"
+    write_model_files(model_root / "small")
+    chunk_path = tmp_path / "work" / "asr" / "chunks" / "chunk_000.flac"
+    chunk_path.parent.mkdir(parents=True)
+    chunk_path.write_bytes(b"chunk")
+    worker_path = tmp_path / "worker.py"
+    worker_path.write_text("# worker", encoding="utf-8")
+    monkeypatch.setattr(transcription, "WhisperModel", None)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(model_root))
+    monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: worker_path)
+    monkeypatch.setattr(transcription, "EXTERNAL_WORKER_SHUTDOWN_GRACE_SECONDS", 0.0)
+    processes = []
+
+    class CompleteButHangingProcess:
+        def __init__(self, command, **kwargs) -> None:
+            request = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
+            result_path = Path(request["chunks"][0]["result_path"])
+            result_path.write_text(
+                json.dumps({"text": "done", "segments": [{"start": 0, "end": 5, "text": "done"}]}),
+                encoding="utf-8",
+            )
+            self.stdout = io.StringIO(
+                json.dumps({"type": "chunk_complete", "chunk_index": 0}) + "\n"
+                + json.dumps({"type": "complete"}) + "\n"
+            )
+            self.stderr = io.StringIO("")
+            self.terminated = False
+            self.exited = False
+            processes.append(self)
+
+        def poll(self):
+            return 0 if self.exited else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.exited = True
+
+        def wait(self, timeout=None):
+            self.exited = True
+            return 0
+
+    monkeypatch.setattr(transcription.subprocess, "Popen", CompleteButHangingProcess)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+    prepared = PreparedAudio(
+        mp3_path=audio_path,
+        chunks=[ChunkSpec(index=0, start=0, end=600, path=chunk_path)],
+        duration=600,
+    )
+
+    result = transcription.transcribe_with_faster_whisper(
+        audio_path,
+        config,
+        tmp_path,
+        prepared_audio=prepared,
+        hardware_profile=HardwareProfile(8, 16 * 1024**3, False, None),
+    )
+
+    assert result.text == "done"
+    assert processes[0].terminated is True
+
+
+def test_external_session_does_not_wait_for_pipe_eof_after_process_exit(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"public audio")
+    model_root = tmp_path / "models"
+    write_model_files(model_root / "small")
+    chunk_path = tmp_path / "work" / "asr" / "chunks" / "chunk_000.flac"
+    chunk_path.parent.mkdir(parents=True)
+    chunk_path.write_bytes(b"chunk")
+    worker_path = tmp_path / "worker.py"
+    worker_path.write_text("# worker", encoding="utf-8")
+    monkeypatch.setattr(transcription, "WhisperModel", None)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(model_root))
+    monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: worker_path)
+    monkeypatch.setattr(transcription, "EXTERNAL_WORKER_SHUTDOWN_GRACE_SECONDS", 0.0)
+
+    class BlockingAfterLines:
+        def __init__(self, lines) -> None:
+            self.lines = iter(lines)
+            self.closed = Event()
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            try:
+                return next(self.lines)
+            except StopIteration:
+                self.closed.wait(timeout=5)
+                raise
+
+        def close(self):
+            self.closed.set()
+
+    class ExitedWithInheritedPipeProcess:
+        def __init__(self, command, **kwargs) -> None:
+            request = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
+            result_path = Path(request["chunks"][0]["result_path"])
+            result_path.write_text(
+                json.dumps({"text": "done", "segments": [{"start": 0, "end": 5, "text": "done"}]}),
+                encoding="utf-8",
+            )
+            self.stdout = BlockingAfterLines(
+                [
+                    json.dumps({"type": "chunk_complete", "chunk_index": 0}) + "\n",
+                    json.dumps({"type": "complete"}) + "\n",
+                ]
+            )
+            self.stderr = io.StringIO("")
+
+        def poll(self):
+            return 0
+
+        def wait(self, timeout=None):
+            return 0
+
+    monkeypatch.setattr(transcription.subprocess, "Popen", ExitedWithInheritedPipeProcess)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+    prepared = PreparedAudio(
+        mp3_path=audio_path,
+        chunks=[ChunkSpec(index=0, start=0, end=600, path=chunk_path)],
+        duration=600,
+    )
+
+    result = transcription.transcribe_with_faster_whisper(
+        audio_path,
+        config,
+        tmp_path,
+        prepared_audio=prepared,
+        hardware_profile=HardwareProfile(8, 16 * 1024**3, False, None),
+    )
+
+    assert result.text == "done"
+
+
+def test_unreaped_external_worker_isolated_and_blocks_another_session(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"public audio")
+    model_root = tmp_path / "models"
+    write_model_files(model_root / "small")
+    chunk_dir = tmp_path / "work" / "asr" / "chunks"
+    chunk_dir.mkdir(parents=True)
+    first_chunk = chunk_dir / "chunk_000.flac"
+    second_chunk = chunk_dir / "chunk_001.flac"
+    first_chunk.write_bytes(b"first")
+    second_chunk.write_bytes(b"second")
+    worker_path = tmp_path / "worker.py"
+    worker_path.write_text("# worker", encoding="utf-8")
+    monkeypatch.setattr(transcription, "WhisperModel", None)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(model_root))
+    monkeypatch.setattr(transcription, "find_external_python", lambda: "python")
+    monkeypatch.setattr(transcription, "get_local_whisper_worker_path", lambda: worker_path)
+    process_holder = {}
+    isolated_result_paths: list[Path] = []
+
+    class UnreapableProcess:
+        def __init__(self, command, **kwargs) -> None:
+            request = json.loads(Path(command[-1]).read_text(encoding="utf-8"))
+            assert [chunk["index"] for chunk in request["chunks"]] == [1]
+            result_path = Path(request["chunks"][0]["result_path"])
+            isolated_result_paths.append(result_path)
+            assert "external_worker_run_" in result_path.as_posix()
+            assert "transcription_checkpoints/results" not in result_path.as_posix()
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
+            self.allow_reap = False
+            self.terminated = False
+            self.killed = False
+            process_holder["process"] = self
+
+        def poll(self):
+            return -9 if self.allow_reap else None
+
+        def terminate(self):
+            self.terminated = True
+
+        def kill(self):
+            self.killed = True
+
+        def wait(self, timeout=None):
+            if self.allow_reap:
+                return -9
+            if timeout is None:
+                raise RuntimeError("still alive")
+            raise subprocess.TimeoutExpired(cmd="worker", timeout=timeout)
+
+    monkeypatch.setattr(transcription.subprocess, "Popen", UnreapableProcess)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+    prepared = PreparedAudio(
+        mp3_path=audio_path,
+        chunks=[
+            ChunkSpec(index=0, start=0, end=600, path=first_chunk),
+            ChunkSpec(index=1, start=600, end=1200, path=second_chunk),
+        ],
+        duration=1200,
+    )
+    hardware = HardwareProfile(8, 16 * 1024**3, False, None)
+    plan = transcription.resolve_execution_plan(config, prepared.duration, hardware)
+    checkpoint = transcription.open_checkpoint_session(tmp_path / "work" / "asr", audio_path, plan, prepared.chunks)
+    checkpoint.write_result(
+        0,
+        TranscriptPayload(text="cached", segments=[TranscriptSegment(start=0, end=5, text="cached")]),
+    )
+    cached_before = checkpoint.result_path(0).read_bytes()
+
+    with pytest.raises(transcription.TranscriptionCancelled, match="could not be reaped"):
+        transcription.transcribe_with_faster_whisper(
+            audio_path,
+            config,
+            tmp_path,
+            prepared_audio=prepared,
+            hardware_profile=hardware,
+            is_cancelled=lambda: "process" in process_holder,
+        )
+
+    assert transcription.has_active_external_worker(tmp_path) is True
+    canonical_results = tmp_path / "work" / "asr" / "transcription_checkpoints" / "results"
+    assert checkpoint.result_path(0).read_bytes() == cached_before
+    assert not checkpoint.result_path(1).exists()
+    isolated_result_paths[0].write_text(
+        json.dumps({"text": "late", "segments": [{"start": 0, "end": 5, "text": "late"}]}),
+        encoding="utf-8",
+    )
+    assert checkpoint.result_path(0).read_bytes() == cached_before
+    assert not checkpoint.result_path(1).exists()
+    with pytest.raises(transcription.TranscriptionError, match="still shutting down"):
+        transcription.transcribe_with_faster_whisper(
+            audio_path,
+            config,
+            tmp_path,
+            prepared_audio=prepared,
+            hardware_profile=hardware,
+        )
+
+    process_holder["process"].allow_reap = True
+    assert transcription.has_active_external_worker(tmp_path) is False
 
 
 def test_audio_transcriptions_reports_chunk_progress(monkeypatch, tmp_path) -> None:

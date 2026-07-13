@@ -58,8 +58,8 @@ def test_clear_user_settings_removes_file_and_returns_defaults(tmp_path, monkeyp
     assert cleared.note_model == "gpt-5.5"
     assert cleared.transcription_mode == TranscriptionMode.local_faster_whisper
     assert cleared.transcription_model == "small"
-    assert cleared.local_whisper_device == "cpu"
-    assert cleared.local_whisper_compute_type == "int8"
+    assert cleared.local_whisper_device == "auto"
+    assert cleared.local_whisper_compute_type == "default"
     assert cleared.performance_mode == PerformanceMode.balanced
 
 

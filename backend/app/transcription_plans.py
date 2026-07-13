@@ -30,6 +30,8 @@ class TranscriptionExecutionPlan:
     chunk_seconds: int
     chunk_overlap_seconds: float
     checkpoint_enabled: bool
+    transcription_model: str = ""
+    transcription_language: str = "auto"
 
 
 _DECODE_PRESETS: dict[str, tuple[int, int]] = {
@@ -68,6 +70,8 @@ def resolve_execution_plan(
         chunk_seconds=chunk_seconds,
         chunk_overlap_seconds=0.0 if chunk_seconds == 0 else 1.0,
         checkpoint_enabled=True,
+        transcription_model=config.transcription_model.strip() or "small",
+        transcription_language=str(config.transcription_language or "auto"),
     )
 
 

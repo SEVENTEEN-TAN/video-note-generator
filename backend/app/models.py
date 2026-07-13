@@ -461,11 +461,26 @@ class FailureContext(BaseModel):
     summary: str | None = Field(default=None, exclude_if=lambda value: value is None)
 
 
+class TranscriptionWorkProgress(BaseModel):
+    completed_seconds: float = Field(default=0, ge=0)
+    total_seconds: float = Field(default=0, ge=0)
+    completed_chunks: int = Field(default=0, ge=0)
+    total_chunks: int = Field(default=0, ge=0)
+    current_chunk: int | None = Field(default=None, ge=0)
+    realtime_factor: float | None = Field(default=None, ge=0)
+    eta_seconds: float | None = Field(default=None, ge=0)
+    resumable: bool = False
+    cache_hits: int = Field(default=0, ge=0)
+    device: str = ""
+    compute_type: str = ""
+
+
 class JobPublicState(BaseModel):
     job_id: str
     status: JobStatus
     step: str
     progress: int
+    work_progress: TranscriptionWorkProgress | None = Field(default=None, exclude_if=lambda value: value is None)
     error: str | None = None
     failure_context: FailureContext | None = Field(default=None, exclude_if=lambda value: value is None)
     artifacts: list[Artifact] = Field(default_factory=list)

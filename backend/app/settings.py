@@ -21,8 +21,8 @@ class UserSettings(BaseModel):
     transcription_api_key: str = ""
     transcription_base_url: str = OPENAI_BASE_URL
     transcription_model: str = "small"
-    local_whisper_device: str = "cpu"
-    local_whisper_compute_type: str = "int8"
+    local_whisper_device: str = "auto"
+    local_whisper_compute_type: str = "default"
     performance_mode: PerformanceMode = PerformanceMode.balanced
     external_python_path: str = ""
     faster_whisper_model_dir: str = ""

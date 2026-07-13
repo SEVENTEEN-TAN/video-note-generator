@@ -12,6 +12,7 @@ from backend.app.ffmpeg_tools import (
     extract_frame,
     get_ffmpeg_path,
     prepare_audio_artifacts,
+    load_prepared_audio_artifacts,
     probe_duration,
     run_ffmpeg,
 )
@@ -259,3 +260,19 @@ def test_prepare_audio_treats_explicit_zero_duration_as_known(tmp_path, monkeypa
 
     assert prepared.duration == 0.0
     assert prepared.chunks[0].end == 0.0
+
+
+def test_load_prepared_audio_rejects_incomplete_chunk_set(tmp_path) -> None:
+    mp3_path = tmp_path / "audio.mp3"
+    mp3_path.write_bytes(b"mp3")
+    chunks_dir = tmp_path / "work" / "asr" / "chunks"
+    chunks_dir.mkdir(parents=True)
+    (chunks_dir / "chunk_000.flac").write_bytes(b"only first chunk")
+
+    with pytest.raises(FFmpegError, match="expected 4, found 1"):
+        load_prepared_audio_artifacts(
+            mp3_path,
+            tmp_path / "work" / "asr",
+            900,
+            duration_seconds=3600,
+        )

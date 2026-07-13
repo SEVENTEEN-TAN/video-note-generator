@@ -9,13 +9,16 @@ def make_local_config(
     performance_mode: PerformanceMode | str = PerformanceMode.balanced,
     device: str = "auto",
     compute_type: str = "default",
+    model: str = "small",
+    language: str = "auto",
 ) -> JobConfig:
     return JobConfig(
         transcription_mode=TranscriptionMode.local_faster_whisper,
-        transcription_model="small",
+        transcription_model=model,
         local_whisper_device=device,
         local_whisper_compute_type=compute_type,
         performance_mode=performance_mode,
+        transcription_language=language,
         note_api_key="note-key",
         note_model="gpt-5.5",
         note_language=NoteLanguage.zh,
@@ -73,6 +76,10 @@ def test_plan_fingerprint_is_stable_and_changes_with_result_settings() -> None:
     balanced = resolve_execution_plan(make_local_config(), 3600, hardware)
     same = resolve_execution_plan(make_local_config(), 3600, hardware)
     accurate = resolve_execution_plan(make_local_config(performance_mode=PerformanceMode.accurate), 3600, hardware)
+    medium = resolve_execution_plan(make_local_config(model="medium"), 3600, hardware)
+    chinese = resolve_execution_plan(make_local_config(language="zh"), 3600, hardware)
 
     assert plan_fingerprint(balanced) == plan_fingerprint(same)
     assert plan_fingerprint(balanced) != plan_fingerprint(accurate)
+    assert plan_fingerprint(balanced) != plan_fingerprint(medium)
+    assert plan_fingerprint(balanced) != plan_fingerprint(chinese)
