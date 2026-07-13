@@ -106,6 +106,7 @@ def run_session_request(request_path: Path) -> int:
         raise RuntimeError("Session request field 'vad_filter' must be a boolean.")
     vad_min_silence_ms = require_session_int(request, "vad_min_silence_ms", minimum=0)
     vad_threshold = require_session_number(request, "vad_threshold")
+    chunk_max_attempts = require_session_int(request, "chunk_max_attempts", minimum=1)
     chunks = validate_session_chunks(request.get("chunks"))
 
     model_root.mkdir(parents=True, exist_ok=True)
@@ -125,28 +126,42 @@ def run_session_request(request_path: Path) -> int:
 
     for chunk in chunks:
         chunk_index = chunk["index"]
-        segments_raw, _info = model.transcribe(
-            str(chunk["audio_path"]),
-            language=language,
-            vad_filter=vad_filter,
-            vad_parameters={
-                "min_silence_duration_ms": vad_min_silence_ms,
-                "threshold": vad_threshold,
-            },
-            beam_size=beam_size,
-            best_of=best_of,
-        )
-        segments = []
-        full_text_parts = []
-        for item in segments_raw:
-            start = max(0.0, float(getattr(item, "start", 0) or 0))
-            end = max(start, float(getattr(item, "end", start) or start))
-            emit_event({"type": "progress", "chunk_index": chunk_index, "segment_end": end})
-            text = str(getattr(item, "text", "")).strip()
-            if not text:
-                continue
-            segments.append({"start": start, "end": end, "text": text})
-            full_text_parts.append(text)
+        for attempt in range(1, chunk_max_attempts + 1):
+            try:
+                segments_raw, _info = model.transcribe(
+                    str(chunk["audio_path"]),
+                    language=language,
+                    vad_filter=vad_filter,
+                    vad_parameters={
+                        "min_silence_duration_ms": vad_min_silence_ms,
+                        "threshold": vad_threshold,
+                    },
+                    beam_size=beam_size,
+                    best_of=best_of,
+                )
+                segments = []
+                full_text_parts = []
+                for item in segments_raw:
+                    start = max(0.0, float(getattr(item, "start", 0) or 0))
+                    end = max(start, float(getattr(item, "end", start) or start))
+                    emit_event({"type": "progress", "chunk_index": chunk_index, "segment_end": end})
+                    text = str(getattr(item, "text", "")).strip()
+                    if not text:
+                        continue
+                    segments.append({"start": start, "end": end, "text": text})
+                    full_text_parts.append(text)
+                break
+            except Exception as exc:
+                if attempt >= chunk_max_attempts:
+                    raise
+                emit_event(
+                    {
+                        "type": "retry",
+                        "chunk_index": chunk_index,
+                        "attempt": attempt + 1,
+                        "message": str(exc),
+                    }
+                )
 
         payload = {"text": " ".join(full_text_parts).strip(), "segments": segments}
         write_transcript_payload_atomic(chunk["result_path"], payload)

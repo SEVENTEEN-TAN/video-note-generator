@@ -574,7 +574,7 @@ def test_cancelled_incomplete_chunk_is_not_checkpointed(tmp_path, monkeypatch) -
     def is_cancelled() -> bool:
         nonlocal checks
         checks += 1
-        return checks >= 5
+        return checks >= 6
 
     with pytest.raises(transcription.TranscriptionCancelled):
         transcription.transcribe_with_faster_whisper(

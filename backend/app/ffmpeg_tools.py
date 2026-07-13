@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,9 +14,14 @@ import imageio_ffmpeg
 
 from .time_utils import clamp_seconds
 from .transcription_checkpoints import ChunkSpec
+from .resource_scheduler import ProcessingResource, ResourceWaitCancelled, processing_resources
 
 
 class FFmpegError(RuntimeError):
+    pass
+
+
+class FFmpegCancelled(FFmpegError):
     pass
 
 
@@ -53,9 +59,23 @@ def require_ffmpeg() -> str:
     return ffmpeg_path
 
 
-def run_ffmpeg(args: list[str]) -> subprocess.CompletedProcess[str]:
+def run_ffmpeg(
+    args: list[str],
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> subprocess.CompletedProcess[str]:
     ffmpeg_path = require_ffmpeg()
-    completed = _run_ffmpeg_process_with_startup_retries([ffmpeg_path, *args])
+    try:
+        with processing_resources.acquire(
+            ProcessingResource.ffmpeg,
+            is_cancelled=is_cancelled,
+        ):
+            completed = _run_ffmpeg_process_with_startup_retries(
+                [ffmpeg_path, *args],
+                is_cancelled=is_cancelled,
+            )
+    except ResourceWaitCancelled as exc:
+        raise FFmpegCancelled("FFmpeg operation was cancelled while waiting for local resources.") from exc
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "FFmpeg command failed."
         raise FFmpegError(message[-2000:])
@@ -64,7 +84,8 @@ def run_ffmpeg(args: list[str]) -> subprocess.CompletedProcess[str]:
 
 def probe_duration(video_path: Path) -> float | None:
     ffmpeg_path = require_ffmpeg()
-    completed = _run_ffmpeg_process_with_startup_retries([ffmpeg_path, "-hide_banner", "-i", str(video_path)])
+    with processing_resources.acquire(ProcessingResource.ffmpeg):
+        completed = _run_ffmpeg_process_with_startup_retries([ffmpeg_path, "-hide_banner", "-i", str(video_path)])
     text = f"{completed.stderr}\n{completed.stdout}"
     match = re.search(r"Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)", text)
     if not match:
@@ -73,8 +94,13 @@ def probe_duration(video_path: Path) -> float | None:
     return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
 
-def extract_mp3(video_path: Path, audio_path: Path) -> None:
-    run_ffmpeg(
+def extract_mp3(
+    video_path: Path,
+    audio_path: Path,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> None:
+    _run_ffmpeg_with_optional_cancellation(
         [
             "-y",
             "-hide_banner",
@@ -90,7 +116,8 @@ def extract_mp3(video_path: Path, audio_path: Path) -> None:
             "-b:a",
             "192k",
             str(audio_path),
-        ]
+        ],
+        is_cancelled,
     )
     if not audio_path.exists() or audio_path.stat().st_size == 0:
         raise FFmpegError("MP3 extraction produced no output. The video may not contain an audio track.")
@@ -103,6 +130,7 @@ def prepare_audio_artifacts(
     chunk_seconds: int,
     *,
     duration_seconds: float | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> PreparedAudio:
     """Create the public MP3 and local-ASR FLAC input from one source read."""
 
@@ -138,7 +166,7 @@ def prepare_audio_artifacts(
     else:
         asr_args.append(str(chunks_dir / "chunk_000.flac"))
 
-    run_ffmpeg(
+    _run_ffmpeg_with_optional_cancellation(
         [
             "-y",
             "-hide_banner",
@@ -157,7 +185,8 @@ def prepare_audio_artifacts(
             "192k",
             str(mp3_path),
             *asr_args,
-        ]
+        ],
+        is_cancelled,
     )
 
     if not mp3_path.exists() or mp3_path.stat().st_size == 0:
@@ -238,11 +267,17 @@ def _flac_chunk_index(path: Path) -> int:
     return int(match.group(1))
 
 
-def split_audio(audio_path: Path, chunks_dir: Path, segment_seconds: int = 600) -> list[Path]:
+def split_audio(
+    audio_path: Path,
+    chunks_dir: Path,
+    segment_seconds: int = 600,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> list[Path]:
     chunks_dir.mkdir(parents=True, exist_ok=True)
     for old_chunk in chunks_dir.glob("chunk_*.mp3"):
         old_chunk.unlink()
-    run_ffmpeg(
+    _run_ffmpeg_with_optional_cancellation(
         [
             "-y",
             "-hide_banner",
@@ -264,7 +299,8 @@ def split_audio(audio_path: Path, chunks_dir: Path, segment_seconds: int = 600) 
             "-reset_timestamps",
             "1",
             str(chunks_dir / "chunk_%03d.mp3"),
-        ]
+        ],
+        is_cancelled,
     )
     chunks = sorted(chunks_dir.glob("chunk_*.mp3"))
     if not chunks:
@@ -272,7 +308,14 @@ def split_audio(audio_path: Path, chunks_dir: Path, segment_seconds: int = 600) 
     return chunks
 
 
-def extract_frame(video_path: Path, output_path: Path, timestamp: float, duration: float | None) -> float:
+def extract_frame(
+    video_path: Path,
+    output_path: Path,
+    timestamp: float,
+    duration: float | None,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> float:
     safe_time = max(0, timestamp)
     if duration and duration > 1:
         safe_time = clamp_seconds(safe_time, 0.25, max(0.25, duration - 0.25))
@@ -283,7 +326,7 @@ def extract_frame(video_path: Path, output_path: Path, timestamp: float, duratio
         if output_path.exists():
             output_path.unlink()
         try:
-            run_ffmpeg(
+            _run_ffmpeg_with_optional_cancellation(
                 [
                     "-y",
                     "-hide_banner",
@@ -296,7 +339,8 @@ def extract_frame(video_path: Path, output_path: Path, timestamp: float, duratio
                     "-q:v",
                     "2",
                     str(output_path),
-                ]
+                ],
+                is_cancelled,
             )
         except FFmpegError as exc:
             errors.append(f"{candidate_time:.3f}s: {exc}")
@@ -322,10 +366,20 @@ def _frame_seek_candidates(safe_time: float) -> list[float]:
     return unique
 
 
-def _run_ffmpeg_process_with_startup_retries(command: list[str]) -> subprocess.CompletedProcess[str]:
+def _run_ffmpeg_process_with_startup_retries(
+    command: list[str],
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> subprocess.CompletedProcess[str]:
     completed: subprocess.CompletedProcess[str] | None = None
     for attempt in range(3):
-        completed = _run_ffmpeg_process(command)
+        if is_cancelled and is_cancelled():
+            raise FFmpegCancelled("FFmpeg operation was cancelled.")
+        completed = (
+            _run_cancellable_ffmpeg_process(command, is_cancelled)
+            if is_cancelled is not None
+            else _run_ffmpeg_process(command)
+        )
         if not _is_windows_startup_failure(completed.returncode):
             return completed
         if attempt < 2:
@@ -333,6 +387,57 @@ def _run_ffmpeg_process_with_startup_retries(command: list[str]) -> subprocess.C
     if completed is None:
         raise FFmpegError("FFmpeg command failed.")
     return completed
+
+
+def _run_ffmpeg_with_optional_cancellation(
+    args: list[str],
+    is_cancelled: Callable[[], bool] | None,
+) -> subprocess.CompletedProcess[str]:
+    if is_cancelled is None:
+        return run_ffmpeg(args)
+    return run_ffmpeg(args, is_cancelled=is_cancelled)
+
+
+def _run_cancellable_ffmpeg_process(
+    command: list[str],
+    is_cancelled: Callable[[], bool],
+) -> subprocess.CompletedProcess[str]:
+    _suppress_windows_error_dialogs()
+    kwargs: dict = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "encoding": "utf-8",
+        "errors": "replace",
+    }
+    if sys.platform == "win32":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    process = subprocess.Popen(command, **kwargs)
+    while True:
+        if is_cancelled():
+            if not _terminate_ffmpeg_process(process):
+                raise FFmpegError("FFmpeg cancellation was requested, but the process could not be reaped.")
+            raise FFmpegCancelled("FFmpeg operation was cancelled.")
+        try:
+            stdout, stderr = process.communicate(timeout=0.1)
+            return subprocess.CompletedProcess(command, process.returncode, stdout=stdout, stderr=stderr)
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _terminate_ffmpeg_process(process: subprocess.Popen) -> bool:
+    if process.poll() is not None:
+        return True
+    process.terminate()
+    try:
+        process.wait(timeout=1.0)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            return False
+    return process.poll() is not None
 
 
 def _run_ffmpeg_process(command: list[str]) -> subprocess.CompletedProcess[str]:

@@ -1,23 +1,33 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Callable
+from uuid import uuid4
 
 from .ffmpeg_tools import extract_frame, require_ffmpeg
 from .models import FrameCandidate, FrameCandidateChapterContext, FrameCandidateIndex, TranscriptPayload
 
 
 FRAME_CANDIDATES_INDEX = Path("review") / "frame_candidates.json"
+FRAME_CANDIDATES_CACHE = Path("review") / "frame_candidates.cache.json"
 TIME_RANGE_PATTERN = re.compile(r"`?(\d{2}:\d{2}:\d{2})\s+-\s+(\d{2}:\d{2}:\d{2})`?")
 KEY_FRAME_PATTERN = re.compile(r"关键帧：`?(\d{2}:\d{2}:\d{2})`?：?(.+)?")
 HEADING_PATTERN = re.compile(r"^###\s+(.+?)\s*$")
 HASH_DUPLICATE_DISTANCE = 6
 HASH_BITS = 64
+NOTE_FRAME_BLOCK_PATTERN = re.compile(
+    r"!\[[^\]]*\]\(([^)]+)\)\s*(?:\r?\n\s*)+>\s*关键帧：`?(\d{2}:\d{2}:\d{2})`?",
+    re.MULTILINE,
+)
 
 
 @dataclass(frozen=True)
@@ -42,48 +52,170 @@ def build_frame_candidate_index(
     *,
     duration: float | None,
     candidates_per_chapter: int = 3,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> FrameCandidateIndex:
     note_text = (job_dir / "note.md").read_text(encoding="utf-8-sig")
+    cache_key = _frame_candidate_cache_key(video_path, note_text, duration, candidates_per_chapter)
+    cached = _load_compatible_frame_candidate_index(job_dir, cache_key)
+    if cached is not None:
+        return cached
     chapters = _parse_candidate_chapters(note_text, duration)
     transcript = _load_transcript(job_dir)
+    final_root = job_dir / "review" / "frame_candidates"
+    temporary_root = final_root.with_name(f".frame_candidates.{uuid4().hex}.tmp")
+    backup_root = final_root.with_name(f".frame_candidates.{uuid4().hex}.backup")
     candidates: list[FrameCandidate] = []
-    selected_by_chapter: set[int] = set()
-    prior_hashes: list[tuple[str, str]] = []
-
-    for chapter in chapters:
-        for candidate_number, seed in enumerate(_candidate_seeds(chapter, candidates_per_chapter), start=1):
-            candidate_id = f"chapter_{chapter.index + 1:03d}_candidate_{candidate_number:03d}"
-            rel_path = f"review/frame_candidates/chapter_{chapter.index + 1:03d}/candidate_{candidate_number:03d}.jpg"
-            actual_time = extract_frame(video_path, job_dir / rel_path, seed.time, duration)
-            hash_value = average_hash(job_dir / rel_path)
-            duplicate_of, similarity = _nearest_duplicate(hash_value, prior_hashes)
-            risk_flags = ["duplicate_frame"] if duplicate_of else []
-            selected = duplicate_of is None and chapter.index not in selected_by_chapter
-            if selected:
-                selected_by_chapter.add(chapter.index)
-            candidates.append(
-                FrameCandidate(
-                    id=candidate_id,
-                    chapter_index=chapter.index,
-                    time=actual_time,
-                    path=rel_path,
-                    reason=seed.reason,
-                    note_excerpt=seed.reason,
-                    subtitle_excerpt=_subtitle_excerpt_around_time(transcript, actual_time),
-                    source=seed.source,
-                    hash=hash_value,
-                    duplicate_of=duplicate_of,
-                    similarity=similarity,
-                    risk_flags=risk_flags,
-                    selected=selected,
-                    rejected=False,
+    try:
+        selected_by_chapter: set[int] = set()
+        prior_hashes: list[tuple[str, str]] = []
+        reusable_note_frames = _reusable_note_frames(job_dir, note_text)
+        for chapter in chapters:
+            for candidate_number, seed in enumerate(_candidate_seeds(chapter, candidates_per_chapter), start=1):
+                if is_cancelled and is_cancelled():
+                    raise RuntimeError("Frame candidate extraction was cancelled.")
+                candidate_id = f"chapter_{chapter.index + 1:03d}_candidate_{candidate_number:03d}"
+                relative_frame = Path(f"chapter_{chapter.index + 1:03d}") / f"candidate_{candidate_number:03d}.jpg"
+                rel_path = (Path("review") / "frame_candidates" / relative_frame).as_posix()
+                output_path = temporary_root / relative_frame
+                reusable = reusable_note_frames.get(round(seed.time))
+                if reusable is not None and reusable.exists():
+                    _materialize_reused_frame(reusable, output_path)
+                    actual_time = seed.time
+                else:
+                    actual_time = _extract_frame_with_cancellation(
+                        video_path,
+                        output_path,
+                        seed.time,
+                        duration,
+                        is_cancelled,
+                    )
+                hash_value = average_hash(output_path)
+                duplicate_of, similarity = _nearest_duplicate(hash_value, prior_hashes)
+                risk_flags = ["duplicate_frame"] if duplicate_of else []
+                selected = duplicate_of is None and chapter.index not in selected_by_chapter
+                if selected:
+                    selected_by_chapter.add(chapter.index)
+                candidates.append(
+                    FrameCandidate(
+                        id=candidate_id,
+                        chapter_index=chapter.index,
+                        time=actual_time,
+                        path=rel_path,
+                        reason=seed.reason,
+                        note_excerpt=seed.reason,
+                        subtitle_excerpt=_subtitle_excerpt_around_time(transcript, actual_time),
+                        source=seed.source,
+                        hash=hash_value,
+                        duplicate_of=duplicate_of,
+                        similarity=similarity,
+                        risk_flags=risk_flags,
+                        selected=selected,
+                        rejected=False,
+                    )
                 )
-            )
-            prior_hashes.append((candidate_id, hash_value))
-    return FrameCandidateIndex(
-        candidates=candidates,
-        chapter_contexts=_chapter_contexts(job_dir, chapters, _candidate_times_by_chapter(candidates)),
-    )
+                prior_hashes.append((candidate_id, hash_value))
+        result = FrameCandidateIndex(
+            candidates=candidates,
+            chapter_contexts=_chapter_contexts(job_dir, chapters, _candidate_times_by_chapter(candidates)),
+        )
+        if final_root.exists():
+            final_root.replace(backup_root)
+        try:
+            temporary_root.replace(final_root)
+        except Exception:
+            if backup_root.exists() and not final_root.exists():
+                backup_root.replace(final_root)
+            raise
+        shutil.rmtree(backup_root, ignore_errors=True)
+    finally:
+        shutil.rmtree(temporary_root, ignore_errors=True)
+    write_frame_candidate_index(job_dir, result)
+    _write_frame_candidate_cache(job_dir, cache_key)
+    return result
+
+
+def _frame_candidate_cache_key(
+    video_path: Path,
+    note_text: str,
+    duration: float | None,
+    candidates_per_chapter: int,
+) -> dict:
+    stat = video_path.stat()
+    return {
+        "version": 1,
+        "video_size": stat.st_size,
+        "video_mtime_ns": stat.st_mtime_ns,
+        "note_hash": hashlib.sha256(note_text.encode("utf-8")).hexdigest(),
+        "duration": duration,
+        "candidates_per_chapter": candidates_per_chapter,
+    }
+
+
+def _load_compatible_frame_candidate_index(job_dir: Path, cache_key: dict) -> FrameCandidateIndex | None:
+    cache_path = job_dir / FRAME_CANDIDATES_CACHE
+    index_path = job_dir / FRAME_CANDIDATES_INDEX
+    try:
+        cached_key = json.loads(cache_path.read_text(encoding="utf-8"))
+        if cached_key != cache_key:
+            return None
+        index = FrameCandidateIndex.model_validate_json(index_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return None
+    root = job_dir.resolve()
+    for candidate in index.candidates:
+        path = (root / candidate.path).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            return None
+        if not path.is_file() or path.stat().st_size == 0:
+            return None
+    return index
+
+
+def _write_frame_candidate_cache(job_dir: Path, cache_key: dict) -> None:
+    path = job_dir / FRAME_CANDIDATES_CACHE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(cache_key, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _reusable_note_frames(job_dir: Path, note_text: str) -> dict[int, Path]:
+    root = job_dir.resolve()
+    reusable: dict[int, Path] = {}
+    for match in NOTE_FRAME_BLOCK_PATTERN.finditer(note_text):
+        raw_path, raw_time = match.groups()
+        candidate = (root / raw_path.strip()).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        if candidate.is_file() and candidate.stat().st_size > 0:
+            reusable[round(_hhmmss_to_seconds(raw_time))] = candidate
+    return reusable
+
+
+def _materialize_reused_frame(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists():
+        destination.unlink()
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
+def _extract_frame_with_cancellation(
+    video_path: Path,
+    output_path: Path,
+    timestamp: float,
+    duration: float | None,
+    is_cancelled: Callable[[], bool] | None,
+) -> float:
+    if is_cancelled is not None and "is_cancelled" in inspect.signature(extract_frame).parameters:
+        return extract_frame(video_path, output_path, timestamp, duration, is_cancelled=is_cancelled)
+    return extract_frame(video_path, output_path, timestamp, duration)
 
 
 def write_frame_candidate_index(job_dir: Path, index: FrameCandidateIndex) -> Path:

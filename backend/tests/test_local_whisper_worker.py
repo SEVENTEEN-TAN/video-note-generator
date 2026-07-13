@@ -27,6 +27,7 @@ def _write_session_request(path: Path, *, model_root: Path, chunks: list[dict]) 
                 "vad_filter": False,
                 "vad_min_silence_ms": 321,
                 "vad_threshold": 0.7,
+                "chunk_max_attempts": 2,
                 "chunks": chunks,
             }
         ),
@@ -181,7 +182,8 @@ def test_session_keeps_completed_result_when_later_chunk_fails(tmp_path, monkeyp
     assert not second_result.exists()
     assert not second_result.with_name(f"{second_result.name}.tmp").exists()
     events = _stdout_events(capsys)
-    assert [event["type"] for event in events] == ["ready", "progress", "chunk_complete", "error"]
+    assert [event["type"] for event in events] == ["ready", "progress", "chunk_complete", "retry", "error"]
+    assert events[-2]["attempt"] == 2
     assert events[-1]["message"] == "second chunk exploded"
 
 

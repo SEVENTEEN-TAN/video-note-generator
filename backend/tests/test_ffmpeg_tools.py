@@ -8,6 +8,7 @@ import pytest
 
 from backend.app import ffmpeg_tools
 from backend.app.ffmpeg_tools import (
+    FFmpegCancelled,
     FFmpegError,
     extract_frame,
     get_ffmpeg_path,
@@ -48,6 +49,49 @@ def test_run_ffmpeg_retries_windows_startup_failure(monkeypatch) -> None:
 
     assert completed.returncode == 0
     assert len(attempts) == 2
+
+
+def test_run_ffmpeg_cancellation_terminates_and_reaps_active_process(monkeypatch) -> None:
+    process_holder = {}
+    lifecycle: list[str] = []
+
+    class HangingProcess:
+        def __init__(self, command, **kwargs) -> None:
+            self.command = command
+            self.returncode = None
+            process_holder["process"] = self
+
+        def poll(self):
+            return self.returncode
+
+        def communicate(self, timeout=None):
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            return "", ""
+
+        def terminate(self):
+            lifecycle.append("terminate")
+
+        def kill(self):
+            lifecycle.append("kill")
+            self.returncode = -9
+
+        def wait(self, timeout=None):
+            lifecycle.append("wait")
+            if self.returncode is None:
+                raise subprocess.TimeoutExpired(self.command, timeout)
+            return self.returncode
+
+    monkeypatch.setattr(ffmpeg_tools, "require_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(ffmpeg_tools.subprocess, "Popen", HangingProcess)
+
+    with pytest.raises(FFmpegCancelled):
+        ffmpeg_tools.run_ffmpeg(
+            ["-i", "input.mp4", "output.mp3"],
+            is_cancelled=lambda: "process" in process_holder,
+        )
+
+    assert lifecycle == ["terminate", "wait", "kill", "wait"]
 
 
 def test_extract_frame_falls_back_when_short_video_seek_has_no_frame(tmp_path) -> None:

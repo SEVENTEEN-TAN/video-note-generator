@@ -1,8 +1,13 @@
 from __future__ import annotations
 
 import json
+import inspect
+import os
+import re
 import shutil
+from collections.abc import Callable
 from pathlib import Path
+from uuid import uuid4
 
 from .ffmpeg_tools import extract_frame
 from .frame_selection import select_key_frame_moments
@@ -16,6 +21,10 @@ from .transcript_corrections import load_preferred_transcript_payload
 
 NOTE_VERSIONS_DIR = "note_versions"
 NOTE_VERSION_INDEX = "versions.json"
+NOTE_FRAME_BLOCK_PATTERN = re.compile(
+    r"!\[[^\]]*\]\(([^)]+)\)\s*(?:\r?\n\s*)+>\s*关键帧：`?(\d{2}:\d{2}:\d{2})`?",
+    re.MULTILINE,
+)
 
 
 def safe_note_version_id(version_id: str) -> str:
@@ -278,23 +287,47 @@ def create_note_version_from_draft(
     duration: float | None,
     config: JobConfig,
     version_id: str | None = None,
+    is_cancelled: Callable[[], bool] | None = None,
 ) -> NoteVersion:
     version_id = safe_note_version_id(version_id or next_note_version_id(job_dir))
     version_dir = job_dir / NOTE_VERSIONS_DIR / version_id
-    frames_dir = version_dir / "frames"
+    if version_dir.exists():
+        raise ValueError(f"Note version already exists: {version_id}")
+    temporary_dir = version_dir.with_name(f".{version_id}.{uuid4().hex}.tmp")
+    frames_dir = temporary_dir / "frames"
     frames_dir.mkdir(parents=True, exist_ok=True)
 
-    version_draft = draft.model_copy(deep=True)
-    selected_moments = select_key_frame_moments(version_draft, duration, config.frame_limit)
-    for index, moment in enumerate(selected_moments, start=1):
-        frame_rel = f"frames/frame_{index:03d}.jpg"
-        actual_time = extract_frame(video_path, version_dir / frame_rel, moment.time, duration)
-        moment.time = actual_time
-        moment.frame_path = frame_rel
-    version_draft.key_moments = selected_moments
+    try:
+        version_draft = draft.model_copy(deep=True)
+        selected_moments = select_key_frame_moments(version_draft, duration, config.frame_limit)
+        reusable_frames = _existing_version_frames(job_dir)
+        for index, moment in enumerate(selected_moments, start=1):
+            if is_cancelled and is_cancelled():
+                raise RuntimeError("Note frame extraction was cancelled.")
+            frame_rel = f"frames/frame_{index:03d}.jpg"
+            destination = temporary_dir / frame_rel
+            reusable = reusable_frames.get(round(moment.time))
+            if reusable is not None and reusable.exists():
+                _materialize_version_frame(reusable, destination)
+                actual_time = moment.time
+            else:
+                actual_time = _extract_frame_with_cancellation(
+                    video_path,
+                    destination,
+                    moment.time,
+                    duration,
+                    is_cancelled,
+                )
+            moment.time = actual_time
+            moment.frame_path = frame_rel
+        version_draft.key_moments = selected_moments
 
-    note_path = version_dir / "note.md"
-    note_path.write_text(render_note_markdown(version_draft), encoding="utf-8-sig")
+        note_path = temporary_dir / "note.md"
+        note_path.write_text(render_note_markdown(version_draft), encoding="utf-8-sig")
+        temporary_dir.replace(version_dir)
+    finally:
+        if temporary_dir.exists():
+            shutil.rmtree(temporary_dir, ignore_errors=True)
     version = NoteVersion(
         id=version_id,
         label=f"{version_id} · {config.note_style.value}",
@@ -315,7 +348,61 @@ def create_note_version_from_draft(
     return version
 
 
-def regenerate_note_version(job_dir: Path, config: JobConfig, debug_log: TaskDebugLog | None = None) -> NoteVersion:
+def _existing_version_frames(job_dir: Path) -> dict[int, Path]:
+    root = job_dir.resolve()
+    reusable: dict[int, Path] = {}
+    versions_root = root / NOTE_VERSIONS_DIR
+    if not versions_root.exists():
+        return reusable
+    for note_path in versions_root.glob("*/note.md"):
+        try:
+            note_text = note_path.read_text(encoding="utf-8-sig")
+        except OSError:
+            continue
+        for match in NOTE_FRAME_BLOCK_PATTERN.finditer(note_text):
+            raw_path, raw_time = match.groups()
+            frame_path = (note_path.parent / raw_path.strip()).resolve()
+            try:
+                frame_path.relative_to(root)
+            except ValueError:
+                continue
+            if frame_path.is_file() and frame_path.stat().st_size > 0:
+                reusable[round(_hhmmss_to_seconds(raw_time))] = frame_path
+    return reusable
+
+
+def _materialize_version_frame(source: Path, destination: Path) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, destination)
+    except OSError:
+        shutil.copy2(source, destination)
+
+
+def _hhmmss_to_seconds(value: str) -> float:
+    hours, minutes, seconds = value.split(":")
+    return int(hours) * 3600 + int(minutes) * 60 + int(seconds)
+
+
+def _extract_frame_with_cancellation(
+    video_path: Path,
+    output_path: Path,
+    timestamp: float,
+    duration: float | None,
+    is_cancelled: Callable[[], bool] | None,
+) -> float:
+    if is_cancelled is not None and "is_cancelled" in inspect.signature(extract_frame).parameters:
+        return extract_frame(video_path, output_path, timestamp, duration, is_cancelled=is_cancelled)
+    return extract_frame(video_path, output_path, timestamp, duration)
+
+
+def regenerate_note_version(
+    job_dir: Path,
+    config: JobConfig,
+    debug_log: TaskDebugLog | None = None,
+    *,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> NoteVersion:
     segments = transcript_segments_from_payload(load_preferred_transcript_payload(job_dir))
     if not segments:
         raise ValueError("Cannot regenerate notes because transcript.json has no usable segments.")
@@ -333,6 +420,7 @@ def regenerate_note_version(job_dir: Path, config: JobConfig, debug_log: TaskDeb
         draft=draft,
         duration=float(duration) if duration is not None else None,
         config=config,
+        is_cancelled=is_cancelled,
     )
 
 

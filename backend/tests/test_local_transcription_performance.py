@@ -73,3 +73,54 @@ def test_simulated_two_hour_local_job_loads_once_and_restart_decodes_nothing(tmp
     assert len(decoded_paths) == 8
     assert len(first.segments) == 8
     assert second == first
+
+
+def test_compatible_internal_model_is_reused_across_jobs_and_can_be_released(tmp_path, monkeypatch) -> None:
+    model_root = tmp_path / "models"
+    _write_model_files(model_root / "small")
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(model_root))
+    model_loads = 0
+
+    class CachedWhisperModel:
+        def __init__(self, *_args, **_kwargs) -> None:
+            nonlocal model_loads
+            model_loads += 1
+
+        def transcribe(self, _file_path, **_kwargs):
+            return [SimpleNamespace(start=0, end=1, text="ok")], SimpleNamespace(language="en")
+
+    monkeypatch.setattr(transcription, "WhisperModel", CachedWhisperModel)
+    transcription.clear_internal_whisper_model_cache()
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="job.mp4",
+    )
+    hardware = HardwareProfile(8, 16 * 1024**3, False, None)
+
+    for job_number in (1, 2):
+        job_dir = tmp_path / f"job-{job_number}"
+        audio_path = job_dir / "audio.mp3"
+        chunk_path = job_dir / "work" / "asr" / "chunks" / "chunk_000.flac"
+        chunk_path.parent.mkdir(parents=True)
+        audio_path.write_bytes(f"audio-{job_number}".encode())
+        chunk_path.write_bytes(f"chunk-{job_number}".encode())
+        transcription.transcribe_with_faster_whisper(
+            audio_path,
+            config,
+            job_dir,
+            prepared_audio=PreparedAudio(
+                mp3_path=audio_path,
+                chunks=[ChunkSpec(index=0, start=0, end=60, path=chunk_path)],
+                duration=60,
+            ),
+            hardware_profile=hardware,
+        )
+
+    assert model_loads == 1
+    assert transcription.clear_internal_whisper_model_cache() == 1

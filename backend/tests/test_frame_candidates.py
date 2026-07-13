@@ -110,6 +110,88 @@ def test_build_frame_candidate_index_selects_non_duplicate_defaults(tmp_path, mo
     assert [candidate.selected for candidate in index.candidates if candidate.chapter_index == 1].count(True) == 1
 
 
+def test_frame_candidates_reuse_existing_note_frame_at_same_time(tmp_path, monkeypatch) -> None:
+    (tmp_path / "metadata.json").write_text(json.dumps({"duration_seconds": 60}), encoding="utf-8")
+    existing_frame = tmp_path / "frames" / "frame_001.jpg"
+    existing_frame.parent.mkdir(parents=True)
+    existing_frame.write_bytes(b"already extracted")
+    (tmp_path / "note.md").write_text(
+        "\n".join(
+            [
+                "# Demo",
+                "",
+                "### Intro",
+                "",
+                "`00:00:00 - 00:01:00`",
+                "",
+                "![Intro](frames/frame_001.jpg)",
+                "",
+                "> 关键帧：`00:00:20`，Intro slide",
+            ]
+        ),
+        encoding="utf-8-sig",
+    )
+    video_path = tmp_path / "source_video" / "input.mp4"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"video")
+    monkeypatch.setattr(
+        "backend.app.frame_candidates.extract_frame",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("matching note frame must be reused")),
+    )
+
+    index = build_frame_candidate_index(tmp_path, video_path, duration=60, candidates_per_chapter=1)
+
+    candidate_path = tmp_path / index.candidates[0].path
+    assert candidate_path.read_bytes() == b"already extracted"
+    assert index.candidates[0].time == 20
+
+
+def test_compatible_frame_candidate_build_reuses_saved_index(tmp_path, monkeypatch) -> None:
+    video_path = write_candidate_job(tmp_path)
+    extracted: list[float] = []
+
+    def fake_extract_frame(_video_path: Path, output_path: Path, timestamp: float, _duration: float | None) -> float:
+        extracted.append(timestamp)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(f"jpg-{timestamp}".encode())
+        return timestamp
+
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+
+    first = build_frame_candidate_index(tmp_path, video_path, duration=120, candidates_per_chapter=2)
+    first_count = len(extracted)
+    second = build_frame_candidate_index(tmp_path, video_path, duration=120, candidates_per_chapter=2)
+
+    assert first_count > 0
+    assert len(extracted) == first_count
+    assert second == first
+
+
+def test_frame_candidate_failure_leaves_no_partial_candidate_directory(tmp_path, monkeypatch) -> None:
+    video_path = write_candidate_job(tmp_path)
+    calls = 0
+
+    def failing_extract(_video_path: Path, output_path: Path, timestamp: float, _duration: float | None) -> float:
+        nonlocal calls
+        calls += 1
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"partial")
+        if calls == 2:
+            raise RuntimeError("candidate failed")
+        return timestamp
+
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", failing_extract)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+
+    with pytest.raises(RuntimeError, match="candidate failed"):
+        build_frame_candidate_index(tmp_path, video_path, duration=120, candidates_per_chapter=2)
+
+    review_dir = tmp_path / "review"
+    assert not (review_dir / "frame_candidates").exists()
+    assert not list(review_dir.glob(".frame_candidates.*.tmp"))
+
+
 def test_frame_candidate_index_persists_and_mutations_update_choices(tmp_path, monkeypatch) -> None:
     video_path = write_candidate_job(tmp_path)
 

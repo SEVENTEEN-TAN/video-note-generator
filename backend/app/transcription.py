@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import gc
 import importlib
 import json
 import math
@@ -13,6 +14,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from collections import OrderedDict
 from collections.abc import Callable
 
 from openai import OpenAI
@@ -22,6 +24,7 @@ from .ffmpeg_tools import PreparedAudio, probe_duration, split_audio
 from .models import JobConfig, TranscriptPayload, TranscriptSegment, TranscriptionMode, TranscriptionWorkProgress
 from .runtime_config import get_configured_external_python, get_configured_model_root
 from .runtime_paths import get_bundle_root
+from .resource_scheduler import ProcessingResource, ResourceWaitCancelled, processing_resources
 from .time_utils import seconds_to_hhmmss
 from .transcription_checkpoints import ChunkSpec, open_checkpoint_session
 from .transcription_plans import HardwareProfile, TranscriptionExecutionPlan, resolve_execution_plan
@@ -30,6 +33,7 @@ MAX_TRANSCRIPTION_FILE_BYTES = 24 * 1024 * 1024
 STANDARD_TRANSCRIPTION_CHUNK_SECONDS = 600
 CHAT_AUDIO_CHUNK_SECONDS = 120
 LOCAL_WHISPER_CHUNK_THRESHOLD_SECONDS = 1800  # chunk long audio above 30 minutes
+LOCAL_CHUNK_MAX_ATTEMPTS = 2
 REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json")
 FASTER_WHISPER_VOCABULARY_FILES = ("vocabulary.txt", "vocabulary.json")
 TRANSCRIPTION_WRAPPER_KEYS = ("data", "result", "output", "transcript")
@@ -51,6 +55,9 @@ def load_internal_whisper_model() -> tuple[object | None, str]:
 
 
 WhisperModel, FASTER_WHISPER_IMPORT_ERROR = load_internal_whisper_model()
+_INTERNAL_MODEL_CACHE_LOCK = threading.Lock()
+_INTERNAL_MODEL_CACHE: OrderedDict[tuple, object] = OrderedDict()
+_INTERNAL_MODEL_CACHE_LIMIT = 2
 
 
 class TranscriptionError(RuntimeError):
@@ -164,6 +171,7 @@ def transcribe_with_faster_whisper(
         duration,
         prepared_audio=prepared_audio,
         progress_callback=progress_callback,
+        is_cancelled=cancellation,
     )
     session = open_checkpoint_session(work_dir / "work" / "asr", audio_path, plan, chunks)
     completed = session.completed_indices()
@@ -200,17 +208,25 @@ def transcribe_with_faster_whisper(
     if progress_callback:
         progress_callback(f"字幕生成中：加载 Faster Whisper 模型 {model_name}", 36)
     configure_internal_cuda_dll_paths(plan.device)
+    resource_context = processing_resources.acquire(
+        _asr_processing_resource(plan),
+        is_cancelled=cancellation,
+    )
     try:
-        model = WhisperModel(
-            model_identifier,
-            device=plan.device,
-            compute_type=plan.compute_type,
-            download_root=str(model_root),
-            cpu_threads=plan.cpu_threads,
-            num_workers=plan.num_workers,
+        resource_context.__enter__()
+    except ResourceWaitCancelled as exc:
+        raise TranscriptionCancelled("Local transcription was cancelled while waiting for ASR resources.") from exc
+    try:
+        model, model_cache_hit = _get_or_create_internal_whisper_model(
+            model_identifier=model_identifier,
+            model_root=model_root,
+            plan=plan,
         )
         if progress_callback:
-            progress_callback("字幕生成中：本地 Faster Whisper 转写中", 38)
+            progress_callback(
+                "字幕生成中：复用已加载 Faster Whisper 模型" if model_cache_hit else "字幕生成中：本地 Faster Whisper 转写中",
+                38,
+            )
         for ordinal, chunk in enumerate(pending, start=1):
             _raise_if_transcription_cancelled(cancellation)
             if progress_callback and len(chunks) > 1:
@@ -218,29 +234,42 @@ def transcribe_with_faster_whisper(
                     f"字幕生成中：第 {ordinal}/{len(pending)} 个待处理块",
                     _transcription_percent(chunk.start, duration),
                 )
-            payload = _transcribe_chunk_with_model(
-                model,
-                chunk,
-                plan,
-                effective_config,
-                total_duration=duration,
-                is_cancelled=cancellation,
-                progress_callback=progress_callback,
-                on_segment_end=(
-                    lambda end, current_chunk=chunk, current_completed=completed_count: _emit_timed_work_progress(
-                        work_progress_callback,
-                        completed_seconds=min(duration, current_chunk.start + end),
-                        total_seconds=duration,
-                        completed_chunks=current_completed,
-                        total_chunks=len(chunks),
-                        current_chunk=current_chunk.index,
-                        cache_hits=cache_hits,
-                        plan=plan,
-                        started_at=session_started,
-                        baseline_seconds=baseline_seconds,
+            for attempt in range(1, LOCAL_CHUNK_MAX_ATTEMPTS + 1):
+                try:
+                    payload = _transcribe_chunk_with_model(
+                        model,
+                        chunk,
+                        plan,
+                        effective_config,
+                        total_duration=duration,
+                        is_cancelled=cancellation,
+                        progress_callback=progress_callback,
+                        on_segment_end=(
+                            lambda end, current_chunk=chunk, current_completed=completed_count: _emit_timed_work_progress(
+                                work_progress_callback,
+                                completed_seconds=min(duration, current_chunk.start + end),
+                                total_seconds=duration,
+                                completed_chunks=current_completed,
+                                total_chunks=len(chunks),
+                                current_chunk=current_chunk.index,
+                                cache_hits=cache_hits,
+                                plan=plan,
+                                started_at=session_started,
+                                baseline_seconds=baseline_seconds,
+                            )
+                        ),
                     )
-                ),
-            )
+                    break
+                except TranscriptionCancelled:
+                    raise
+                except Exception:
+                    if attempt >= LOCAL_CHUNK_MAX_ATTEMPTS:
+                        raise
+                    if progress_callback:
+                        progress_callback(
+                            f"字幕生成中：分块 {chunk.index + 1} 转写失败，正在重试",
+                            _transcription_percent(chunk.start, duration),
+                        )
             _raise_if_transcription_cancelled(cancellation)
             session.write_result(chunk.index, payload)
             completed_count += 1
@@ -262,6 +291,8 @@ def transcribe_with_faster_whisper(
         raise
     except Exception as exc:
         raise TranscriptionError(f"Local Faster Whisper transcription failed: {exc}") from exc
+    finally:
+        resource_context.__exit__(None, None, None)
 
 
 def _transcribe_chunk_with_model(
@@ -312,6 +343,7 @@ def _local_chunk_specs(
     *,
     prepared_audio: PreparedAudio | None,
     progress_callback: ProgressCallback | None,
+    is_cancelled: CancellationCallback,
 ) -> list[ChunkSpec]:
     if prepared_audio is not None:
         return list(prepared_audio.chunks)
@@ -319,7 +351,12 @@ def _local_chunk_specs(
         return [ChunkSpec(index=0, start=0.0, end=max(0.0, duration), path=audio_path)]
     if progress_callback:
         progress_callback("字幕生成中：正在切分长音频…", 37)
-    paths = split_audio(audio_path, work_dir / "whisper_chunks", plan.chunk_seconds)
+    paths = split_audio(
+        audio_path,
+        work_dir / "whisper_chunks",
+        plan.chunk_seconds,
+        is_cancelled=is_cancelled,
+    )
     chunks: list[ChunkSpec] = []
     offset = 0.0
     for index, path in enumerate(paths):
@@ -355,6 +392,53 @@ def resolve_local_transcription_plan(
     effective_config = _config_with_runtime_overrides(config)
     profile = hardware_profile or _default_hardware_profile(effective_config)
     return resolve_execution_plan(effective_config, duration_seconds, profile)
+
+
+def _get_or_create_internal_whisper_model(
+    *,
+    model_identifier: str,
+    model_root: Path,
+    plan: TranscriptionExecutionPlan,
+) -> tuple[object, bool]:
+    if WhisperModel is None:
+        raise TranscriptionError("Internal Faster Whisper is unavailable.")
+    key = (
+        id(WhisperModel),
+        model_identifier,
+        plan.device,
+        plan.compute_type,
+        plan.cpu_threads,
+        plan.num_workers,
+    )
+    with _INTERNAL_MODEL_CACHE_LOCK:
+        cached = _INTERNAL_MODEL_CACHE.pop(key, None)
+        if cached is not None:
+            _INTERNAL_MODEL_CACHE[key] = cached
+            return cached, True
+        model = WhisperModel(
+            model_identifier,
+            device=plan.device,
+            compute_type=plan.compute_type,
+            download_root=str(model_root),
+            cpu_threads=plan.cpu_threads,
+            num_workers=plan.num_workers,
+        )
+        _INTERNAL_MODEL_CACHE[key] = model
+        while len(_INTERNAL_MODEL_CACHE) > _INTERNAL_MODEL_CACHE_LIMIT:
+            _INTERNAL_MODEL_CACHE.popitem(last=False)
+        return model, False
+
+
+def clear_internal_whisper_model_cache() -> int:
+    with _INTERNAL_MODEL_CACHE_LOCK:
+        count = len(_INTERNAL_MODEL_CACHE)
+        _INTERNAL_MODEL_CACHE.clear()
+    gc.collect()
+    return count
+
+
+def _asr_processing_resource(plan: TranscriptionExecutionPlan) -> ProcessingResource:
+    return ProcessingResource.gpu_asr if plan.device == "cuda" else ProcessingResource.cpu_asr
 
 
 def _config_with_runtime_overrides(config: JobConfig) -> JobConfig:
@@ -561,6 +645,7 @@ def _transcribe_prepared_with_external_faster_whisper(
         "vad_filter": plan.vad_filter,
         "vad_min_silence_ms": plan.vad_min_silence_ms,
         "vad_threshold": plan.vad_threshold,
+        "chunk_max_attempts": LOCAL_CHUNK_MAX_ATTEMPTS,
         "chunks": [
             {
                 "index": chunk.index,
@@ -572,7 +657,17 @@ def _transcribe_prepared_with_external_faster_whisper(
     }
     request_path = _write_external_session_request(run_dir, request)
     process: subprocess.Popen | None = None
+    resource_context = processing_resources.acquire(
+        _asr_processing_resource(plan),
+        is_cancelled=is_cancelled,
+    )
+    resource_acquired = False
     try:
+        try:
+            resource_context.__enter__()
+            resource_acquired = True
+        except ResourceWaitCancelled as exc:
+            raise TranscriptionCancelled("Local transcription was cancelled while waiting for ASR resources.") from exc
         if progress_callback:
             progress_callback(
                 f"字幕生成中：外部 Faster Whisper 会话处理 {len(pending)} 个待处理块",
@@ -614,6 +709,8 @@ def _transcribe_prepared_with_external_faster_whisper(
                 raise TranscriptionError(message) from exc
         raise
     finally:
+        if resource_acquired:
+            resource_context.__exit__(None, None, None)
         try:
             request_path.unlink()
         except FileNotFoundError:
