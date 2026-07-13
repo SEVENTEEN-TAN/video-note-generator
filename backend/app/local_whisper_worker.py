@@ -16,6 +16,7 @@ CUDA_RUNTIME_DLLS = ("cublas64_12.dll", "cudnn64_9.dll")
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Faster Whisper transcription from an external Python runtime.")
     parser.add_argument("--audio", default="")
+    parser.add_argument("--session-request", default="")
     parser.add_argument("--runtime-status", action="store_true")
     parser.add_argument("--download-only", action="store_true")
     parser.add_argument("--model", default="small")
@@ -30,6 +31,8 @@ def main() -> int:
         if args.runtime_status:
             print(json.dumps(get_runtime_status(), ensure_ascii=False))
             return 0
+        if args.session_request:
+            return run_session_request(Path(args.session_request).expanduser())
         if not args.model_root:
             raise RuntimeError("--model-root is required.")
         model_root = Path(args.model_root).expanduser()
@@ -72,10 +75,155 @@ def main() -> int:
         print(json.dumps({"text": " ".join(full_text_parts).strip(), "segments": segments}, ensure_ascii=False))
         return 0
     except Exception as exc:
-        print(str(exc), file=sys.stderr)
+        if args.session_request:
+            emit_event({"type": "error", "message": str(exc)})
+        else:
+            print(str(exc), file=sys.stderr)
         return 1
 
 
+def run_session_request(request_path: Path) -> int:
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    if not isinstance(request, dict):
+        raise RuntimeError("Session request must contain a JSON object.")
+
+    model_name = require_session_text(request, "model")
+    model_root = Path(require_session_text(request, "model_root")).expanduser()
+    device = require_session_text(request, "device")
+    compute_type = require_session_text(request, "compute_type")
+    language_value = request.get("language")
+    if not isinstance(language_value, str):
+        raise RuntimeError("Session request field 'language' must be a string.")
+    language = language_value.strip() or None
+    beam_size = require_session_int(request, "beam_size", minimum=1)
+    best_of = require_session_int(request, "best_of", minimum=1)
+    vad_filter = request.get("vad_filter")
+    if not isinstance(vad_filter, bool):
+        raise RuntimeError("Session request field 'vad_filter' must be a boolean.")
+    vad_min_silence_ms = require_session_int(request, "vad_min_silence_ms", minimum=0)
+    vad_threshold = require_session_number(request, "vad_threshold")
+    chunks = validate_session_chunks(request.get("chunks"))
+
+    model_root.mkdir(parents=True, exist_ok=True)
+    model_identifier = resolve_local_faster_whisper_model(model_name, model_root)
+
+    from faster_whisper import WhisperModel
+
+    model = WhisperModel(
+        model_identifier,
+        device=device,
+        compute_type=compute_type,
+        download_root=str(model_root),
+    )
+    emit_event({"type": "ready"})
+
+    for chunk in chunks:
+        chunk_index = chunk["index"]
+        segments_raw, _info = model.transcribe(
+            str(chunk["audio_path"]),
+            language=language,
+            vad_filter=vad_filter,
+            vad_parameters={
+                "min_silence_duration_ms": vad_min_silence_ms,
+                "threshold": vad_threshold,
+            },
+            beam_size=beam_size,
+            best_of=best_of,
+        )
+        segments = []
+        full_text_parts = []
+        for item in segments_raw:
+            start = max(0.0, float(getattr(item, "start", 0) or 0))
+            end = max(start, float(getattr(item, "end", start) or start))
+            emit_event({"type": "progress", "chunk_index": chunk_index, "segment_end": end})
+            text = str(getattr(item, "text", "")).strip()
+            if not text:
+                continue
+            segments.append({"start": start, "end": end, "text": text})
+            full_text_parts.append(text)
+
+        payload = {"text": " ".join(full_text_parts).strip(), "segments": segments}
+        write_transcript_payload_atomic(chunk["result_path"], payload)
+        emit_event({"type": "chunk_complete", "chunk_index": chunk_index})
+
+    emit_event({"type": "complete"})
+    return 0
+
+
+def require_session_text(request: dict, field_name: str) -> str:
+    value = request.get(field_name)
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"Session request field '{field_name}' must be a non-empty string.")
+    return value.strip()
+
+
+def require_session_int(request: dict, field_name: str, *, minimum: int) -> int:
+    value = request.get(field_name)
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise RuntimeError(f"Session request field '{field_name}' must be an integer >= {minimum}.")
+    return value
+
+
+def require_session_number(request: dict, field_name: str) -> float:
+    value = request.get(field_name)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise RuntimeError(f"Session request field '{field_name}' must be numeric.")
+    return float(value)
+
+
+def validate_session_chunks(raw_chunks: object) -> list[dict]:
+    if not isinstance(raw_chunks, list):
+        raise RuntimeError("Session request field 'chunks' must be a list.")
+
+    chunks = []
+    seen_indexes: set[int | float] = set()
+    for position, raw_chunk in enumerate(raw_chunks):
+        if not isinstance(raw_chunk, dict):
+            raise RuntimeError(f"Session chunk at position {position} must be an object.")
+        index = raw_chunk.get("index")
+        if isinstance(index, bool) or not isinstance(index, (int, float)):
+            raise RuntimeError(f"Session chunk at position {position} has a non-numeric index.")
+        if index in seen_indexes:
+            raise RuntimeError(f"Session request contains duplicate chunk index {index}.")
+        seen_indexes.add(index)
+
+        audio_path = require_absolute_chunk_path(raw_chunk, "audio_path", index)
+        result_path = require_absolute_chunk_path(raw_chunk, "result_path", index)
+        chunks.append({"index": index, "audio_path": audio_path, "result_path": result_path})
+
+    return sorted(chunks, key=lambda chunk: chunk["index"])
+
+
+def require_absolute_chunk_path(chunk: dict, field_name: str, chunk_index: int | float) -> Path:
+    value = chunk.get(field_name)
+    if not isinstance(value, str) or not value.strip():
+        raise RuntimeError(f"Session chunk {chunk_index} field '{field_name}' must be a non-empty string.")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise RuntimeError(f"Session chunk {chunk_index} field '{field_name}' must be an absolute path.")
+    return path
+
+
+def write_transcript_payload_atomic(result_path: Path, payload: dict) -> None:
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = result_path.with_name(f"{result_path.name}.tmp")
+    try:
+        with temporary_path.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary_path, result_path)
+    except Exception:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def emit_event(event: dict) -> None:
+    print(json.dumps(event, ensure_ascii=False), flush=True)
 def get_runtime_status() -> dict:
     status = {
         "python_path": sys.executable,
