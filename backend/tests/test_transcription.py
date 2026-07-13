@@ -6,13 +6,16 @@ import pytest
 from pydantic import ValidationError
 
 from backend.app import local_whisper_worker, transcription
+from backend.app.ffmpeg_tools import PreparedAudio
 from backend.app.models import JobConfig, NoteLanguage, TranscriptPayload, TranscriptSegment, TranscriptionLanguage, TranscriptionMode
+from backend.app.transcription_checkpoints import ChunkSpec
 from backend.app.transcription import (
     faster_whisper_segments_to_payload,
     parse_chat_audio_payload,
     parse_transcription_payload,
     resolve_local_faster_whisper_model,
 )
+from backend.app.transcription_plans import HardwareProfile
 
 
 def write_model_files(model_dir) -> None:
@@ -253,6 +256,198 @@ def test_transcribe_audio_reports_progress_for_internal_local_faster_whisper(tmp
         ("字幕生成中：加载 Faster Whisper 模型 small", 36),
         ("字幕生成中：本地 Faster Whisper 转写中", 38),
     ]
+
+
+def test_long_internal_local_transcription_loads_model_once(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"public audio")
+    write_model_files(tmp_path / "models" / "small")
+    chunk_dir = tmp_path / "work" / "asr" / "chunks"
+    chunk_dir.mkdir(parents=True)
+    chunk_zero = chunk_dir / "chunk_000.flac"
+    chunk_one = chunk_dir / "chunk_001.flac"
+    chunk_zero.write_bytes(b"zero")
+    chunk_one.write_bytes(b"one")
+    load_count = 0
+
+    class FakeWhisperModel:
+        def __init__(self, *_args, **_kwargs):
+            nonlocal load_count
+            load_count += 1
+
+        def transcribe(self, file_path, **_kwargs):
+            text = "first" if file_path.endswith("chunk_000.flac") else "second"
+            return [SimpleNamespace(start=0, end=10, text=text)], SimpleNamespace(language="en")
+
+    monkeypatch.setattr(transcription, "WhisperModel", FakeWhisperModel)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+    prepared = PreparedAudio(
+        mp3_path=audio_path,
+        chunks=[
+            ChunkSpec(index=0, start=0, end=600, path=chunk_zero),
+            ChunkSpec(index=1, start=600, end=1200, path=chunk_one),
+        ],
+        duration=1200,
+    )
+
+    result = transcription.transcribe_with_faster_whisper(
+        audio_path,
+        config,
+        tmp_path,
+        prepared_audio=prepared,
+        hardware_profile=HardwareProfile(8, 16 * 1024**3, False, None),
+    )
+
+    assert load_count == 1
+    assert result.text == "first second"
+    assert [segment.start for segment in result.segments] == [0.0, 600.0]
+
+
+def test_completed_local_checkpoints_skip_model_loading(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"public audio")
+    write_model_files(tmp_path / "models" / "small")
+    chunk_path = tmp_path / "work" / "asr" / "chunks" / "chunk_000.flac"
+    chunk_path.parent.mkdir(parents=True)
+    chunk_path.write_bytes(b"chunk")
+
+    class FirstModel:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def transcribe(self, _file_path, **_kwargs):
+            return [SimpleNamespace(start=0, end=5, text="cached")], SimpleNamespace(language="en")
+
+    monkeypatch.setattr(transcription, "WhisperModel", FirstModel)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+    prepared = PreparedAudio(
+        mp3_path=audio_path,
+        chunks=[ChunkSpec(index=0, start=0, end=600, path=chunk_path)],
+        duration=600,
+    )
+    hardware = HardwareProfile(8, 16 * 1024**3, False, None)
+    transcription.transcribe_with_faster_whisper(
+        audio_path,
+        config,
+        tmp_path,
+        prepared_audio=prepared,
+        hardware_profile=hardware,
+    )
+
+    class MustNotLoadModel:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("model should not load for completed checkpoints")
+
+    monkeypatch.setattr(transcription, "WhisperModel", MustNotLoadModel)
+
+    result = transcription.transcribe_with_faster_whisper(
+        audio_path,
+        config,
+        tmp_path,
+        prepared_audio=prepared,
+        hardware_profile=hardware,
+    )
+
+    assert result.text == "cached"
+
+
+def test_internal_local_progress_uses_segment_end_times(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"public audio")
+    write_model_files(tmp_path / "models" / "small")
+
+    class FakeWhisperModel:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def transcribe(self, _file_path, **_kwargs):
+            return iter(
+                [
+                    SimpleNamespace(start=0, end=100, text="first"),
+                    SimpleNamespace(start=100, end=500, text="second"),
+                ]
+            ), SimpleNamespace(language="en")
+
+    monkeypatch.setattr(transcription, "WhisperModel", FakeWhisperModel)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(transcription, "probe_duration", lambda _path: 600.0)
+    updates: list[tuple[str, int]] = []
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+
+    transcription.transcribe_with_faster_whisper(
+        audio_path,
+        config,
+        tmp_path,
+        progress_callback=lambda step, progress: updates.append((step, progress)),
+        hardware_profile=HardwareProfile(8, 16 * 1024**3, False, None),
+    )
+
+    segment_progress = [progress for step, progress in updates if "已处理" in step]
+    assert segment_progress == sorted(segment_progress)
+    assert len(segment_progress) == 2
+    assert segment_progress[-1] > segment_progress[0] > 38
+
+
+def test_internal_local_cancellation_stops_before_model_loading(tmp_path, monkeypatch) -> None:
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"public audio")
+    write_model_files(tmp_path / "models" / "small")
+
+    class MustNotLoadModel:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("cancelled transcription must not load a model")
+
+    monkeypatch.setattr(transcription, "WhisperModel", MustNotLoadModel)
+    monkeypatch.setenv("FASTER_WHISPER_MODEL_DIR", str(tmp_path / "models"))
+    monkeypatch.setattr(transcription, "probe_duration", lambda _path: 60.0)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        local_whisper_device="cpu",
+        local_whisper_compute_type="int8",
+        note_api_key="note-key",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        original_filename="input.mp4",
+    )
+
+    with pytest.raises(transcription.TranscriptionCancelled):
+        transcription.transcribe_with_faster_whisper(
+            audio_path,
+            config,
+            tmp_path,
+            is_cancelled=lambda: True,
+            hardware_profile=HardwareProfile(8, 16 * 1024**3, False, None),
+        )
 
 
 def test_transcribe_audio_uses_bundled_local_model_directory(tmp_path, monkeypatch) -> None:

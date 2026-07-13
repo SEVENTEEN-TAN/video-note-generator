@@ -12,11 +12,13 @@ from collections.abc import Callable
 from openai import OpenAI
 
 from . import local_whisper_worker
-from .ffmpeg_tools import probe_duration, split_audio
+from .ffmpeg_tools import PreparedAudio, probe_duration, split_audio
 from .models import JobConfig, TranscriptPayload, TranscriptSegment, TranscriptionMode
 from .runtime_config import get_configured_external_python, get_configured_model_root
 from .runtime_paths import get_bundle_root
 from .time_utils import seconds_to_hhmmss
+from .transcription_checkpoints import ChunkSpec, open_checkpoint_session
+from .transcription_plans import HardwareProfile, TranscriptionExecutionPlan, resolve_execution_plan
 
 MAX_TRANSCRIPTION_FILE_BYTES = 24 * 1024 * 1024
 STANDARD_TRANSCRIPTION_CHUNK_SECONDS = 600
@@ -26,6 +28,7 @@ REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json")
 FASTER_WHISPER_VOCABULARY_FILES = ("vocabulary.txt", "vocabulary.json")
 TRANSCRIPTION_WRAPPER_KEYS = ("data", "result", "output", "transcript")
 ProgressCallback = Callable[[str, int], None]
+CancellationCallback = Callable[[], bool]
 
 
 def load_internal_whisper_model() -> tuple[object | None, str]:
@@ -40,6 +43,10 @@ WhisperModel, FASTER_WHISPER_IMPORT_ERROR = load_internal_whisper_model()
 
 
 class TranscriptionError(RuntimeError):
+    pass
+
+
+class TranscriptionCancelled(TranscriptionError):
     pass
 
 
@@ -63,11 +70,23 @@ def transcribe_audio(
     config: JobConfig,
     work_dir: Path,
     progress_callback: ProgressCallback | None = None,
+    *,
+    prepared_audio: PreparedAudio | None = None,
+    is_cancelled: CancellationCallback | None = None,
+    hardware_profile: HardwareProfile | None = None,
 ) -> dict:
     if config.transcription_mode == TranscriptionMode.chat_audio:
         payload = transcribe_with_chat_audio(audio_path, config, work_dir, progress_callback=progress_callback)
     elif config.transcription_mode == TranscriptionMode.local_faster_whisper:
-        payload = transcribe_with_faster_whisper(audio_path, config, work_dir, progress_callback=progress_callback)
+        payload = transcribe_with_faster_whisper(
+            audio_path,
+            config,
+            work_dir,
+            progress_callback=progress_callback,
+            prepared_audio=prepared_audio,
+            is_cancelled=is_cancelled,
+            hardware_profile=hardware_profile,
+        )
     else:
         payload = transcribe_with_audio_endpoint(audio_path, config, work_dir, progress_callback=progress_callback)
     return payload.model_dump()
@@ -78,13 +97,17 @@ def transcribe_with_faster_whisper(
     config: JobConfig,
     work_dir: Path,
     progress_callback: ProgressCallback | None = None,
+    *,
+    prepared_audio: PreparedAudio | None = None,
+    is_cancelled: CancellationCallback | None = None,
+    hardware_profile: HardwareProfile | None = None,
 ) -> TranscriptPayload:
+    cancellation = is_cancelled or (lambda: False)
+    _raise_if_transcription_cancelled(cancellation)
     model_name = config.transcription_model.strip() or "small"
     model_root = get_faster_whisper_model_root()
     model_root.mkdir(parents=True, exist_ok=True)
     model_identifier = resolve_local_faster_whisper_model(model_name, model_root)
-    if progress_callback:
-        progress_callback(f"字幕生成中：加载 Faster Whisper 模型 {model_name}", 36)
 
     if WhisperModel is None:
         try:
@@ -95,6 +118,8 @@ def transcribe_with_faster_whisper(
                 work_dir=work_dir,
                 progress_callback=progress_callback,
             )
+        except TranscriptionCancelled:
+            raise
         except Exception as exc:
             detail = f" Import error: {FASTER_WHISPER_IMPORT_ERROR}" if FASTER_WHISPER_IMPORT_ERROR else ""
             raise TranscriptionError(
@@ -103,85 +128,153 @@ def transcribe_with_faster_whisper(
                 f"{detail} External worker error: {exc}"
             ) from exc
 
-    device, compute_type = resolve_local_whisper_runtime(config)
-    configure_internal_cuda_dll_paths(device)
-    duration = probe_duration(audio_path) or 0.0
-    if duration > LOCAL_WHISPER_CHUNK_THRESHOLD_SECONDS:
-        if progress_callback:
-            progress_callback("字幕生成中：正在切分长音频…", 37)
-        chunks = split_audio(audio_path, work_dir / "whisper_chunks", STANDARD_TRANSCRIPTION_CHUNK_SECONDS)
-        if progress_callback:
-            progress_callback(f"字幕生成中：已切分为 {len(chunks)} 块，开始逐块转写", 38)
-        merged_segments: list[TranscriptSegment] = []
-        offset = 0.0
-        chunk_count = len(chunks)
-        for index, chunk in enumerate(chunks, start=1):
-            if progress_callback:
-                progress = 35 + int((index - 1) / max(chunk_count, 1) * 25)
-                progress_callback(f"字幕生成中：第 {index}/{chunk_count} 块转写中", progress)
-            chunk_payload = _transcribe_single_chunk(model_identifier, model_root, config, chunk)
-            for segment in chunk_payload.segments:
-                merged_segments.append(
-                    TranscriptSegment(
-                        start=segment.start + offset,
-                        end=segment.end + offset,
-                        text=segment.text,
-                    )
-                )
-            offset += probe_duration(chunk) or STANDARD_TRANSCRIPTION_CHUNK_SECONDS
-        return TranscriptPayload(
-            text=" ".join(segment.text for segment in merged_segments).strip(),
-            segments=merged_segments,
-        )
+    duration = float(prepared_audio.duration if prepared_audio else (probe_duration(audio_path) or 0.0))
+    profile = hardware_profile or _default_hardware_profile(config)
+    plan = resolve_execution_plan(config, duration, profile)
+    chunks = _local_chunk_specs(
+        audio_path,
+        work_dir,
+        plan,
+        duration,
+        prepared_audio=prepared_audio,
+        progress_callback=progress_callback,
+    )
+    session = open_checkpoint_session(work_dir / "work" / "asr", audio_path, plan, chunks)
+    completed = session.completed_indices()
+    pending = [chunk for chunk in session.chunks if chunk.index not in completed]
+    if not pending:
+        return session.merge_results()
 
+    _raise_if_transcription_cancelled(cancellation)
+    if progress_callback:
+        progress_callback(f"字幕生成中：加载 Faster Whisper 模型 {model_name}", 36)
+    configure_internal_cuda_dll_paths(plan.device)
     try:
         model = WhisperModel(
             model_identifier,
-            device=device,
-            compute_type=compute_type,
+            device=plan.device,
+            compute_type=plan.compute_type,
             download_root=str(model_root),
+            cpu_threads=plan.cpu_threads,
+            num_workers=plan.num_workers,
         )
         if progress_callback:
             progress_callback("字幕生成中：本地 Faster Whisper 转写中", 38)
-        language = resolve_transcription_language(config)
-        segments_raw, _info = model.transcribe(
-            str(audio_path),
-            language=language or None,
-            vad_filter=True,
-            vad_parameters={"min_silence_duration_ms": 500, "threshold": 0.5},
-            beam_size=5,
-            best_of=3,
-        )
-        return faster_whisper_segments_to_payload(segments_raw)
+        for ordinal, chunk in enumerate(pending, start=1):
+            _raise_if_transcription_cancelled(cancellation)
+            if progress_callback and len(chunks) > 1:
+                progress_callback(
+                    f"字幕生成中：第 {ordinal}/{len(pending)} 个待处理块",
+                    _transcription_percent(chunk.start, duration),
+                )
+            payload = _transcribe_chunk_with_model(
+                model,
+                chunk,
+                plan,
+                config,
+                total_duration=duration,
+                is_cancelled=cancellation,
+                progress_callback=progress_callback,
+            )
+            _raise_if_transcription_cancelled(cancellation)
+            session.write_result(chunk.index, payload)
+        return session.merge_results()
+    except TranscriptionCancelled:
+        raise
     except Exception as exc:
         raise TranscriptionError(f"Local Faster Whisper transcription failed: {exc}") from exc
 
 
-def _transcribe_single_chunk(
-    model_identifier: str,
-    model_root: Path,
+def _transcribe_chunk_with_model(
+    model: object,
+    chunk: ChunkSpec,
+    plan: TranscriptionExecutionPlan,
     config: JobConfig,
-    chunk_path: Path,
+    *,
+    total_duration: float,
+    is_cancelled: CancellationCallback,
+    progress_callback: ProgressCallback | None,
 ) -> TranscriptPayload:
-    """Transcribe one audio chunk with its own WhisperModel instance."""
-    device, compute_type = resolve_local_whisper_runtime(config)
     language = resolve_transcription_language(config)
-    configure_internal_cuda_dll_paths(device)
-    model = WhisperModel(
-        model_identifier,
-        device=device,
-        compute_type=compute_type,
-        download_root=str(model_root),
-    )
     segments_raw, _info = model.transcribe(
-        str(chunk_path),
+        str(chunk.path),
         language=language or None,
-        vad_filter=True,
-        vad_parameters={"min_silence_duration_ms": 500, "threshold": 0.5},
-        beam_size=5,
-        best_of=3,
+        vad_filter=plan.vad_filter,
+        vad_parameters={
+            "min_silence_duration_ms": plan.vad_min_silence_ms,
+            "threshold": plan.vad_threshold,
+        },
+        beam_size=plan.beam_size,
+        best_of=plan.best_of,
     )
-    return faster_whisper_segments_to_payload(segments_raw)
+    return faster_whisper_segments_to_payload(
+        segments_raw,
+        is_cancelled=is_cancelled,
+        on_segment=(
+            lambda end: progress_callback(
+                f"字幕生成中：已处理 {seconds_to_hhmmss(min(total_duration, chunk.start + end))} / "
+                f"{seconds_to_hhmmss(total_duration)}",
+                _transcription_percent(chunk.start + end, total_duration),
+            )
+            if progress_callback and total_duration > 0
+            else None
+        ),
+    )
+
+
+def _local_chunk_specs(
+    audio_path: Path,
+    work_dir: Path,
+    plan: TranscriptionExecutionPlan,
+    duration: float,
+    *,
+    prepared_audio: PreparedAudio | None,
+    progress_callback: ProgressCallback | None,
+) -> list[ChunkSpec]:
+    if prepared_audio is not None:
+        return list(prepared_audio.chunks)
+    if plan.chunk_seconds <= 0:
+        return [ChunkSpec(index=0, start=0.0, end=max(0.0, duration), path=audio_path)]
+    if progress_callback:
+        progress_callback("字幕生成中：正在切分长音频…", 37)
+    paths = split_audio(audio_path, work_dir / "whisper_chunks", plan.chunk_seconds)
+    chunks: list[ChunkSpec] = []
+    offset = 0.0
+    for index, path in enumerate(paths):
+        measured = float(probe_duration(path) or plan.chunk_seconds)
+        chunks.append(ChunkSpec(index=index, start=offset, end=offset + measured, path=path))
+        offset += measured
+    return chunks
+
+
+def _default_hardware_profile(config: JobConfig) -> HardwareProfile:
+    configured = str(config.local_whisper_device or "").strip()
+    cuda_available = configured == "cuda"
+    if configured in {"", "auto"}:
+        try:
+            import ctranslate2
+
+            cuda_available = int(ctranslate2.get_cuda_device_count()) > 0
+        except Exception:
+            cuda_available = False
+    return HardwareProfile(
+        cpu_count=max(1, os.cpu_count() or 1),
+        memory_bytes=None,
+        cuda_available=cuda_available,
+        cuda_memory_bytes=None,
+    )
+
+
+def _raise_if_transcription_cancelled(is_cancelled: CancellationCallback) -> None:
+    if is_cancelled():
+        raise TranscriptionCancelled("Local transcription was cancelled.")
+
+
+def _transcription_percent(completed_seconds: float, total_seconds: float) -> int:
+    if total_seconds <= 0:
+        return 38
+    fraction = max(0.0, min(1.0, completed_seconds / total_seconds))
+    return max(38, min(60, 35 + int(fraction * 25)))
 
 
 
@@ -401,16 +494,25 @@ def is_complete_faster_whisper_model_dir(model_dir: Path) -> bool:
     )
 
 
-def faster_whisper_segments_to_payload(segments_raw: object) -> TranscriptPayload:
+def faster_whisper_segments_to_payload(
+    segments_raw: object,
+    *,
+    is_cancelled: CancellationCallback | None = None,
+    on_segment: Callable[[float], None] | None = None,
+) -> TranscriptPayload:
     segments: list[TranscriptSegment] = []
     full_text_parts: list[str] = []
     for item in segments_raw:
+        if is_cancelled is not None:
+            _raise_if_transcription_cancelled(is_cancelled)
+        start = max(0.0, float(getattr(item, "start", 0) or 0))
+        end = max(start, float(getattr(item, "end", start) or start))
+        if on_segment is not None:
+            on_segment(end)
         text = str(getattr(item, "text", "")).strip()
         if not text:
             continue
-        start = max(0.0, float(getattr(item, "start", 0) or 0))
-        end = float(getattr(item, "end", start) or start)
-        segments.append(TranscriptSegment(start=start, end=max(start, end), text=text))
+        segments.append(TranscriptSegment(start=start, end=end, text=text))
         full_text_parts.append(text)
     return TranscriptPayload(text=" ".join(full_text_parts).strip(), segments=segments)
 
