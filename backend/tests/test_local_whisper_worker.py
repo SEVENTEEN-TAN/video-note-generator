@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from backend.app import local_whisper_worker
 from backend.app.models import TranscriptPayload
 
@@ -173,6 +175,100 @@ def test_session_keeps_completed_result_when_later_chunk_fails(tmp_path, monkeyp
     events = _stdout_events(capsys)
     assert [event["type"] for event in events] == ["ready", "progress", "chunk_complete", "error"]
     assert events[-1]["message"] == "second chunk exploded"
+
+
+def test_session_temp_file_cannot_destroy_an_earlier_completed_result(tmp_path, monkeypatch, capsys) -> None:
+    model_root = tmp_path / "models"
+    first_audio = (tmp_path / "chunk-0.mp3").resolve()
+    second_audio = (tmp_path / "chunk-1.mp3").resolve()
+    second_result = (tmp_path / "chunk-1.json").resolve()
+    first_result = second_result.with_name(f"{second_result.name}.tmp")
+    first_audio.write_bytes(b"first")
+    second_audio.write_bytes(b"second")
+    request_path = tmp_path / "session.json"
+    _write_session_request(
+        request_path,
+        model_root=model_root,
+        chunks=[
+            {"index": 0, "audio_path": str(first_audio), "result_path": str(first_result)},
+            {"index": 1, "audio_path": str(second_audio), "result_path": str(second_result)},
+        ],
+    )
+
+    class FakeWhisperModel:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def transcribe(self, audio_path: str, **kwargs):
+            text = "saved first" if audio_path == str(first_audio) else "later"
+            return iter([SimpleNamespace(start=0, end=1, text=text)]), object()
+
+    real_replace = local_whisper_worker.os.replace
+
+    def fail_second_replace(source, destination) -> None:
+        if Path(destination) == second_result:
+            raise OSError("second result publish failed")
+        real_replace(source, destination)
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisperModel))
+    monkeypatch.setattr(local_whisper_worker, "resolve_local_faster_whisper_model", lambda *_args: "resolved")
+    monkeypatch.setattr(local_whisper_worker.os, "replace", fail_second_replace)
+
+    exit_code = _run_main(monkeypatch, "--session-request", str(request_path))
+
+    assert exit_code != 0
+    assert TranscriptPayload.model_validate_json(first_result.read_text(encoding="utf-8")).text == "saved first"
+    assert not second_result.exists()
+    events = _stdout_events(capsys)
+    assert events[-1] == {"type": "error", "message": "second result publish failed"}
+
+
+@pytest.mark.parametrize("invalid_index", [float("nan"), float("inf"), float("-inf")])
+def test_session_rejects_non_finite_chunk_indexes_before_model_loading(
+    tmp_path, monkeypatch, capsys, invalid_index
+) -> None:
+    audio_path = (tmp_path / "chunk.mp3").resolve()
+    result_path = (tmp_path / "chunk.json").resolve()
+    audio_path.write_bytes(b"audio")
+    request_path = tmp_path / "session.json"
+    _write_session_request(
+        request_path,
+        model_root=tmp_path / "models",
+        chunks=[{"index": invalid_index, "audio_path": str(audio_path), "result_path": str(result_path)}],
+    )
+
+    class MustNotLoadModel:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("invalid requests must be rejected before model loading")
+
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=MustNotLoadModel))
+    monkeypatch.setattr(local_whisper_worker, "resolve_local_faster_whisper_model", lambda *_args: "resolved")
+
+    exit_code = _run_main(monkeypatch, "--session-request", str(request_path))
+
+    assert exit_code != 0
+    assert "finite" in _stdout_events(capsys)[-1]["message"]
+
+
+@pytest.mark.parametrize("invalid_threshold", [float("nan"), float("inf"), float("-inf")])
+def test_session_rejects_non_finite_vad_threshold(tmp_path, monkeypatch, capsys, invalid_threshold) -> None:
+    audio_path = (tmp_path / "chunk.mp3").resolve()
+    result_path = (tmp_path / "chunk.json").resolve()
+    audio_path.write_bytes(b"audio")
+    request_path = tmp_path / "session.json"
+    _write_session_request(
+        request_path,
+        model_root=tmp_path / "models",
+        chunks=[{"index": 0, "audio_path": str(audio_path), "result_path": str(result_path)}],
+    )
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request["vad_threshold"] = invalid_threshold
+    request_path.write_text(json.dumps(request), encoding="utf-8")
+
+    exit_code = _run_main(monkeypatch, "--session-request", str(request_path))
+
+    assert exit_code != 0
+    assert "finite" in _stdout_events(capsys)[-1]["message"]
 
 
 def test_legacy_single_audio_mode_still_returns_one_transcript_payload(tmp_path, monkeypatch, capsys) -> None:

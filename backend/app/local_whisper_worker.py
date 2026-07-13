@@ -3,9 +3,11 @@
 import argparse
 import ctypes
 import json
+import math
 import os
 import site
 import sys
+import tempfile
 from pathlib import Path
 
 REQUIRED_FASTER_WHISPER_FILES = ("config.json", "model.bin", "tokenizer.json")
@@ -168,7 +170,10 @@ def require_session_number(request: dict, field_name: str) -> float:
     value = request.get(field_name)
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise RuntimeError(f"Session request field '{field_name}' must be numeric.")
-    return float(value)
+    number = float(value)
+    if not math.isfinite(number):
+        raise RuntimeError(f"Session request field '{field_name}' must be finite.")
+    return number
 
 
 def validate_session_chunks(raw_chunks: object) -> list[dict]:
@@ -183,6 +188,8 @@ def validate_session_chunks(raw_chunks: object) -> list[dict]:
         index = raw_chunk.get("index")
         if isinstance(index, bool) or not isinstance(index, (int, float)):
             raise RuntimeError(f"Session chunk at position {position} has a non-numeric index.")
+        if isinstance(index, float) and not math.isfinite(index):
+            raise RuntimeError(f"Session chunk at position {position} must have a finite index.")
         if index in seen_indexes:
             raise RuntimeError(f"Session request contains duplicate chunk index {index}.")
         seen_indexes.add(index)
@@ -206,10 +213,15 @@ def require_absolute_chunk_path(chunk: dict, field_name: str, chunk_index: int |
 
 def write_transcript_payload_atomic(result_path: Path, payload: dict) -> None:
     result_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = result_path.with_name(f"{result_path.name}.tmp")
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=result_path.parent,
+        prefix=f".{result_path.name}.",
+        suffix=".tmp",
+    )
+    temporary_path = Path(temporary_name)
     try:
-        with temporary_path.open("w", encoding="utf-8", newline="\n") as stream:
-            json.dump(payload, stream, ensure_ascii=False)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, ensure_ascii=False, allow_nan=False)
             stream.write("\n")
             stream.flush()
             os.fsync(stream.fileno())
@@ -223,7 +235,7 @@ def write_transcript_payload_atomic(result_path: Path, payload: dict) -> None:
 
 
 def emit_event(event: dict) -> None:
-    print(json.dumps(event, ensure_ascii=False), flush=True)
+    print(json.dumps(event, ensure_ascii=False, allow_nan=False), flush=True)
 def get_runtime_status() -> dict:
     status = {
         "python_path": sys.executable,
