@@ -168,11 +168,12 @@ def prepare_audio_artifacts(
     if empty_chunks:
         raise FFmpegError(f"Local ASR audio preparation produced an empty FLAC chunk: {', '.join(empty_chunks)}")
 
-    duration = max(0.0, float(duration_seconds or 0.0))
+    duration_known = duration_seconds is not None
+    duration = max(0.0, float(duration_seconds if duration_known else 0.0))
     chunks: list[ChunkSpec] = []
     for chunk_path in chunk_paths:
         index = _flac_chunk_index(chunk_path)
-        if duration > 0:
+        if duration_known:
             start = float(index * chunk_seconds) if chunk_seconds > 0 else 0.0
             end = min(duration, start + chunk_seconds) if chunk_seconds > 0 else duration
         else:
@@ -185,7 +186,7 @@ def prepare_audio_artifacts(
             end = start + measured
         chunks.append(ChunkSpec(index=index, start=start, end=max(start, end), path=chunk_path))
 
-    resolved_duration = duration or max((chunk.end for chunk in chunks), default=0.0)
+    resolved_duration = duration if duration_known else max((chunk.end for chunk in chunks), default=0.0)
     return PreparedAudio(mp3_path=mp3_path, chunks=chunks, duration=resolved_duration)
 
 

@@ -228,3 +228,34 @@ def test_prepare_audio_sorts_chunk_names_by_numeric_index(tmp_path, monkeypatch)
 
     assert [chunk.index for chunk in prepared.chunks] == [999, 1000]
     assert [chunk.path.name for chunk in prepared.chunks] == ["chunk_999.flac", "chunk_1000.flac"]
+
+
+def test_prepare_audio_treats_explicit_zero_duration_as_known(tmp_path, monkeypatch) -> None:
+    video_path = Path("empty.mp4")
+    mp3_path = tmp_path / "audio.mp3"
+    asr_dir = tmp_path / "work" / "asr"
+    monkeypatch.setattr(
+        ffmpeg_tools,
+        "probe_duration",
+        lambda path: (_ for _ in ()).throw(AssertionError(f"unexpected duration probe: {path}")),
+    )
+
+    def fake_run(args: list[str]):
+        mp3_path.write_bytes(b"mp3")
+        chunk_path = asr_dir / "chunks" / "chunk_000.flac"
+        chunk_path.parent.mkdir(parents=True, exist_ok=True)
+        chunk_path.write_bytes(b"flac")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ffmpeg_tools, "run_ffmpeg", fake_run)
+
+    prepared = prepare_audio_artifacts(
+        video_path,
+        mp3_path,
+        asr_dir,
+        chunk_seconds=0,
+        duration_seconds=0.0,
+    )
+
+    assert prepared.duration == 0.0
+    assert prepared.chunks[0].end == 0.0
