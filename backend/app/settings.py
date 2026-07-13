@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from .models import NoteLanguage, NoteStyle, TranscriptionMode
+from .models import NoteLanguage, NoteStyle, PerformanceMode, TranscriptionMode
 from .runtime_paths import get_app_data_root
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -23,6 +23,7 @@ class UserSettings(BaseModel):
     transcription_model: str = "small"
     local_whisper_device: str = "cpu"
     local_whisper_compute_type: str = "int8"
+    performance_mode: PerformanceMode = PerformanceMode.balanced
     external_python_path: str = ""
     faster_whisper_model_dir: str = ""
     python_package_install_mode: PythonPackageInstallMode = "default"
@@ -82,6 +83,7 @@ class UserSettingsUpdate(BaseModel):
     transcription_model: str | None = None
     local_whisper_device: str | None = None
     local_whisper_compute_type: str | None = None
+    performance_mode: PerformanceMode | None = None
     external_python_path: str | None = None
     faster_whisper_model_dir: str | None = None
     python_package_install_mode: PythonPackageInstallMode | None = None

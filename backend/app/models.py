@@ -52,6 +52,12 @@ class LocalWhisperComputeType(str, Enum):
     float32 = "float32"
 
 
+class PerformanceMode(str, Enum):
+    fast = "fast"
+    balanced = "balanced"
+    accurate = "accurate"
+
+
 class TranscriptionLanguage(str, Enum):
     auto = "auto"
     zh = "zh"
@@ -65,6 +71,7 @@ class JobConfig(BaseModel):
     transcription_model: str = "whisper-1"
     local_whisper_device: LocalWhisperDevice | str = ""
     local_whisper_compute_type: LocalWhisperComputeType | str = ""
+    performance_mode: PerformanceMode = PerformanceMode.balanced
     transcription_language: TranscriptionLanguage | str = TranscriptionLanguage.auto
     note_api_key: str
     note_base_url: str = "https://api.openai.com/v1"

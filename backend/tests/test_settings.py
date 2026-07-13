@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from backend.app.models import NoteLanguage, NoteStyle, TranscriptionMode
+from backend.app.models import NoteLanguage, NoteStyle, PerformanceMode, TranscriptionMode
 from backend.app.settings import clear_user_settings, get_settings_path, load_user_settings, save_user_settings
 
 
@@ -18,6 +18,7 @@ def test_user_settings_roundtrip_persists_keys_and_models(tmp_path, monkeypatch)
             "transcription_model": "whisper-1",
             "local_whisper_device": "cuda",
             "local_whisper_compute_type": "float16",
+            "performance_mode": "accurate",
             "note_api_key": "note-secret",
             "note_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "note_model": "qwen-plus",
@@ -36,6 +37,7 @@ def test_user_settings_roundtrip_persists_keys_and_models(tmp_path, monkeypatch)
     assert loaded.transcription_api_key == "transcription-secret"
     assert loaded.local_whisper_device == "cuda"
     assert loaded.local_whisper_compute_type == "float16"
+    assert loaded.performance_mode == PerformanceMode.accurate
     assert loaded.note_api_key == "note-secret"
     assert loaded.note_model == "qwen-plus"
     assert loaded.note_language == NoteLanguage.follow
@@ -58,6 +60,17 @@ def test_clear_user_settings_removes_file_and_returns_defaults(tmp_path, monkeyp
     assert cleared.transcription_model == "small"
     assert cleared.local_whisper_device == "cpu"
     assert cleared.local_whisper_compute_type == "int8"
+    assert cleared.performance_mode == PerformanceMode.balanced
+
+
+def test_old_settings_without_performance_mode_default_to_balanced(tmp_path, monkeypatch) -> None:
+    settings_path = tmp_path / "settings.json"
+    monkeypatch.setenv("VIDEO_NOTE_SETTINGS_FILE", str(settings_path))
+    settings_path.write_text('{"transcription_model": "small"}', encoding="utf-8")
+
+    loaded = load_user_settings()
+
+    assert loaded.performance_mode == PerformanceMode.balanced
 
 
 def test_user_settings_roundtrip_persists_runtime_path_overrides(tmp_path, monkeypatch) -> None:
