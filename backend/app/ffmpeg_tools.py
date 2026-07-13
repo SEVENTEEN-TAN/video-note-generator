@@ -100,6 +100,8 @@ def prepare_audio_artifacts(
     mp3_path: Path,
     asr_dir: Path,
     chunk_seconds: int,
+    *,
+    duration_seconds: float | None = None,
 ) -> PreparedAudio:
     """Create the public MP3 and local-ASR FLAC input from one source read."""
 
@@ -159,25 +161,39 @@ def prepare_audio_artifacts(
 
     if not mp3_path.exists() or mp3_path.stat().st_size == 0:
         raise FFmpegError("MP3 extraction produced no output. The video may not contain an audio track.")
-    chunk_paths = sorted(path for path in chunks_dir.glob("chunk_*.flac") if path.stat().st_size > 0)
+    chunk_paths = sorted(chunks_dir.glob("chunk_*.flac"), key=_flac_chunk_index)
     if not chunk_paths:
         raise FFmpegError("Local ASR audio preparation produced no FLAC chunks.")
+    empty_chunks = [path.name for path in chunk_paths if path.stat().st_size == 0]
+    if empty_chunks:
+        raise FFmpegError(f"Local ASR audio preparation produced an empty FLAC chunk: {', '.join(empty_chunks)}")
 
-    duration = float(probe_duration(video_path) or 0.0)
+    duration = max(0.0, float(duration_seconds or 0.0))
     chunks: list[ChunkSpec] = []
-    offset = 0.0
-    for index, chunk_path in enumerate(chunk_paths):
-        if chunk_seconds > 0 and duration > 0:
-            start = float(index * chunk_seconds)
-            end = min(duration, start + chunk_seconds)
+    for chunk_path in chunk_paths:
+        index = _flac_chunk_index(chunk_path)
+        if duration > 0:
+            start = float(index * chunk_seconds) if chunk_seconds > 0 else 0.0
+            end = min(duration, start + chunk_seconds) if chunk_seconds > 0 else duration
         else:
-            start = offset
-            measured = float(probe_duration(chunk_path) or (duration if len(chunk_paths) == 1 else chunk_seconds) or 0.0)
+            start = float(index * chunk_seconds) if chunk_seconds > 0 else 0.0
+            measured = float(
+                probe_duration(chunk_path)
+                or (duration if len(chunk_paths) == 1 else chunk_seconds)
+                or 0.0
+            )
             end = start + measured
         chunks.append(ChunkSpec(index=index, start=start, end=max(start, end), path=chunk_path))
-        offset = chunks[-1].end
 
-    return PreparedAudio(mp3_path=mp3_path, chunks=chunks, duration=duration or offset)
+    resolved_duration = duration or max((chunk.end for chunk in chunks), default=0.0)
+    return PreparedAudio(mp3_path=mp3_path, chunks=chunks, duration=resolved_duration)
+
+
+def _flac_chunk_index(path: Path) -> int:
+    match = re.fullmatch(r"chunk_(\d+)\.flac", path.name)
+    if not match:
+        raise FFmpegError(f"Invalid local ASR chunk filename: {path.name}")
+    return int(match.group(1))
 
 
 def split_audio(audio_path: Path, chunks_dir: Path, segment_seconds: int = 600) -> list[Path]:

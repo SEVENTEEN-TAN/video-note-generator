@@ -86,7 +86,11 @@ def test_prepare_long_local_audio_uses_one_source_read_and_flac_chunks(tmp_path,
     asr_dir = tmp_path / "work" / "asr"
     commands: list[list[str]] = []
 
-    monkeypatch.setattr(ffmpeg_tools, "probe_duration", lambda _path: 1200.0)
+    monkeypatch.setattr(
+        ffmpeg_tools,
+        "probe_duration",
+        lambda path: (_ for _ in ()).throw(AssertionError(f"unexpected duration probe: {path}")),
+    )
 
     def fake_run(args: list[str]):
         commands.append(args)
@@ -99,7 +103,13 @@ def test_prepare_long_local_audio_uses_one_source_read_and_flac_chunks(tmp_path,
 
     monkeypatch.setattr(ffmpeg_tools, "run_ffmpeg", fake_run)
 
-    prepared = prepare_audio_artifacts(video_path, mp3_path, asr_dir, chunk_seconds=600)
+    prepared = prepare_audio_artifacts(
+        video_path,
+        mp3_path,
+        asr_dir,
+        chunk_seconds=600,
+        duration_seconds=1200.0,
+    )
 
     assert len(commands) == 1
     command = commands[0]
@@ -117,7 +127,11 @@ def test_prepare_short_local_audio_creates_one_flac_chunk(tmp_path, monkeypatch)
     mp3_path = tmp_path / "audio.mp3"
     asr_dir = tmp_path / "work" / "asr"
 
-    monkeypatch.setattr(ffmpeg_tools, "probe_duration", lambda _path: 900.0)
+    monkeypatch.setattr(
+        ffmpeg_tools,
+        "probe_duration",
+        lambda path: (_ for _ in ()).throw(AssertionError(f"unexpected duration probe: {path}")),
+    )
 
     def fake_run(args: list[str]):
         mp3_path.write_bytes(b"mp3")
@@ -128,7 +142,13 @@ def test_prepare_short_local_audio_creates_one_flac_chunk(tmp_path, monkeypatch)
 
     monkeypatch.setattr(ffmpeg_tools, "run_ffmpeg", fake_run)
 
-    prepared = prepare_audio_artifacts(video_path, mp3_path, asr_dir, chunk_seconds=0)
+    prepared = prepare_audio_artifacts(
+        video_path,
+        mp3_path,
+        asr_dir,
+        chunk_seconds=0,
+        duration_seconds=900.0,
+    )
 
     assert len(prepared.chunks) == 1
     assert prepared.chunks[0].path.name == "chunk_000.flac"
@@ -156,3 +176,55 @@ def test_prepare_audio_removes_stale_flac_chunks_before_build(tmp_path, monkeypa
 
     assert [chunk.path.name for chunk in prepared.chunks] == ["chunk_000.flac"]
     assert not (chunks_dir / "chunk_009.flac").exists()
+
+
+def test_prepare_audio_rejects_any_empty_flac_chunk(tmp_path, monkeypatch) -> None:
+    video_path = Path("input.mp4")
+    mp3_path = tmp_path / "audio.mp3"
+    asr_dir = tmp_path / "work" / "asr"
+
+    def fake_run(args: list[str]):
+        mp3_path.write_bytes(b"mp3")
+        chunks_dir = asr_dir / "chunks"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        (chunks_dir / "chunk_000.flac").write_bytes(b"first")
+        (chunks_dir / "chunk_001.flac").write_bytes(b"")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ffmpeg_tools, "run_ffmpeg", fake_run)
+
+    with pytest.raises(FFmpegError, match="empty FLAC chunk"):
+        prepare_audio_artifacts(
+            video_path,
+            mp3_path,
+            asr_dir,
+            chunk_seconds=600,
+            duration_seconds=1200.0,
+        )
+
+
+def test_prepare_audio_sorts_chunk_names_by_numeric_index(tmp_path, monkeypatch) -> None:
+    video_path = Path("input.mp4")
+    mp3_path = tmp_path / "audio.mp3"
+    asr_dir = tmp_path / "work" / "asr"
+
+    def fake_run(args: list[str]):
+        mp3_path.write_bytes(b"mp3")
+        chunks_dir = asr_dir / "chunks"
+        chunks_dir.mkdir(parents=True, exist_ok=True)
+        (chunks_dir / "chunk_1000.flac").write_bytes(b"later")
+        (chunks_dir / "chunk_999.flac").write_bytes(b"earlier")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ffmpeg_tools, "run_ffmpeg", fake_run)
+
+    prepared = prepare_audio_artifacts(
+        video_path,
+        mp3_path,
+        asr_dir,
+        chunk_seconds=600,
+        duration_seconds=1001 * 600.0,
+    )
+
+    assert [chunk.index for chunk in prepared.chunks] == [999, 1000]
+    assert [chunk.path.name for chunk in prepared.chunks] == ["chunk_999.flac", "chunk_1000.flac"]
