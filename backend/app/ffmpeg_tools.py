@@ -5,15 +5,24 @@ import shutil
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import imageio_ffmpeg
 
 from .time_utils import clamp_seconds
+from .transcription_checkpoints import ChunkSpec
 
 
 class FFmpegError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class PreparedAudio:
+    mp3_path: Path
+    chunks: list[ChunkSpec]
+    duration: float
 
 
 def get_ffmpeg_path() -> str | None:
@@ -84,6 +93,91 @@ def extract_mp3(video_path: Path, audio_path: Path) -> None:
     )
     if not audio_path.exists() or audio_path.stat().st_size == 0:
         raise FFmpegError("MP3 extraction produced no output. The video may not contain an audio track.")
+
+
+def prepare_audio_artifacts(
+    video_path: Path,
+    mp3_path: Path,
+    asr_dir: Path,
+    chunk_seconds: int,
+) -> PreparedAudio:
+    """Create the public MP3 and local-ASR FLAC input from one source read."""
+
+    mp3_path.parent.mkdir(parents=True, exist_ok=True)
+    chunks_dir = asr_dir / "chunks"
+    chunks_dir.mkdir(parents=True, exist_ok=True)
+    for old_chunk in chunks_dir.glob("chunk_*.flac"):
+        old_chunk.unlink()
+
+    asr_args = [
+        "-map",
+        "0:a:0",
+        "-vn",
+        "-codec:a",
+        "flac",
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+    ]
+    if chunk_seconds > 0:
+        asr_args.extend(
+            [
+                "-f",
+                "segment",
+                "-segment_time",
+                str(chunk_seconds),
+                "-reset_timestamps",
+                "1",
+                str(chunks_dir / "chunk_%03d.flac"),
+            ]
+        )
+    else:
+        asr_args.append(str(chunks_dir / "chunk_000.flac"))
+
+    run_ffmpeg(
+        [
+            "-y",
+            "-hide_banner",
+            "-i",
+            str(video_path),
+            "-map",
+            "0:a:0",
+            "-vn",
+            "-codec:a",
+            "libmp3lame",
+            "-ar",
+            "44100",
+            "-ac",
+            "2",
+            "-b:a",
+            "192k",
+            str(mp3_path),
+            *asr_args,
+        ]
+    )
+
+    if not mp3_path.exists() or mp3_path.stat().st_size == 0:
+        raise FFmpegError("MP3 extraction produced no output. The video may not contain an audio track.")
+    chunk_paths = sorted(path for path in chunks_dir.glob("chunk_*.flac") if path.stat().st_size > 0)
+    if not chunk_paths:
+        raise FFmpegError("Local ASR audio preparation produced no FLAC chunks.")
+
+    duration = float(probe_duration(video_path) or 0.0)
+    chunks: list[ChunkSpec] = []
+    offset = 0.0
+    for index, chunk_path in enumerate(chunk_paths):
+        if chunk_seconds > 0 and duration > 0:
+            start = float(index * chunk_seconds)
+            end = min(duration, start + chunk_seconds)
+        else:
+            start = offset
+            measured = float(probe_duration(chunk_path) or (duration if len(chunk_paths) == 1 else chunk_seconds) or 0.0)
+            end = start + measured
+        chunks.append(ChunkSpec(index=index, start=start, end=max(start, end), path=chunk_path))
+        offset = chunks[-1].end
+
+    return PreparedAudio(mp3_path=mp3_path, chunks=chunks, duration=duration or offset)
 
 
 def split_audio(audio_path: Path, chunks_dir: Path, segment_seconds: int = 600) -> list[Path]:
