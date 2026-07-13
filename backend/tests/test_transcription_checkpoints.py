@@ -83,6 +83,16 @@ def test_changed_plan_invalidates_results_not_chunks(tmp_path):
     assert reopened.chunks[0].path.exists()
 
 
+def test_changed_chunk_file_invalidates_result_not_chunk(tmp_path):
+    session = make_completed_session(tmp_path, beam_size=3)
+    session.chunks[0].path.write_bytes(b"replacement chunk")
+
+    reopened = make_session(tmp_path, plan=make_plan(beam_size=3))
+
+    assert reopened.completed_indices() == set()
+    assert reopened.chunks[0].path.exists()
+
+
 def test_merge_offsets_chunks_in_order(tmp_path):
     session = make_two_chunk_session(tmp_path)
     session.write_result(0, payload(0, 2, "first"))
@@ -105,5 +115,8 @@ def test_manifest_stores_job_relative_paths(tmp_path):
 
     manifest = json.loads(session.manifest_path.read_text(encoding="utf-8"))
 
+    chunk_stat = session.chunks[0].path.stat()
     assert not Path(manifest["source"]["path"]).is_absolute()
     assert not Path(manifest["chunks"][0]["path"]).is_absolute()
+    assert manifest["chunks"][0]["size"] == chunk_stat.st_size
+    assert manifest["chunks"][0]["mtime_ns"] == chunk_stat.st_mtime_ns

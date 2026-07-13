@@ -45,8 +45,8 @@ def _relative_path(path: Path, root: Path) -> str:
     return os.path.relpath(path.resolve(), root.resolve())
 
 
-def _source_signature(source_path: Path) -> dict[str, Any]:
-    stat = source_path.stat()
+def _file_signature(path: Path) -> dict[str, Any]:
+    stat = path.stat()
     return {
         "size": stat.st_size,
         "mtime_ns": stat.st_mtime_ns,
@@ -59,6 +59,7 @@ def _chunk_manifest(chunk: ChunkSpec, root: Path) -> dict[str, Any]:
         "start": chunk.start,
         "end": chunk.end,
         "path": _relative_path(chunk.path, root),
+        **_file_signature(chunk.path),
     }
 
 
@@ -94,7 +95,7 @@ class TranscriptionCheckpointSession:
             "version": 1,
             "source": {
                 "path": _relative_path(self.source_path, self.work_dir),
-                **_source_signature(self.source_path),
+                **_file_signature(self.source_path),
             },
             "plan_fingerprint": plan_fingerprint(self.plan),
             "chunks": [
