@@ -144,7 +144,7 @@ Validate saved results with `TranscriptPayload.model_validate_json`; invalid par
 
 **Files:** Modify `backend/app/ffmpeg_tools.py`, `backend/tests/test_ffmpeg_tools.py`.
 
-**Interfaces:** Produces `prepare_audio_artifacts(video_path, mp3_path, asr_dir, chunk_seconds) -> PreparedAudio` with ordered `ChunkSpec` values.
+**Interfaces:** Produces `prepare_audio_artifacts(video_path, mp3_path, asr_dir, chunk_seconds, *, duration_seconds: float | None = None) -> PreparedAudio` with ordered `ChunkSpec` values. The processor passes its already-probed source duration so audio preparation does not read the source video a second time.
 
 - [ ] **Step 1: Write failing tests**
 
