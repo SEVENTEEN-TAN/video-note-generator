@@ -1,9 +1,21 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from backend.app.install_tasks import PackageInstallController
 
 
 PACKAGES = ("demo-package",)
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_default_requirements_include_app_and_test_dependencies_without_cuda_runtime() -> None:
+    requirements = (BACKEND_ROOT / "requirements.txt").read_text(encoding="utf-8")
+
+    assert "-r requirements-local.txt" in requirements
+    assert "pytest==8.3.4" in requirements
+    assert "nvidia-cublas" not in requirements
+    assert "nvidia-cudnn" not in requirements
 
 
 def test_package_install_controller_starts_once_and_reports_enqueue_flag() -> None:
