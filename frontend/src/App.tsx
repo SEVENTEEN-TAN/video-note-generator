@@ -6,8 +6,6 @@
   Download,
   FileSearch,
   FileText,
-  FolderOpen,
-  History,
   Image,
   KeyRound,
   Loader2,
@@ -15,7 +13,6 @@
   RefreshCw,
   Server,
   Settings,
-  Trash2,
   X,
   Upload,
   ZoomIn
@@ -24,13 +21,11 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangeEvent, Dispatch, SetStateAction } from "react";
 
 import type {
-  Artifact,
   CudaDependencyInstallState,
   FrameCandidate,
   FrameCandidateIndex,
   HealthState,
   JobState,
-  JobStatus,
   JobSummary,
   LocalDependencyInstallState,
   LocalWhisperComputeType,
@@ -38,10 +33,10 @@ import type {
   ModelDownloadState,
   NoteLanguage,
   NoteStyle,
-  NoteVersion,
   NoteChunkIndex,
   NoteChunkMeta,
   NoteVersionIndex,
+  PerformanceMode,
   PollableTaskState,
   PythonPackageInstallMode,
   PreviewImage,
@@ -58,7 +53,6 @@ import type {
 import { OPENAI_BASE_URL, QWEN_BASE_URL, noteStyleOptions, statusText } from "./constants";
 import {
   formatElapsedSeconds,
-  formatHistoryTime,
   formatInstallMode,
   formatRuntimeSource,
   formatSecondsRange,
@@ -75,12 +69,13 @@ import {
   fetchNoteVersions,
   fetchQualityReport,
   fetchReviewDraft,
-  rejectFrameCandidate,
-  selectFrameCandidate,
   readResponseError,
   updateReviewDraftParagraph
 } from "./api";
 import { extractMarkdownImages, parseMarkdown, resolvePreviewAssetUrl } from "./markdown";
+import { JobHistoryPanel } from "./JobHistoryPanel";
+import { WorkbenchNavigation } from "./WorkbenchNavigation";
+import type { WorkbenchTab } from "./WorkbenchNavigation";
 
 export function App() {
   const [transcriptionApiKey, setTranscriptionApiKey] = useState("");
@@ -88,8 +83,9 @@ export function App() {
   const [transcriptionBaseUrl, setTranscriptionBaseUrl] = useState(OPENAI_BASE_URL);
   const [transcriptionModel, setTranscriptionModel] = useState("small");
   const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>("auto");
-  const [localWhisperDevice, setLocalWhisperDevice] = useState<LocalWhisperDevice>("cpu");
-  const [localWhisperComputeType, setLocalWhisperComputeType] = useState<LocalWhisperComputeType>("int8");
+  const [localWhisperDevice, setLocalWhisperDevice] = useState<LocalWhisperDevice>("auto");
+  const [localWhisperComputeType, setLocalWhisperComputeType] = useState<LocalWhisperComputeType>("default");
+  const [performanceMode, setPerformanceMode] = useState<PerformanceMode>("balanced");
   const [externalPythonPath, setExternalPythonPath] = useState("");
   const [fasterWhisperModelDir, setFasterWhisperModelDir] = useState("");
   const [pythonPackageInstallMode, setPythonPackageInstallMode] = useState<PythonPackageInstallMode>("default");
@@ -125,6 +121,7 @@ export function App() {
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [isDeletingJobId, setIsDeletingJobId] = useState("");
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [activeWorkbench, setActiveWorkbench] = useState<WorkbenchTab>("note");
   const [downloadMessage, setDownloadMessage] = useState("");
   const [correctionPreview, setCorrectionPreview] = useState<TranscriptCorrectionPreview | null>(null);
   const [correctionError, setCorrectionError] = useState("");
@@ -139,12 +136,12 @@ export function App() {
   const [qualityReportError, setQualityReportError] = useState("");
   const [frameCandidateIndex, setFrameCandidateIndex] = useState<FrameCandidateIndex | null>(null);
   const [frameCandidateError, setFrameCandidateError] = useState("");
-  const [frameCandidateBusyId, setFrameCandidateBusyId] = useState("");
   const [reviewDraft, setReviewDraft] = useState<ReviewDraft | null>(null);
   const [reviewDraftSavingId, setReviewDraftSavingId] = useState("");
   const [isFrameReviewOpen, setIsFrameReviewOpen] = useState(false);
   const [isFinalizingJob, setIsFinalizingJob] = useState(false);
   const [finalizeError, setFinalizeError] = useState("");
+  const workspaceFormRef = useRef<HTMLFormElement>(null);
   const videoInputRef = useRef<HTMLInputElement | null>(null);
   const subtitleInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -212,6 +209,7 @@ export function App() {
   const isBusy =
     job?.status === "pending" ||
     job?.status === "running" ||
+    job?.status === "cancelling" ||
     isSubmitting ||
     isRegenerating ||
     isConfirmingSubtitles ||
@@ -267,8 +265,29 @@ export function App() {
   }, [frameCandidateIndex]);
   const selectedFrameCandidateCount =
     frameCandidateIndex?.candidates.filter((candidate) => candidate.selected && !candidate.rejected).length ?? 0;
+  const currentJobSummary = useMemo(
+    () => jobHistory.find((item) => item.job_id === job?.job_id) ?? null,
+    [job?.job_id, jobHistory]
+  );
   const noteTitleAction = hasNoteArtifact ? (
-    <div className="note-title-actions">
+    <div className="note-title-actions note-title-toolbar">
+      {noteVersions && noteVersions.versions.length > 0 && (
+        <label className="version-inline compact">
+          <span>版本</span>
+          <select disabled={isBusy} value={previewVersionId} onChange={handleNoteVersionChange}>
+            {noteVersions.versions.map((version) => (
+              <option key={version.id} value={version.id}>
+                {formatVersionOption(version)}
+              </option>
+            ))}
+          </select>
+          {previewVersion?.active && <span className="mini-badge ok">当前</span>}
+        </label>
+      )}
+      <button className="small-button" disabled={!job || isBusy} onClick={handleRegenerateNote} type="button">
+        {isRegenerating ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
+        重新生成
+      </button>
       {qualityReport && <QualityStatusControl report={qualityReport} />}
       <button className="small-button manual-review-button" disabled={isBusy} onClick={handleManualReview} type="button">
         <FileSearch size={15} />
@@ -294,7 +313,6 @@ export function App() {
     setQualityReportError("");
     setFrameCandidateIndex(null);
     setFrameCandidateError("");
-    setFrameCandidateBusyId("");
     setReviewDraft(null);
     setReviewDraftSavingId("");
     setIsFrameReviewOpen(false);
@@ -380,7 +398,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    if (!job || (job.status !== "pending" && job.status !== "running")) {
+    if (!job || (job.status !== "pending" && job.status !== "running" && job.status !== "cancelling")) {
       return;
     }
     let cancelled = false;
@@ -402,9 +420,17 @@ export function App() {
       setPreviewVersionId("");
       return;
     }
-    if (job.status === "succeeded" || job.status === "failed") {
+    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
       setIsRegenerating(false);
       setIsFinalizingJob(false);
+    }
+    if (
+      job.status === "awaiting_note_review" ||
+      job.status === "succeeded" ||
+      job.status === "failed" ||
+      job.status === "cancelled"
+    ) {
+      setRegeneratingChunkId("");
     }
     if (!job.artifacts.some((artifact) => artifact.path === "note.md")) {
       setNoteVersions(null);
@@ -437,7 +463,7 @@ export function App() {
   }, [job]);
 
   useEffect(() => {
-    if (job?.status === "succeeded" || job?.status === "failed") {
+    if (job?.status === "succeeded" || job?.status === "failed" || job?.status === "cancelled") {
       void refreshJobHistory();
     }
   }, [job?.job_id, job?.status]);
@@ -516,7 +542,6 @@ export function App() {
     if (!currentJobId || !hasNote) {
       setFrameCandidateIndex(null);
       setFrameCandidateError("");
-      setFrameCandidateBusyId("");
       return;
     }
 
@@ -563,64 +588,6 @@ export function App() {
       cancelled = true;
     };
   }, [job?.job_id, job?.status]);
-
-  async function handleSelectFrameCandidate(candidateId: string) {
-    if (!job?.job_id) {
-      return;
-    }
-    const previousIndex = frameCandidateIndex;
-    setFrameCandidateBusyId(candidateId);
-    setFrameCandidateIndex((current) =>
-      current
-        ? {
-            ...current,
-            candidates: current.candidates.map((candidate) =>
-              candidate.id === candidateId
-                ? { ...candidate, selected: !candidate.selected, rejected: false }
-                : candidate
-            )
-          }
-        : current
-    );
-    try {
-      setFrameCandidateIndex(await selectFrameCandidate(job.job_id, candidateId));
-      setFrameCandidateError("");
-    } catch (error) {
-      setFrameCandidateIndex(previousIndex);
-      setFrameCandidateError(error instanceof Error ? error.message : "配图候选选择失败。");
-    } finally {
-      setFrameCandidateBusyId("");
-    }
-  }
-
-  async function handleRejectFrameCandidate(candidateId: string) {
-    if (!job?.job_id) {
-      return;
-    }
-    const previousIndex = frameCandidateIndex;
-    setFrameCandidateBusyId(candidateId);
-    setFrameCandidateIndex((current) =>
-      current
-        ? {
-            ...current,
-            candidates: current.candidates.map((candidate) =>
-              candidate.id === candidateId
-                ? { ...candidate, selected: false, rejected: true }
-                : candidate
-            )
-          }
-        : current
-    );
-    try {
-      setFrameCandidateIndex(await rejectFrameCandidate(job.job_id, candidateId));
-      setFrameCandidateError("");
-    } catch (error) {
-      setFrameCandidateIndex(previousIndex);
-      setFrameCandidateError(error instanceof Error ? error.message : "配图候选拒绝失败。");
-    } finally {
-      setFrameCandidateBusyId("");
-    }
-  }
 
   async function handleManualReview() {
     if (!job?.job_id) {
@@ -796,6 +763,7 @@ export function App() {
     formData.append("transcription_model", transcriptionModel);
     formData.append("local_whisper_device", isLocalTranscription ? localWhisperDevice : "");
     formData.append("local_whisper_compute_type", isLocalTranscription ? localWhisperComputeType : "");
+    formData.append("performance_mode", performanceMode);
     formData.append("note_api_key", noteApiKey);
     formData.append("note_base_url", noteBaseUrl);
     formData.append("note_model", noteModel);
@@ -922,6 +890,7 @@ export function App() {
       transcription_model: transcriptionModel,
       local_whisper_device: localWhisperDevice,
       local_whisper_compute_type: localWhisperComputeType,
+      performance_mode: performanceMode,
       external_python_path: externalPythonPath,
       faster_whisper_model_dir: fasterWhisperModelDir,
       python_package_install_mode: pythonPackageInstallMode,
@@ -941,8 +910,9 @@ export function App() {
     setTranscriptionApiKey(settings.transcription_api_key);
     setTranscriptionBaseUrl(settings.transcription_base_url);
     setTranscriptionModel(settings.transcription_model);
-    setLocalWhisperDevice(settings.local_whisper_device ?? "cpu");
-    setLocalWhisperComputeType(settings.local_whisper_compute_type ?? "int8");
+    setLocalWhisperDevice(settings.local_whisper_device ?? "auto");
+    setLocalWhisperComputeType(settings.local_whisper_compute_type ?? "default");
+    setPerformanceMode(settings.performance_mode ?? "balanced");
     setExternalPythonPath(settings.external_python_path ?? "");
     setFasterWhisperModelDir(settings.faster_whisper_model_dir ?? "");
     setPythonPackageInstallMode(settings.python_package_install_mode ?? "default");
@@ -1032,8 +1002,9 @@ export function App() {
       }
       setJob({
         ...job,
-        status: "running",
-        step: "重新生成笔记",
+        status: "pending",
+        stage: "queued",
+        step: "等待重新生成笔记",
         progress: Math.max(job.progress, 62),
         error: null
       });
@@ -1117,8 +1088,9 @@ export function App() {
       const nextJob = await fetchJob(requestJobId);
       setJob({
         ...nextJob,
-        status: "running",
-        step: "重新生成笔记",
+        status: "pending",
+        stage: "queued",
+        step: "等待重新生成笔记",
         progress: Math.max(nextJob.progress, 62),
         error: null
       });
@@ -1153,7 +1125,14 @@ export function App() {
       if (!response.ok) {
         throw new Error(payload.detail || "重新生成笔记块失败。");
       }
-      setJob({ ...job, status: "running", step: "重新生成笔记块", progress: 70, error: null });
+      setJob({
+        ...job,
+        status: "pending",
+        stage: "queued",
+        step: "等待重新生成笔记块",
+        progress: 70,
+        error: null
+      });
     } catch {
       setRegeneratingChunkId("");
     }
@@ -1193,8 +1172,9 @@ export function App() {
       }
       setJob({
         ...job,
-        status: "running",
-        step: "笔记生成",
+        status: "pending",
+        stage: "queued",
+        step: "等待生成笔记",
         progress: Math.max(job.progress, 60),
         error: null
       });
@@ -1230,6 +1210,7 @@ export function App() {
       formData.append("transcription_model", transcriptionModel);
       formData.append("local_whisper_device", isLocal ? localWhisperDevice : "");
       formData.append("local_whisper_compute_type", isLocal ? localWhisperComputeType : "");
+      formData.append("performance_mode", performanceMode);
       const response = await fetch(`/api/jobs/${requestJobId}/subtitles/regenerate`, {
         method: "POST",
         body: formData
@@ -1240,9 +1221,10 @@ export function App() {
       }
       setJob({
         ...job,
-        status: "running",
-        step: "字幕生成",
-        progress: 30,
+        status: "pending",
+        stage: "queued",
+        step: "等待重新生成字幕",
+        progress: 20,
         error: null
       });
     } catch (error) {
@@ -1251,6 +1233,50 @@ export function App() {
       setIsRegeneratingSubtitles(false);
     }
   }
+
+  useEffect(() => {
+    if (job?.stage === "awaiting_subtitle_review" || job?.status === "awaiting_subtitle_confirmation") {
+      setActiveWorkbench("subtitle");
+    } else if (job?.stage === "awaiting_note_review" || job?.status === "awaiting_note_review") {
+      setActiveWorkbench("note");
+    } else if (
+      job?.stage === "generating_frames" ||
+      job?.stage === "preparing_review" ||
+      (!job?.stage && job?.step.includes("关键帧"))
+    ) {
+      setActiveWorkbench("frame");
+    } else if (job?.stage === "completed" || job?.status === "succeeded") {
+      setActiveWorkbench("note");
+    }
+  }, [job?.stage, job?.status, job?.step]);
+
+  useEffect(() => {
+    function handleShortcut(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setIsSettingsOpen(false);
+        setIsFrameReviewOpen(false);
+        return;
+      }
+      if (!(event.ctrlKey || event.metaKey)) {
+        return;
+      }
+      if (event.key === ",") {
+        event.preventDefault();
+        setIsSettingsOpen(true);
+      } else if (event.key.toLowerCase() === "o") {
+        event.preventDefault();
+        videoInputRef.current?.click();
+      } else if (event.key.toLowerCase() === "s" && job?.artifacts.some((artifact) => artifact.path === "download.zip")) {
+        event.preventDefault();
+        (document.querySelector('[data-download-zip="true"]') as HTMLButtonElement | null)?.click();
+      } else if (event.key === "Enter" && health && !isBusy) {
+        event.preventDefault();
+        workspaceFormRef.current?.requestSubmit();
+      }
+    }
+    window.addEventListener("keydown", handleShortcut);
+    return () => window.removeEventListener("keydown", handleShortcut);
+  }, [health, isBusy, job]);
 
   async function handleLoadHistoryJob(jobId: string) {
     setHistoryError("");
@@ -1264,6 +1290,40 @@ export function App() {
       setJob(await fetchJob(jobId));
     } catch (error) {
       setHistoryError(error instanceof Error ? error.message : "历史任务载入失败。");
+    }
+  }
+
+  async function handleCancelJob() {
+    if (!job || (job.status !== "pending" && job.status !== "running")) {
+      return;
+    }
+    setSubmitError("");
+    try {
+      const response = await fetch(`/api/jobs/${job.job_id}/cancel`, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readResponseError(response, "取消任务失败。"));
+      }
+      setJob(await response.json());
+      await refreshJobHistory();
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "取消任务失败。");
+    }
+  }
+
+  async function handleResumeTranscription() {
+    if (!job || !job.work_progress?.resumable || (job.status !== "cancelled" && job.status !== "failed")) {
+      return;
+    }
+    setSubmitError("");
+    try {
+      const response = await fetch(`/api/jobs/${job.job_id}/transcription/resume`, { method: "POST" });
+      if (!response.ok) {
+        throw new Error(await readResponseError(response, "继续转写失败。"));
+      }
+      setJob(await fetchJob(job.job_id));
+      await refreshJobHistory();
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "继续转写失败。");
     }
   }
 
@@ -1330,7 +1390,7 @@ export function App() {
     <main className="app-shell">
       <header className="topbar">
         <div className="topbar-brand">
-          <p className="eyebrow">OpenAI-Compatible Video Notes</p>
+          <p className="eyebrow">本地优先 · AI 视频整理</p>
           <h1>视频笔记生成器</h1>
         </div>
         <div className="topbar-stepper">
@@ -1341,14 +1401,14 @@ export function App() {
         </div>
         <div className="topbar-actions">
           <HealthBadge health={health} />
-          <StatusBadge job={job} isSubmitting={isSubmitting} />
-          <button className="icon-button" onClick={() => setIsSettingsOpen(true)} title="打开设置" type="button">
+          <button className="settings-button" onClick={() => setIsSettingsOpen(true)} title="打开设置" type="button">
             <Settings size={17} />
+            <span>设置</span>
           </button>
         </div>
       </header>
 
-      <form className="workspace-grid" onSubmit={handleSubmit}>
+      <form className="workspace-grid" onSubmit={handleSubmit} ref={workspaceFormRef}>
         {job?.error && (
           <div className="error-box">
             <AlertTriangle size={18} />
@@ -1446,78 +1506,46 @@ export function App() {
                 </p>
               )}
 
-              <button className="primary-button" disabled={isBusy} type="submit">
+              <div className="primary-action-stack">
+              <button className="primary-button" disabled={isBusy || !health} title={!health ? "服务未连接，暂时无法创建任务" : undefined} type="submit">
                 {isBusy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-                开始生成
+                {!health ? "服务未连接" : "开始生成"}
               </button>
+              {(job?.status === "pending" || job?.status === "running") && (
+                <button className="small-button danger cancel-job-button" onClick={() => void handleCancelJob()} type="button">
+                  <X size={15} />取消任务
+                </button>
+              )}
+              {job?.status === "cancelling" && (
+                <button className="small-button cancel-job-button" disabled type="button">
+                  <Loader2 className="spin" size={15} />正在取消
+                </button>
+              )}
+              {(job?.status === "cancelled" || job?.status === "failed") && job.work_progress?.resumable && (
+                <button className="small-button cancel-job-button" onClick={() => void handleResumeTranscription()} type="button">
+                  <RefreshCw size={15} />继续转写
+                </button>
+              )}
+            </div>
             </div>
           </div>
         </section>
 
         <div className="workspace-bottom">
-          <section className="panel history-panel history-column" aria-label="历史任务">
-            <div className="history-header">
-              <div className="section-title">
-                <History size={16} />
-                <span>历史任务</span>
-              </div>
-              <button className="small-button" disabled={isHistoryLoading} onClick={() => void refreshJobHistory()} type="button">
-                {isHistoryLoading ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-                刷新
-              </button>
-            </div>
-            {historyError && (
-              <p className="inline-error">
-                <AlertTriangle size={15} />
-                {historyError}
-              </p>
-            )}
-            {jobHistory.length === 0 ? (
-              <p className="empty-history">完成任务后会显示在这里。</p>
-            ) : (
-              <div className="history-list">
-                {jobHistory.map((item) => (
-                  <article className={`history-item ${job?.job_id === item.job_id ? "active" : ""}`} key={item.job_id}>
-                    <div className="history-item-main">
-                      <div>
-                        <strong>{item.title || item.original_filename}</strong>
-                        <span>{item.original_filename}</span>
-                      </div>
-                      <span className={`badge ${item.status}`}>{statusText[item.status]}</span>
-                    </div>
-                    {item.status === "failed" && item.error && (
-                      <p className="history-item-error">
-                        <AlertTriangle size={14} />
-                        <span>{item.error}</span>
-                      </p>
-                    )}
-                    <div className="history-meta">
-                      <span>{formatHistoryTime(item.updated_at ?? item.created_at)}</span>
-                      <span>{item.note_version_count} 个版本</span>
-                      <span>{item.artifact_count} 个产物</span>
-                    </div>
-                    <div className="history-actions">
-                      <button className="small-button" disabled={isBusy} onClick={() => void handleLoadHistoryJob(item.job_id)} type="button">
-                        <FolderOpen size={15} />
-                        载入
-                      </button>
-                      <button
-                        className="small-button danger"
-                        disabled={isBusy || isDeletingJobId === item.job_id}
-                        onClick={() => void handleDeleteHistoryJob(item.job_id)}
-                        type="button"
-                      >
-                        {isDeletingJobId === item.job_id ? <Loader2 className="spin" size={15} /> : <Trash2 size={15} />}
-                        删除
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            )}
-          </section>
+          <JobHistoryPanel
+            activeJob={job}
+            busy={isBusy}
+            deletingJobId={isDeletingJobId}
+            error={historyError}
+            health={health}
+            history={jobHistory}
+            loading={isHistoryLoading}
+            onDelete={(jobId) => void handleDeleteHistoryJob(jobId)}
+            onLoad={(jobId) => void handleLoadHistoryJob(jobId)}
+            onRefresh={() => void refreshJobHistory()}
+          />
 
-          <section className="panel result-panel" aria-label="结果预览">
+          <section className={`panel result-panel workbench-${activeWorkbench} ${job ? "has-result" : "is-empty"}`} aria-label="结果预览">
             <div className="panel-title result-panel-title">
               <div className="panel-title-main">
                 <FileText size={18} />
@@ -1534,6 +1562,7 @@ export function App() {
                 {job?.artifacts.some((artifact) => artifact.path === "download.zip") && job && (
                   <ArtifactDownloadButton
                     className="small-button strong"
+                    dataDownloadZip="true"
                     filename={job.download_filename ?? `video-note-${job.job_id}.zip`}
                     label="ZIP"
                     onError={setDownloadMessage}
@@ -1541,26 +1570,15 @@ export function App() {
                   />
                 )}
               </div>
-              <div className="result-toolbar-right">
-                {noteVersions && noteVersions.versions.length > 0 && (
-                  <label className="version-inline">
-                    <span>版本</span>
-                    <select disabled={isBusy} value={previewVersionId} onChange={handleNoteVersionChange}>
-                      {noteVersions.versions.map((version) => (
-                        <option key={version.id} value={version.id}>
-                          {formatVersionOption(version)}
-                        </option>
-                      ))}
-                    </select>
-                    {previewVersion?.active && <span className="mini-badge ok">当前</span>}
-                  </label>
-                )}
-                <button className="small-button strong" disabled={!job || isBusy} onClick={handleRegenerateNote} type="button">
-                  {isRegenerating ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-                  重新生成笔记
-                </button>
-              </div>
             </div>
+            {job && <WorkbenchNavigation active={activeWorkbench} job={job} summary={currentJobSummary} onChange={setActiveWorkbench} />}
+            {!job && (
+              <div className="result-empty-state">
+                <div className="result-empty-icon"><FileText size={26} /></div>
+                <strong>选择视频，开始生成笔记</strong>
+                <span>笔记、字幕、音频和关键帧将在这里集中审核与下载。</span>
+              </div>
+            )}
             <div className="result-body-scroll">
               {noteChunks && noteChunks.chunks.length > 1 && (
                 <details className="chunk-manager" aria-label="笔记分段管理">
@@ -1807,6 +1825,15 @@ export function App() {
 
                 {isLocalTranscription ? (
                   <>
+                    <label className="field">
+                      <span className="field-label">性能档位</span>
+                      <select value={performanceMode} onChange={(event) => setPerformanceMode(event.target.value as PerformanceMode)}>
+                        <option value="fast">快速（更低延迟）</option>
+                        <option value="balanced">均衡（默认）</option>
+                        <option value="accurate">准确（更高质量）</option>
+                      </select>
+                      <span className="field-help">自动调整解码强度；长视频会分块并保存断点。</span>
+                    </label>
                     <label className="field">
                       <span className="field-label">本地模型</span>
                       <select value={transcriptionModel} onChange={(event) => setTranscriptionModel(event.target.value)}>
@@ -2118,7 +2145,6 @@ export function App() {
       />
       {isFrameReviewOpen && job && frameCandidateIndex && reviewDraft && (
         <FrameReviewModal
-          busyCandidateId={frameCandidateBusyId}
           contextByChapter={frameCandidateContextByChapter}
           groups={frameCandidateGroups}
           isBusy={isBusy}
@@ -2130,8 +2156,6 @@ export function App() {
           onRegenerateNote={() => void handleRegenerateNote()}
           onRegenerateChunk={(chunkId) => void handleRegenerateNoteChunk(chunkId)}
           onClose={() => setIsFrameReviewOpen(false)}
-          onReject={(candidateId) => void handleRejectFrameCandidate(candidateId)}
-          onSelect={(candidateId) => void handleSelectFrameCandidate(candidateId)}
           regeneratingChunkId={regeneratingChunkId}
           reviewDraft={reviewDraft}
           savingParagraphId={reviewDraftSavingId}
@@ -2242,16 +2266,6 @@ function HealthBadge({ health }: { health: HealthState | null }) {
   );
 }
 
-function StatusBadge({ job, isSubmitting }: { job: JobState | null; isSubmitting: boolean }) {
-  if (isSubmitting) {
-    return <span className="badge running">创建任务</span>;
-  }
-  if (!job) {
-    return <span className="badge muted">未开始</span>;
-  }
-  return <span className={`badge ${job.status}`}>{statusText[job.status]}</span>;
-}
-
 function PanelTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
   return (
     <div className="panel-title">
@@ -2287,15 +2301,18 @@ function StepList({ job }: { job: JobState | null }) {
 
 function StepProgress({ job }: { job: JobState | null }) {
   const progress = Math.min(100, Math.max(0, Math.round(job?.progress ?? 0)));
-  const isActive = job?.status === "pending" || job?.status === "running";
+  const isActive = job?.status === "pending" || job?.status === "running" || job?.status === "cancelling";
   const icon = isActive ? (
     <Loader2 className="spin" size={14} />
   ) : job?.status === "succeeded" ? (
     <CheckCircle2 size={14} />
   ) : job?.status === "failed" ? (
     <AlertTriangle size={14} />
+  ) : job?.status === "cancelled" ? (
+    <X size={14} />
   ) : null;
   const label = job?.step || (job ? statusText[job.status] : "未开始");
+  const work = job?.work_progress;
   return (
     <>
       <span className="step-progress-label">
@@ -2311,6 +2328,15 @@ function StepProgress({ job }: { job: JobState | null }) {
           <span>{formatElapsedSeconds(job.stage_elapsed_seconds)}</span>
         )}
       </span>
+      {work && work.total_seconds > 0 && (
+        <span className="transcription-work-progress">
+          <span>{formatElapsedSeconds(work.completed_seconds)} / {formatElapsedSeconds(work.total_seconds)}</span>
+          <span>{work.completed_chunks}/{work.total_chunks} 块</span>
+          <span>{work.device.toUpperCase()} · {work.compute_type}</span>
+          {work.cache_hits > 0 && <span>复用 {work.cache_hits} 块</span>}
+          {work.eta_seconds !== null && work.eta_seconds !== undefined && <span>预计剩余 {formatElapsedSeconds(work.eta_seconds)}</span>}
+        </span>
+      )}
     </>
   );
 }
@@ -2372,7 +2398,6 @@ function rangesOverlap(leftStart: number, leftEnd: number, rightStart: number, r
 }
 
 function FrameReviewModal({
-  busyCandidateId,
   contextByChapter,
   groups,
   isBusy,
@@ -2382,14 +2407,11 @@ function FrameReviewModal({
   onRegenerateNote,
   onRegenerateChunk,
   onSaveParagraph,
-  onReject,
-  onSelect,
   regeneratingChunkId,
   reviewDraft,
   savingParagraphId,
   selectedCount
 }: {
-  busyCandidateId: string;
   contextByChapter: Map<number, FrameCandidateIndex["chapter_contexts"][number]>;
   groups: [number, FrameCandidate[]][];
   isBusy: boolean;
@@ -2404,8 +2426,6 @@ function FrameReviewModal({
     selectedFrameIds: string[],
     status: ReviewDraftParagraphStatus
   ) => void;
-  onReject: (candidateId: string) => void;
-  onSelect: (candidateId: string) => void;
   regeneratingChunkId: string;
   reviewDraft: ReviewDraft;
   savingParagraphId: string;
@@ -2695,12 +2715,14 @@ function DownloadLink({
 
 function ArtifactDownloadButton({
   className = "small-button",
+  dataDownloadZip,
   filename,
   label,
   onError,
   url
 }: {
   className?: string;
+  dataDownloadZip?: string;
   filename: string;
   label: string;
   onError: (message: string) => void;
@@ -2719,7 +2741,7 @@ function ArtifactDownloadButton({
   }
 
   return (
-    <button className={className} onClick={handleClick} type="button">
+    <button className={className} data-download-zip={dataDownloadZip} onClick={handleClick} type="button">
       <Download size={15} />
       {label}
     </button>

@@ -1,16 +1,25 @@
 ﻿from __future__ import annotations
 
 import json
+import inspect
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from threading import Lock
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from .ffmpeg_tools import FFmpegError, extract_mp3, probe_duration
+from .ffmpeg_tools import (
+    FFmpegError,
+    PreparedAudio,
+    extract_mp3,
+    load_prepared_audio_artifacts,
+    prepare_audio_artifacts,
+    probe_duration,
+)
 from .frame_candidates import build_frame_candidate_index, write_frame_candidate_index
 from .job_store import JobStore
 from .llm import LLMError, generate_chunked_note_draft_with_chunks, generate_note_draft
-from .models import JobConfig, JobStatus
+from .models import JobConfig, JobStage, JobStatus, TranscriptionMode
 from .note_chunks import save_note_chunks
 from .note_versions import (
     create_note_version_from_draft,
@@ -23,8 +32,15 @@ from .note_versions import (
 from .review_finalization import NOTE_REVIEW_PENDING_MARKER, mark_note_review_pending
 from .review_quality import build_quality_report, write_quality_report
 from .subtitles import SubtitleParseError, parse_srt_file, transcript_segments_from_payload, write_subtitle_files
+from .storage_policy import available_storage_bytes, estimate_local_job_storage
 from .task_debug_log import TaskDebugLog
-from .transcription import TranscriptionError, transcribe_audio
+from .transcription import (
+    TranscriptionCancelled,
+    TranscriptionError,
+    resolve_local_transcription_plan,
+    transcribe_audio,
+)
+from .transcription_checkpoints import atomic_write_json
 
 
 class ProcessingError(RuntimeError):
@@ -32,6 +48,9 @@ class ProcessingError(RuntimeError):
 
 
 SUBTITLES_PENDING_MARKER = "subtitles.pending"
+ZIP_DIRTY_MARKER = ".download.zip.dirty"
+_ZIP_LOCKS_GUARD = Lock()
+_ZIP_LOCKS: dict[str, Lock] = {}
 
 
 def _config_debug_summary(config: JobConfig) -> dict:
@@ -42,6 +61,8 @@ def _config_debug_summary(config: JobConfig) -> dict:
         "transcription_model": config.transcription_model,
         "local_whisper_device": config.local_whisper_device,
         "local_whisper_compute_type": config.local_whisper_compute_type,
+        "performance_mode": config.performance_mode.value,
+        "transcription_language": str(config.transcription_language),
         "note_base_url": config.note_base_url,
         "note_model": config.note_model,
         "note_language": config.note_language.value,
@@ -57,6 +78,13 @@ def _file_size(path: Path) -> int | None:
         return path.stat().st_size
     except OSError:
         return None
+
+
+def _extract_mp3_with_cancellation(video_path: Path, audio_path: Path, is_cancelled) -> None:
+    if "is_cancelled" in inspect.signature(extract_mp3).parameters:
+        extract_mp3(video_path, audio_path, is_cancelled=is_cancelled)
+    else:
+        extract_mp3(video_path, audio_path)
 
 
 def write_job_metadata(
@@ -77,6 +105,7 @@ def write_job_metadata(
         else str(existing.get("uploaded_subtitle_filename") or "")
     )
     metadata = {
+        "schema_version": 1,
         "job_id": job_id,
         "created_at": str(existing.get("created_at") or datetime.now(timezone.utc).isoformat()),
         "original_filename": config.original_filename,
@@ -85,6 +114,8 @@ def write_job_metadata(
         "transcription_model": config.transcription_model,
         "local_whisper_device": config.local_whisper_device,
         "local_whisper_compute_type": config.local_whisper_compute_type,
+        "performance_mode": config.performance_mode.value,
+        "transcription_language": str(config.transcription_language),
         "note_base_url": config.note_base_url,
         "note_model": config.note_model,
         "note_language": config.note_language.value,
@@ -97,15 +128,36 @@ def write_job_metadata(
         "duration_seconds": duration,
         "title": title.strip() or config.original_filename,
     }
-    (job_dir / "metadata.json").write_text(
-        json.dumps(metadata, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(job_dir / "metadata.json", metadata)
     return metadata
 
 
-def create_zip(job_dir: Path) -> Path:
+def mark_zip_dirty(job_dir: Path) -> Path:
+    marker = job_dir / ZIP_DIRTY_MARKER
+    with _zip_lock(job_dir):
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("1", encoding="utf-8")
+    return marker
+
+
+def _zip_lock(job_dir: Path) -> Lock:
+    key = str(job_dir.resolve()).casefold()
+    with _ZIP_LOCKS_GUARD:
+        return _ZIP_LOCKS.setdefault(key, Lock())
+
+
+def create_zip(job_dir: Path, *, force: bool = False) -> Path:
     zip_path = job_dir / "download.zip"
+    dirty_marker = job_dir / ZIP_DIRTY_MARKER
+    if zip_path.exists() and not force and not dirty_marker.exists():
+        return zip_path
+    with _zip_lock(job_dir):
+        if zip_path.exists() and not force and not dirty_marker.exists():
+            return zip_path
+        return _build_zip(job_dir, zip_path, dirty_marker)
+
+
+def _build_zip(job_dir: Path, zip_path: Path, dirty_marker: Path) -> Path:
     tmp_path = job_dir / "download.zip.tmp"
     include_names = [
         "note.md",
@@ -156,10 +208,47 @@ def create_zip(job_dir: Path) -> Path:
                     for frame_path in sorted(frame_dir.glob("*.jpg")):
                         archive.write(frame_path, arcname=f"notes/{archive_version_id}/frames/{frame_path.name}")
         tmp_path.replace(zip_path)
+        dirty_marker.unlink(missing_ok=True)
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
     return zip_path
+
+
+
+def _stop_if_cancelled(job_id: str, store: JobStore) -> bool:
+    if not store.is_cancel_requested(job_id):
+        return False
+    store.refresh_artifacts(job_id)
+    store.mark_cancelled(job_id)
+    return True
+
+
+def _fail_or_cancel(
+    *,
+    job_id: str,
+    store: JobStore,
+    debug_log: TaskDebugLog,
+    debug_stage: str,
+    exc: Exception,
+) -> None:
+    if store.is_cancel_requested(job_id):
+        debug_log.event(debug_stage, "cancelled", reason=str(exc))
+        store.refresh_artifacts(job_id)
+        store.mark_cancelled(job_id)
+        return
+    debug_log.exception(debug_stage, "failed", exc)
+    store.refresh_artifacts(job_id)
+    store.update(
+        job_id,
+        status=JobStatus.failed,
+        stage=JobStage.failed,
+        step="失败",
+        error=str(exc),
+        progress=100,
+    )
+    if store.is_cancel_requested(job_id):
+        store.mark_cancelled(job_id)
 
 
 def process_transcription_job(
@@ -182,25 +271,107 @@ def process_transcription_job(
     )
     try:
         debug_log.event("probe_duration", "starting", video_path=str(video_path))
-        store.update(job_id, status=JobStatus.running, step="分析视频", progress=5)
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(
+            job_id,
+            status=JobStatus.running,
+            stage=JobStage.analyzing_video,
+            step="分析视频",
+            progress=5,
+        )
         duration = probe_duration(video_path)
         debug_log.event("probe_duration", "succeeded", duration_seconds=duration)
 
-        store.update(job_id, step="音频分离", progress=15)
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(job_id, stage=JobStage.extracting_audio, step="音频准备", progress=15)
         audio_path = job_dir / "audio.mp3"
-        debug_log.event("extract_mp3", "starting", audio_path=str(audio_path))
-        extract_mp3(video_path, audio_path)
-        debug_log.event("extract_mp3", "succeeded", audio_size_bytes=_file_size(audio_path))
+        prepared_audio: PreparedAudio | None = None
+        if config.transcription_mode == TranscriptionMode.local_faster_whisper:
+            plan = resolve_local_transcription_plan(config, float(duration or 0.0))
+            asr_dir = job_dir / "work" / "asr"
+            storage_estimate = estimate_local_job_storage(
+                source_bytes=_file_size(video_path) or 0,
+                duration_seconds=float(duration or 0.0),
+                frame_limit=config.frame_limit,
+            )
+            available_bytes = available_storage_bytes(job_dir)
+            debug_log.event(
+                "storage_preflight",
+                "succeeded",
+                required_free_bytes=storage_estimate.required_free_bytes,
+                available_bytes=available_bytes,
+            )
+            if available_bytes < storage_estimate.required_free_bytes:
+                shortfall = storage_estimate.required_free_bytes - available_bytes
+                raise ProcessingError(
+                    f"Insufficient disk space for local transcription. Free at least {shortfall} more bytes "
+                    "or clean an existing transcription cache."
+                )
+            try:
+                prepared_audio = load_prepared_audio_artifacts(
+                    audio_path,
+                    asr_dir,
+                    plan.chunk_seconds,
+                    duration_seconds=float(duration or 0.0),
+                )
+                debug_log.event(
+                    "prepare_audio_artifacts",
+                    "reused",
+                    audio_path=str(audio_path),
+                    chunk_count=len(prepared_audio.chunks),
+                )
+            except FFmpegError:
+                debug_log.event("prepare_audio_artifacts", "starting", audio_path=str(audio_path))
+                prepared_audio = prepare_audio_artifacts(
+                    video_path,
+                    audio_path,
+                    asr_dir,
+                    plan.chunk_seconds,
+                    duration_seconds=float(duration or 0.0),
+                    is_cancelled=lambda: store.is_cancel_requested(job_id),
+                )
+                debug_log.event(
+                    "prepare_audio_artifacts",
+                    "succeeded",
+                    audio_size_bytes=_file_size(audio_path),
+                    chunk_count=len(prepared_audio.chunks),
+                )
+        else:
+            debug_log.event("extract_mp3", "starting", audio_path=str(audio_path))
+            _extract_mp3_with_cancellation(
+                video_path,
+                audio_path,
+                lambda: store.is_cancel_requested(job_id),
+            )
+            debug_log.event("extract_mp3", "succeeded", audio_size_bytes=_file_size(audio_path))
         store.refresh_artifacts(job_id)
 
-        store.update(job_id, step="字幕生成", progress=35)
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(job_id, stage=JobStage.transcribing, step="字幕生成", progress=35)
         debug_log.event("transcribe_audio", "starting", audio_path=str(audio_path))
         transcript_payload = transcribe_audio(
             audio_path,
             config,
             job_dir,
-            progress_callback=lambda step, progress: store.update(job_id, step=step, progress=progress),
+            progress_callback=lambda step, progress: store.update(
+                job_id,
+                stage=JobStage.transcribing,
+                step=step,
+                progress=progress,
+            ),
+            prepared_audio=prepared_audio,
+            is_cancelled=lambda: store.is_cancel_requested(job_id),
+            work_progress_callback=lambda work_progress: store.update(
+                job_id,
+                stage=JobStage.transcribing,
+                work_progress=work_progress,
+            ),
         )
+        if _stop_if_cancelled(job_id, store):
+            return
         transcript_path = job_dir / "transcript.json"
         debug_log.event(
             "transcribe_audio",
@@ -209,10 +380,7 @@ def process_transcription_job(
             raw_segment_count=len(transcript_payload.get("segments") or []),
         )
         debug_log.event("write_transcript", "starting", transcript_path=str(transcript_path))
-        transcript_path.write_text(
-            json.dumps(transcript_payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_json(transcript_path, transcript_payload)
         debug_log.event("write_transcript", "succeeded", transcript_size_bytes=_file_size(transcript_path))
         segments = transcript_segments_from_payload(transcript_payload)
         if not segments:
@@ -235,14 +403,25 @@ def process_transcription_job(
         store.update(
             job_id,
             status=JobStatus.awaiting_subtitle_confirmation,
+            stage=JobStage.awaiting_subtitle_review,
             step="等待确认字幕",
             progress=40,
         )
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
+            return
         debug_log.event("process_transcription_job", "awaiting_confirmation")
+    except TranscriptionCancelled as exc:
+        debug_log.event("process_transcription_job", "cancelled", reason=str(exc))
+        store.mark_cancelled(job_id)
     except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
-        debug_log.exception("process_transcription_job", "failed", exc)
-        store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
+        _fail_or_cancel(
+            job_id=job_id,
+            store=store,
+            debug_log=debug_log,
+            debug_stage="process_transcription_job",
+            exc=exc,
+        )
 
 
 def process_uploaded_subtitle_job(
@@ -270,22 +449,31 @@ def process_uploaded_subtitle_job(
     )
     try:
         debug_log.event("probe_duration", "starting", video_path=str(video_path))
-        store.update(job_id, status=JobStatus.running, step="分析视频", progress=10)
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(
+            job_id,
+            status=JobStatus.running,
+            stage=JobStage.analyzing_video,
+            step="分析视频",
+            progress=10,
+        )
         duration = probe_duration(video_path)
         debug_log.event("probe_duration", "succeeded", duration_seconds=duration)
 
-        store.update(job_id, step="解析字幕", progress=30)
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(job_id, stage=JobStage.transcribing, step="解析字幕", progress=30)
         debug_log.event("parse_uploaded_subtitle", "starting", subtitle_path=str(subtitle_path))
         segments = parse_srt_file(subtitle_path)
+        if _stop_if_cancelled(job_id, store):
+            return
         transcript_payload = {
             "text": "\n".join(segment.text for segment in segments),
             "segments": [segment.model_dump() for segment in segments],
         }
         transcript_path = job_dir / "transcript.json"
-        transcript_path.write_text(
-            json.dumps(transcript_payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_json(transcript_path, transcript_payload)
         debug_log.event(
             "parse_uploaded_subtitle",
             "succeeded",
@@ -310,14 +498,22 @@ def process_uploaded_subtitle_job(
         store.update(
             job_id,
             status=JobStatus.awaiting_subtitle_confirmation,
+            stage=JobStage.awaiting_subtitle_review,
             step="等待确认字幕",
             progress=40,
         )
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
+            return
         debug_log.event("process_uploaded_subtitle_job", "awaiting_confirmation")
     except (FFmpegError, SubtitleParseError, ProcessingError, OSError, Exception) as exc:
-        debug_log.exception("process_uploaded_subtitle_job", "failed", exc)
-        store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
+        _fail_or_cancel(
+            job_id=job_id,
+            store=store,
+            debug_log=debug_log,
+            debug_stage="process_uploaded_subtitle_job",
+            exc=exc,
+        )
 
 
 def continue_job_to_notes(
@@ -337,6 +533,8 @@ def continue_job_to_notes(
         config=_config_debug_summary(config),
     )
     try:
+        if _stop_if_cancelled(job_id, store):
+            return
         if (job_dir / SUBTITLES_PENDING_MARKER).exists():
             (job_dir / SUBTITLES_PENDING_MARKER).unlink()
         metadata = _read_metadata(job_dir)
@@ -346,7 +544,14 @@ def continue_job_to_notes(
         if not segments:
             raise ProcessingError("Transcript has no usable text segments.")
 
-        store.update(job_id, status=JobStatus.running, step="笔记生成", progress=60, error="")
+        store.update(
+            job_id,
+            status=JobStatus.running,
+            stage=JobStage.generating_note,
+            step="笔记生成",
+            progress=60,
+            error="",
+        )
         debug_log.event("generate_note_draft", "starting", segment_count=len(segments))
         system_prompt = (
             "You are a professional video content editor, course note writer, and knowledge management expert. "
@@ -356,6 +561,8 @@ def continue_job_to_notes(
         draft, chunk_segs, chunk_drafts = generate_chunked_note_draft_with_chunks(
             config, duration, segments, system_prompt, debug_log=debug_log
         )
+        if _stop_if_cancelled(job_id, store):
+            return
         save_note_chunks(job_dir, segments, chunk_segs, chunk_drafts)
         debug_log.event("save_note_chunks", "succeeded", chunk_count=len(chunk_segs))
         debug_log.event(
@@ -376,7 +583,9 @@ def continue_job_to_notes(
         )
         debug_log.event("write_metadata", "succeeded", metadata_size_bytes=_file_size(job_dir / "metadata.json"))
 
-        store.update(job_id, step="关键帧抽取", progress=78)
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(job_id, stage=JobStage.generating_frames, step="关键帧抽取", progress=78)
         debug_log.event("create_note_version", "starting", version_id="note_001")
         create_note_version_from_draft(
             job_dir=job_dir,
@@ -384,6 +593,7 @@ def continue_job_to_notes(
             draft=draft,
             duration=duration,
             config=config,
+            is_cancelled=lambda: store.is_cancel_requested(job_id),
             version_id="note_001",
         )
         frame_dir = job_dir / "note_versions" / "note_001" / "frames"
@@ -391,26 +601,50 @@ def continue_job_to_notes(
         debug_log.event("create_note_version", "succeeded", version_id="note_001", frame_count=frame_count)
         store.refresh_artifacts(job_id)
 
-        store.update(job_id, step="生成复核资料", progress=88)
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(job_id, stage=JobStage.preparing_review, step="生成复核资料", progress=88)
         debug_log.event("build_frame_candidates", "starting")
         duration_value = float(duration) if duration is not None else None
-        frame_candidates = build_frame_candidate_index(job_dir, video_path, duration=duration_value)
+        frame_candidates = build_frame_candidate_index(
+            job_dir,
+            video_path,
+            duration=duration_value,
+            is_cancelled=lambda: store.is_cancel_requested(job_id),
+        )
         write_frame_candidate_index(job_dir, frame_candidates)
         debug_log.event("build_frame_candidates", "succeeded", candidate_count=len(frame_candidates.candidates))
 
+        if _stop_if_cancelled(job_id, store):
+            return
         debug_log.event("build_quality_report", "starting")
         quality_report = build_quality_report(job_dir)
         write_quality_report(job_dir, quality_report)
         debug_log.event("build_quality_report", "succeeded", status=quality_report.status)
 
+        if _stop_if_cancelled(job_id, store):
+            return
         mark_note_review_pending(job_dir)
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.awaiting_note_review, step="等待复核笔记", progress=92)
+        store.update(
+            job_id,
+            status=JobStatus.awaiting_note_review,
+            stage=JobStage.awaiting_note_review,
+            step="等待复核笔记",
+            progress=92,
+        )
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
+            return
         debug_log.event("await_note_review", "pending")
     except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
-        debug_log.exception("continue_job_to_notes", "failed", exc)
-        store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
+        _fail_or_cancel(
+            job_id=job_id,
+            store=store,
+            debug_log=debug_log,
+            debug_stage="continue_job_to_notes",
+            exc=exc,
+        )
 
 
 def regenerate_subtitles_job(
@@ -430,45 +664,63 @@ def regenerate_subtitles_job(
         config=_config_debug_summary(config),
     )
     try:
-        # Drop any note artifacts so the job cleanly returns to the subtitle gate.
-        for stale in ("note.md", "download.zip", SUBTITLES_PENDING_MARKER, NOTE_REVIEW_PENDING_MARKER):
-            stale_path = job_dir / stale
-            if stale_path.exists():
-                stale_path.unlink()
-        note_versions_dir = job_dir / "note_versions"
-        if note_versions_dir.exists():
-            shutil.rmtree(note_versions_dir, ignore_errors=True)
-        frames_dir = job_dir / "frames"
-        if frames_dir.exists():
-            shutil.rmtree(frames_dir, ignore_errors=True)
-        review_dir = job_dir / "review"
-        if review_dir.exists():
-            shutil.rmtree(review_dir, ignore_errors=True)
-
-        store.update(job_id, status=JobStatus.running, step="字幕生成", progress=30, error="")
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(
+            job_id,
+            status=JobStatus.running,
+            stage=JobStage.extracting_audio,
+            step="音频分离",
+            progress=20,
+            error="",
+        )
         debug_log.event("extract_mp3", "starting", audio_path=str(job_dir / "audio.mp3"))
         audio_path = job_dir / "audio.mp3"
-        extract_mp3(video_path, audio_path)
+        _extract_mp3_with_cancellation(
+            video_path,
+            audio_path,
+            lambda: store.is_cancel_requested(job_id),
+        )
         debug_log.event("extract_mp3", "succeeded", audio_size_bytes=_file_size(audio_path))
         store.refresh_artifacts(job_id)
 
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(job_id, stage=JobStage.transcribing, step="字幕生成", progress=30)
         debug_log.event("transcribe_audio", "starting", audio_path=str(audio_path))
         transcript_payload = transcribe_audio(
             audio_path,
             config,
             job_dir,
-            progress_callback=lambda step, progress: store.update(job_id, step=step, progress=progress),
+            progress_callback=lambda step, progress: store.update(
+                job_id,
+                stage=JobStage.transcribing,
+                step=step,
+                progress=progress,
+            ),
         )
-        transcript_path = job_dir / "transcript.json"
-        transcript_path.write_text(
-            json.dumps(transcript_payload, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        if _stop_if_cancelled(job_id, store):
+            return
         segments = transcript_segments_from_payload(transcript_payload)
         if not segments:
             raise ProcessingError("Transcription returned no usable text segments.")
-        write_subtitle_files(segments, job_dir)
         duration = probe_duration(video_path)
+        if _stop_if_cancelled(job_id, store):
+            return
+
+        # Only replace the existing reviewed output after the new transcript is ready.
+        for stale in ("note.md", "download.zip", SUBTITLES_PENDING_MARKER, NOTE_REVIEW_PENDING_MARKER):
+            stale_path = job_dir / stale
+            if stale_path.exists():
+                stale_path.unlink()
+        for stale_dir_name in ("note_versions", "frames", "review"):
+            stale_dir = job_dir / stale_dir_name
+            if stale_dir.exists():
+                shutil.rmtree(stale_dir, ignore_errors=True)
+
+        transcript_path = job_dir / "transcript.json"
+        atomic_write_json(transcript_path, transcript_payload)
+        write_subtitle_files(segments, job_dir)
         write_job_metadata(
             job_id=job_id,
             job_dir=job_dir,
@@ -483,14 +735,22 @@ def regenerate_subtitles_job(
         store.update(
             job_id,
             status=JobStatus.awaiting_subtitle_confirmation,
+            stage=JobStage.awaiting_subtitle_review,
             step="等待确认字幕",
             progress=40,
         )
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
+            return
         debug_log.event("regenerate_subtitles_job", "awaiting_confirmation")
     except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
-        debug_log.exception("regenerate_subtitles_job", "failed", exc)
-        store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
+        _fail_or_cancel(
+            job_id=job_id,
+            store=store,
+            debug_log=debug_log,
+            debug_stage="regenerate_subtitles_job",
+            exc=exc,
+        )
 
 
 def regenerate_note_job(
@@ -509,22 +769,52 @@ def regenerate_note_job(
         config=_config_debug_summary(config),
     )
     try:
-        store.update(job_id, status=JobStatus.running, step="重新生成笔记", progress=62, error="")
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(
+            job_id,
+            status=JobStatus.running,
+            stage=JobStage.generating_note,
+            step="重新生成笔记",
+            progress=62,
+            error="",
+        )
         debug_log.event("regenerate_note_version", "starting")
-        regenerate_note_version(job_dir, config, debug_log=debug_log)
+        regenerate_note_version(
+            job_dir,
+            config,
+            debug_log=debug_log,
+            is_cancelled=lambda: store.is_cancel_requested(job_id),
+        )
         debug_log.event("regenerate_note_version", "succeeded")
         store.refresh_artifacts(job_id)
-        store.update(job_id, step="更新 ZIP", progress=92)
-        debug_log.event("create_zip", "starting")
-        zip_path = create_zip(job_dir)
-        debug_log.event("create_zip", "succeeded", zip_path=str(zip_path), zip_size_bytes=_file_size(zip_path))
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(job_id, stage=JobStage.finalizing, step="更新 ZIP", progress=92)
+        mark_zip_dirty(job_dir)
+        debug_log.event("create_zip", "deferred")
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.succeeded, step="完成", progress=100)
+        if _stop_if_cancelled(job_id, store):
+            return
+        store.update(
+            job_id,
+            status=JobStatus.succeeded,
+            stage=JobStage.completed,
+            step="完成",
+            progress=100,
+        )
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
+            return
         debug_log.event("regenerate_note_job", "succeeded")
     except (FFmpegError, LLMError, ProcessingError, Exception) as exc:
-        debug_log.exception("regenerate_note_job", "failed", exc)
-        store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
+        _fail_or_cancel(
+            job_id=job_id,
+            store=store,
+            debug_log=debug_log,
+            debug_stage="regenerate_note_job",
+            exc=exc,
+        )
 
 
 def _read_metadata(job_dir: Path) -> dict:

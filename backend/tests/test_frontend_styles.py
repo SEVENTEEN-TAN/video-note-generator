@@ -99,7 +99,7 @@ def test_result_panel_uses_compact_review_actions_and_collapsible_outputs() -> N
     assert ".quality-panel" not in styles
     assert 'className="quality-status-control"' in app_text
     assert 'className="quality-popover"' in app_text
-    assert 'className="note-title-actions"' in app_text
+    assert 'className="note-title-actions note-title-toolbar"' in app_text
     assert 'className="small-button manual-review-button"' in app_text
     assert "手动审核" in app_text
     assert "hasNoteArtifact" in app_text
@@ -217,3 +217,39 @@ def test_frontend_api_error_messages_are_readable_chinese() -> None:
 
     for mojibake in ("浠", "鍘", "绗", "璐", "閰", "纭", "涓", "澶辫触", "€?"):
         assert mojibake not in api_text
+
+
+def test_workbench_and_cancellation_states_work_across_viewport_sizes() -> None:
+    app_text = (REPO_ROOT / "frontend" / "src" / "App.tsx").read_text(encoding="utf-8")
+    constants_text = (REPO_ROOT / "frontend" / "src" / "constants.ts").read_text(encoding="utf-8")
+    types_text = (REPO_ROOT / "frontend" / "src" / "types.ts").read_text(encoding="utf-8")
+    navigation_text = (REPO_ROOT / "frontend" / "src" / "WorkbenchNavigation.tsx").read_text(encoding="utf-8")
+    styles = (REPO_ROOT / "frontend" / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert 'cancelling: "正在取消"' in constants_text
+    assert '"cancelling"' in types_text
+    assert 'job?.status === "cancelling"' in app_text
+    assert 'status: "pending"' in app_text
+    assert 'stage: "queued"' in app_text
+    assert 'tabIndex={active === tab.id ? 0 : -1}' in navigation_text
+    assert 'event.key === "ArrowRight"' in navigation_text
+    assert "/* Workbench behavior is shared by desktop and narrow browser layouts. */" in styles
+    assert ".badge.cancelling" in styles
+    assert ".badge.cancelled" in styles
+    assert ".workbench-files .result-body-scroll" in styles
+
+
+def test_note_review_gate_keeps_its_height_above_the_scrollable_preview() -> None:
+    styles = (REPO_ROOT / "frontend" / "src" / "styles.css").read_text(encoding="utf-8")
+
+    assert re.search(
+        r"\.workbench-note \.result-body-scroll\s*\{[^}]*display:\s*flex;[^}]*flex-direction:\s*column;[^}]*overflow:\s*hidden;",
+        styles,
+        re.DOTALL,
+    )
+    assert re.search(r"\.workbench-note \.note-review-gate\s*\{[^}]*flex:\s*0 0 auto;", styles, re.DOTALL)
+    assert re.search(
+        r"\.workbench-note \.preview-stack\s*\{[^}]*flex:\s*1 1 auto;[^}]*height:\s*auto;[^}]*min-height:\s*0;",
+        styles,
+        re.DOTALL,
+    )

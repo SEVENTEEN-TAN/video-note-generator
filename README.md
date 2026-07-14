@@ -73,7 +73,7 @@ npm run dev
 
 界面会明确列出不同功能实际使用的模型：
 
-- 字幕转写：默认使用本地 `Faster Whisper`，模型为 `small`。运行环境卡片会检测 FFmpeg、本地 Faster Whisper、外部 Python worker 和本地模型目录。不需要字幕转写 API Key。CPU 默认使用 `int8` 推理，普通电脑建议先用 `small`；更高准确率可选 `medium` 或 `large-v3`，但会更慢、占用更高。
+- 字幕转写：默认使用本地 `Faster Whisper`，模型为 `small`。运行环境卡片会检测 FFmpeg、本地 Faster Whisper、外部 Python worker 和本地模型目录。不需要字幕转写 API Key。新安装默认自动选择 CPU/CUDA 与合适精度；CPU 通常使用 `int8`，CUDA 通常使用 `float16`。普通电脑建议先用 `small`；更高准确率可选 `medium` 或 `large-v3`，但会更慢、占用更高。
 - 远端字幕转写：可切换到 `Audio Transcriptions 端点`，默认模型 `whisper-1`，默认 Base URL 为 `https://api.openai.com/v1`。模型需要支持 audio transcriptions 和 segment 级时间戳。如果兼容服务没有 `/audio/transcriptions`，可切换到 `Chat 多模态音频兜底`。
 - 笔记生成：默认 `gpt-5.5`，默认 Base URL 为 `https://api.openai.com/v1`。如果使用 Qwen，可把 Base URL 改为 `https://dashscope.aliyuncs.com/compatible-mode/v1`，模型名改为 `qwen-plus` 或其他兼容模型。
 - 音频分离：使用 FFmpeg，不调用 AI 模型。
@@ -113,6 +113,22 @@ $env:FASTER_WHISPER_COMPUTE_TYPE="float16"
 ```
 
 也可以通过 `FASTER_WHISPER_MODEL_DIR` 指定模型缓存目录。
+
+### 本地转写性能档位、进度与断点恢复
+
+本地 Faster Whisper 提供三个实用档位：
+
+- `快速`：使用更轻的解码参数，适合先快速获得可检索字幕。
+- `均衡`：默认档位，在速度与准确率之间折中。
+- `准确`：增加解码搜索，适合术语较多或音质较差的视频，但耗时更长。
+
+超过 30 分钟的本地音频会按时长自动分块。公开 MP3 与 16 kHz 单声道 FLAC 转写输入由 FFmpeg 从源视频一次生成，避免先编码 MP3、再从 MP3 二次解码造成额外耗时和质量损失。内部 Faster Whisper 和外部 Python worker 都会在一次任务中只加载一次模型，并逐块写入原子断点结果。
+
+界面会显示已处理时长、完成分块数、实际设备/精度、缓存复用块数和预计剩余时间。取消或程序异常中断后，只要源视频和本地工作目录仍存在，任务会显示“继续转写”；恢复时会复用与当前模型、语言、性能档位、音频文件完全匹配的已完成分块。
+
+取消行为有两种：外部 Python worker 会被主动终止；应用进程内的 Faster Whisper 采用协作式取消，会在读取下一段解码结果前停止，因此极少数情况下可能需要等待当前底层解码步骤返回。若外部进程在 Windows 上无法立即回收，其输出会保留在独立会话目录，不会覆盖正式断点，并且同一任务在旧进程退出前不会启动第二个外部 worker。
+
+如需释放空间，可以删除不再需要的整个任务目录。`work/asr/` 属于可恢复转写的本地缓存；删除它不会影响已经生成的最终字幕和笔记，但会失去分块续转能力。
 
 ## 产物
 

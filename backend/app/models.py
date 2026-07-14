@@ -11,10 +11,29 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_va
 class JobStatus(str, Enum):
     pending = "pending"
     running = "running"
+    cancelling = "cancelling"
     awaiting_subtitle_confirmation = "awaiting_subtitle_confirmation"
     awaiting_note_review = "awaiting_note_review"
     succeeded = "succeeded"
     failed = "failed"
+    cancelled = "cancelled"
+
+
+class JobStage(str, Enum):
+    queued = "queued"
+    analyzing_video = "analyzing_video"
+    extracting_audio = "extracting_audio"
+    transcribing = "transcribing"
+    awaiting_subtitle_review = "awaiting_subtitle_review"
+    generating_note = "generating_note"
+    generating_frames = "generating_frames"
+    preparing_review = "preparing_review"
+    awaiting_note_review = "awaiting_note_review"
+    finalizing = "finalizing"
+    completed = "completed"
+    failed = "failed"
+    cancelling = "cancelling"
+    cancelled = "cancelled"
 
 
 class NoteLanguage(str, Enum):
@@ -479,6 +498,7 @@ class JobPublicState(BaseModel):
     job_id: str
     status: JobStatus
     step: str
+    stage: JobStage = JobStage.queued
     progress: int
     work_progress: TranscriptionWorkProgress | None = Field(default=None, exclude_if=lambda value: value is None)
     error: str | None = None

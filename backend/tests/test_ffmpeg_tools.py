@@ -172,7 +172,9 @@ def test_extract_frames_batches_multiple_timestamps_in_one_ffmpeg_call(tmp_path,
     actual = extract_frames(video_path, [(first, 5.0), (second, 10.0)], duration=20)
 
     assert len(commands) == 1
-    assert commands[0].count("-i") == 1
+    assert commands[0].count("-i") == 2
+    assert commands[0].index("-ss") < commands[0].index("-i")
+    assert [commands[0][commands[0].index("-map") + 1], commands[0][commands[0].index("-map", commands[0].index("-map") + 1) + 1]] == ["0:v:0", "1:v:0"]
     assert actual == {first: 5.0, second: 10.0}
 
 

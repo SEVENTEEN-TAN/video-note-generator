@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
@@ -14,6 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from .job_store import JobStore
+from .job_executor import enqueue_serialized
 from .cuda_dependencies import (
     CudaDependencyInstallState,
     get_cuda_dependency_install_state,
@@ -49,9 +51,11 @@ from .models import (
     JobConfig,
     JobHistory,
     JobPublicState,
+    JobStage,
     JobStatus,
     NoteLanguage,
     NoteStyle,
+    PerformanceMode,
     QualityReport,
     ReviewDraft,
     ReviewDraftParagraphUpdate,
@@ -79,6 +83,7 @@ from .note_versions import (
 from .processor import (
     continue_job_to_notes,
     create_zip,
+    mark_zip_dirty,
     process_uploaded_subtitle_job,
     process_transcription_job,
     regenerate_note_job,
@@ -92,9 +97,17 @@ from .review_finalization import finalize_reviewed_note, is_note_review_pending,
 from .review_drafts import get_or_build_review_draft, update_review_draft_paragraph
 from .settings import UserSettings, UserSettingsUpdate, clear_user_settings, load_user_settings, save_user_settings
 from .subtitles import transcript_segments_from_payload
+from .storage_policy import available_storage_bytes, cleanup_transcription_cache, job_storage_usage
 from .task_debug_log import TaskDebugLog
 from .transcript_corrections import TranscriptCorrectionError, apply_pending_transcript_correction, create_transcript_correction
-from .transcription import TranscriptionError, get_faster_whisper_model_root, resolve_local_faster_whisper_model, transcribe_audio
+from .transcription import (
+    TranscriptionError,
+    clear_internal_whisper_model_cache,
+    get_faster_whisper_model_root,
+    has_active_external_worker,
+    resolve_local_faster_whisper_model,
+    transcribe_audio,
+)
 
 OUTPUTS_ROOT = get_outputs_root()
 OUTPUTS_ROOT.mkdir(parents=True, exist_ok=True)
@@ -111,6 +124,32 @@ app.add_middleware(
     allow_headers=["*"],
 )
 store = JobStore(OUTPUTS_ROOT)
+
+
+def ensure_job_can_queue(job_id: str) -> JobPublicState:
+    state = store.get(job_id) or store.load_from_disk(job_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if state.status in {JobStatus.pending, JobStatus.running, JobStatus.cancelling}:
+        raise HTTPException(status_code=409, detail="Job is already queued or running.")
+    return state
+
+
+def queue_job_state(job_id: str, *, step: str, progress: int) -> JobPublicState:
+    ensure_job_can_queue(job_id)
+    store.clear_cancel_request(job_id)
+    store.update(
+        job_id,
+        status=JobStatus.pending,
+        stage=JobStage.queued,
+        step=step,
+        progress=progress,
+        error="",
+    )
+    queued = store.get(job_id)
+    if queued is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    return queued
 
 
 @app.get("/api/ready")
@@ -133,6 +172,11 @@ def health() -> dict:
 @app.get("/api/runtime")
 def runtime() -> dict:
     return get_runtime_status()
+
+
+@app.post("/api/runtime/faster-whisper/cache/clear")
+def clear_faster_whisper_cache() -> dict:
+    return {"cleared_models": clear_internal_whisper_model_cache()}
 
 
 @app.post("/api/runtime/cuda-dependencies/install", response_model=CudaDependencyInstallState)
@@ -217,6 +261,7 @@ def build_job_config_or_400(
     transcription_model: str,
     local_whisper_device: str,
     local_whisper_compute_type: str,
+    performance_mode: PerformanceMode = PerformanceMode.balanced,
     transcription_language: TranscriptionLanguage = TranscriptionLanguage.auto,
     note_api_key: str = "",
     note_base_url: str = "https://api.openai.com/v1",
@@ -250,6 +295,7 @@ def build_job_config_or_400(
             transcription_model=transcription_model.strip() or "uploaded-subtitle",
             local_whisper_device=local_whisper_device,
             local_whisper_compute_type=local_whisper_compute_type,
+            performance_mode=performance_mode,
             transcription_language=transcription_language,
             note_api_key=note_api_key,
             note_base_url=note_base_url,
@@ -305,6 +351,7 @@ async def suggest_frame_count(
     transcription_model: Annotated[str, Form()] = "whisper-1",
     local_whisper_device: Annotated[str, Form()] = "",
     local_whisper_compute_type: Annotated[str, Form()] = "",
+    performance_mode: Annotated[PerformanceMode, Form()] = PerformanceMode.balanced,
     transcription_language: Annotated[TranscriptionLanguage, Form()] = TranscriptionLanguage.auto,
     note_api_key: Annotated[str, Form()] = "",
     note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
@@ -318,6 +365,7 @@ async def suggest_frame_count(
         transcription_model=transcription_model,
         local_whisper_device=local_whisper_device,
         local_whisper_compute_type=local_whisper_compute_type,
+        performance_mode=performance_mode,
         transcription_language=transcription_language,
         note_api_key=note_api_key,
         note_base_url=note_base_url,
@@ -373,6 +421,7 @@ async def create_job(
     transcription_model: Annotated[str, Form()] = "whisper-1",
     local_whisper_device: Annotated[str, Form()] = "",
     local_whisper_compute_type: Annotated[str, Form()] = "",
+    performance_mode: Annotated[PerformanceMode, Form()] = PerformanceMode.balanced,
     transcription_language: Annotated[TranscriptionLanguage, Form()] = TranscriptionLanguage.auto,
     note_api_key: Annotated[str, Form()] = "",
     note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
@@ -452,7 +501,8 @@ async def create_job(
     sync_store_outputs_root()
     store.create(job_id)
     if has_uploaded_subtitle and subtitle_path:
-        background_tasks.add_task(
+        enqueue_serialized(
+            background_tasks,
             process_uploaded_subtitle_job,
             job_id=job_id,
             job_dir=job_dir,
@@ -463,7 +513,8 @@ async def create_job(
             store=store,
         )
     else:
-        background_tasks.add_task(
+        enqueue_serialized(
+            background_tasks,
             process_transcription_job,
             job_id=job_id,
             job_dir=job_dir,
@@ -516,8 +567,9 @@ def confirm_subtitles(
         frame_limit=frame_limit,
         original_filename=original_filename,
     )
-    store.update(job_id, status=JobStatus.running, step="笔记生成", progress=60, error="")
-    background_tasks.add_task(
+    queue_job_state(job_id, step="等待生成笔记", progress=60)
+    enqueue_serialized(
+        background_tasks,
         continue_job_to_notes,
         job_id=job_id,
         job_dir=job_dir,
@@ -525,7 +577,7 @@ def confirm_subtitles(
         config=config,
         store=store,
     )
-    return {"job_id": job_id, "status": "running"}
+    return {"job_id": job_id, "status": "queued"}
 
 
 @app.post("/api/jobs/{job_id}/subtitles/regenerate")
@@ -538,6 +590,7 @@ def regenerate_subtitles(
     transcription_model: Annotated[str, Form()] = "whisper-1",
     local_whisper_device: Annotated[str, Form()] = "",
     local_whisper_compute_type: Annotated[str, Form()] = "",
+    performance_mode: Annotated[PerformanceMode, Form()] = PerformanceMode.balanced,
     transcription_language: Annotated[TranscriptionLanguage, Form()] = TranscriptionLanguage.auto,
 ) -> dict:
     sync_store_outputs_root()
@@ -565,6 +618,7 @@ def regenerate_subtitles(
             transcription_model=transcription_model,
             local_whisper_device=local_whisper_device,
             local_whisper_compute_type=local_whisper_compute_type,
+            performance_mode=performance_mode,
             transcription_language=transcription_language,
             note_api_key="placeholder",
             note_base_url="https://api.openai.com/v1",
@@ -579,8 +633,9 @@ def regenerate_subtitles(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if config.transcription_mode == TranscriptionMode.local_faster_whisper:
         ensure_local_transcription_ready(config)
-    store.update(job_id, status=JobStatus.running, step="字幕生成", progress=30, error="")
-    background_tasks.add_task(
+    queue_job_state(job_id, step="等待重新生成字幕", progress=20)
+    enqueue_serialized(
+        background_tasks,
         regenerate_subtitles_job,
         job_id=job_id,
         job_dir=job_dir,
@@ -588,7 +643,7 @@ def regenerate_subtitles(
         config=config,
         store=store,
     )
-    return {"job_id": job_id, "status": "running"}
+    return {"job_id": job_id, "status": "queued"}
 
 
 def _job_source_video_path(job_dir: Path) -> Path:
@@ -616,11 +671,115 @@ def get_job(job_id: str) -> JobPublicState:
     return state
 
 
+@app.post("/api/jobs/{job_id}/cancel", response_model=JobPublicState)
+def cancel_job(job_id: str) -> JobPublicState:
+    sync_store_outputs_root()
+    state = store.get(job_id) or store.load_from_disk(job_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if state.status in {JobStatus.cancelling, JobStatus.cancelled}:
+        return state
+    if state.status not in {JobStatus.pending, JobStatus.running}:
+        raise HTTPException(status_code=409, detail="Only pending or running jobs can be cancelled.")
+    cancellation = store.request_cancel(job_id)
+    if cancellation is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    TaskDebugLog(OUTPUTS_ROOT / job_id).event("cancel_job", "cancel_requested")
+    store.refresh_artifacts(job_id)
+    return cancellation
+
+
+@app.post("/api/jobs/{job_id}/transcription/resume")
+def resume_transcription(job_id: str, background_tasks: BackgroundTasks) -> dict:
+    sync_store_outputs_root()
+    state = store.get(job_id) or store.load_from_disk(job_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if state.status in {JobStatus.pending, JobStatus.running, JobStatus.cancelling}:
+        raise HTTPException(status_code=409, detail="Job is already queued or running.")
+    if state.status not in {JobStatus.cancelled, JobStatus.failed}:
+        raise HTTPException(status_code=409, detail="Only cancelled or interrupted transcriptions can resume.")
+
+    job_dir = safe_job_dir(job_id)
+    metadata = read_metadata(job_dir)
+    if metadata.get("transcription_mode") != TranscriptionMode.local_faster_whisper.value:
+        raise HTTPException(status_code=409, detail="Only local Faster Whisper transcriptions can resume.")
+    if has_active_external_worker(job_dir):
+        raise HTTPException(status_code=409, detail="The previous local transcription worker is still shutting down.")
+    video_path = find_source_video(job_dir)
+    if video_path is None or not video_path.exists():
+        raise HTTPException(status_code=400, detail="Source video is missing.")
+
+    try:
+        config = JobConfig(
+            transcription_mode=TranscriptionMode.local_faster_whisper,
+            transcription_model=str(metadata.get("transcription_model") or "small"),
+            local_whisper_device=str(metadata.get("local_whisper_device") or ""),
+            local_whisper_compute_type=str(metadata.get("local_whisper_compute_type") or ""),
+            performance_mode=metadata.get("performance_mode") or PerformanceMode.balanced.value,
+            transcription_language=metadata.get("transcription_language") or TranscriptionLanguage.auto.value,
+            note_api_key="resume-transcription-only",
+            note_base_url=str(metadata.get("note_base_url") or "https://api.openai.com/v1"),
+            note_model=str(metadata.get("note_model") or "gpt-5.5"),
+            note_language=metadata.get("note_language") or NoteLanguage.zh.value,
+            note_style=metadata.get("note_style") or NoteStyle.detailed.value,
+            frame_limit=int(metadata.get("frame_limit") or 6),
+            original_filename=str(metadata.get("original_filename") or video_path.name),
+        )
+    except (TypeError, ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=400, detail=f"Saved transcription settings are invalid: {exc}") from exc
+
+    ensure_local_transcription_ready(config)
+    queue_job_state(job_id, step="等待继续转写", progress=min(state.progress, 39))
+    enqueue_serialized(
+        background_tasks,
+        process_transcription_job,
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        config=config,
+        store=store,
+    )
+    TaskDebugLog(job_dir).event("resume_transcription", "queued")
+    return {"job_id": job_id, "resumed": True}
+
+
+@app.get("/api/jobs/{job_id}/storage")
+def get_job_storage(job_id: str) -> dict:
+    sync_store_outputs_root()
+    job_dir = safe_job_dir(job_id)
+    usage = job_storage_usage(job_dir)
+    return {
+        "job_id": job_id,
+        **asdict(usage),
+        "available_bytes": available_storage_bytes(job_dir),
+    }
+
+
+@app.delete("/api/jobs/{job_id}/transcription/cache")
+def delete_transcription_cache(job_id: str) -> dict:
+    sync_store_outputs_root()
+    state = store.get(job_id) or store.load_from_disk(job_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if state.status in {JobStatus.pending, JobStatus.running, JobStatus.cancelling}:
+        raise HTTPException(status_code=409, detail="Cannot clean transcription cache while the job is active.")
+    job_dir = safe_job_dir(job_id)
+    if has_active_external_worker(job_dir):
+        raise HTTPException(status_code=409, detail="Cannot clean cache while an external worker is still shutting down.")
+    freed_bytes = cleanup_transcription_cache(job_dir)
+    if state.work_progress is not None:
+        state.work_progress.resumable = False
+        state.work_progress.cache_hits = 0
+    TaskDebugLog(job_dir).event("cleanup_transcription_cache", "succeeded", freed_bytes=freed_bytes)
+    return {"job_id": job_id, "freed_bytes": freed_bytes}
+
+
 @app.delete("/api/jobs/{job_id}")
 def delete_job(job_id: str) -> dict:
     sync_store_outputs_root()
     state = store.get(job_id)
-    if state and state.status in {JobStatus.pending, JobStatus.running}:
+    if state and state.status in {JobStatus.pending, JobStatus.running, JobStatus.cancelling}:
         raise HTTPException(status_code=409, detail="Cannot delete a running job.")
     job_dir = safe_job_dir(job_id)
     try:
@@ -674,6 +833,7 @@ def get_frame_candidates(job_id: str) -> FrameCandidateIndex:
         job_dir,
         video_path,
         duration=float(duration) if duration is not None else None,
+        is_cancelled=lambda: store.is_cancel_requested(job_id),
     )
     write_frame_candidate_index(job_dir, index)
     store.refresh_artifacts(job_id)
@@ -746,13 +906,21 @@ def finalize_job(job_id: str) -> JobPublicState:
         finalize_reviewed_note(job_dir)
         report = build_quality_report(job_dir)
         write_quality_report(job_dir, report)
+        mark_zip_dirty(job_dir)
         create_zip(job_dir)
     except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     store.refresh_artifacts(job_id)
     if not store.get(job_id):
         store.load_from_disk(job_id)
-    store.update(job_id, status=JobStatus.succeeded, step="完成", progress=100, error="")
+    store.update(
+        job_id,
+        status=JobStatus.succeeded,
+        stage=JobStage.completed,
+        step="完成",
+        progress=100,
+        error="",
+    )
     state = store.get(job_id)
     if not state:
         raise HTTPException(status_code=404, detail="Job not found.")
@@ -773,9 +941,15 @@ def get_asset(job_id: str, asset_path: str) -> FileResponse:
 
 @app.get("/api/jobs/{job_id}/download.zip")
 def download_zip(job_id: str) -> FileResponse:
-    file_path = safe_job_path(job_id, "download.zip")
-    if not file_path.exists():
+    state = store.get(job_id) or store.load_from_disk(job_id)
+    if state is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if state.status != JobStatus.succeeded:
+        raise HTTPException(status_code=409, detail="ZIP is available after the job is finalized.")
+    job_dir = safe_job_dir(job_id)
+    if not (job_dir / "note.md").exists():
         raise HTTPException(status_code=404, detail="ZIP is not ready.")
+    file_path = create_zip(job_dir)
     return FileResponse(file_path, filename=f"video-note-{job_id}.zip")
 
 
@@ -825,18 +999,26 @@ def regenerate_note_chunk(
         frame_limit=frame_limit,
         original_filename=original_filename,
     )
-    store.update(job_id, status=JobStatus.running, step="重新生成笔记块", progress=70, error="")
-    background_tasks.add_task(
+    queue_job_state(job_id, step="等待重新生成笔记块", progress=70)
+    enqueue_serialized(
+        background_tasks,
         _regenerate_chunk_job,
         job_id=job_id,
         job_dir=job_dir,
         config=config,
         chunk_id=chunk_id,
+        store=store,
     )
-    return {"job_id": job_id, "status": "running"}
+    return {"job_id": job_id, "status": "queued"}
 
 
-def _regenerate_chunk_job(job_id: str, job_dir: Path, config: JobConfig, chunk_id: str) -> None:
+def _regenerate_chunk_job(
+    job_id: str,
+    job_dir: Path,
+    config: JobConfig,
+    chunk_id: str,
+    store: JobStore,
+) -> None:
     from .processor import write_job_metadata
     from .task_debug_log import TaskDebugLog
     from .subtitles import transcript_segments_from_payload
@@ -844,6 +1026,17 @@ def _regenerate_chunk_job(job_id: str, job_dir: Path, config: JobConfig, chunk_i
 
     debug_log = TaskDebugLog(job_dir)
     try:
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
+            return
+        store.update(
+            job_id,
+            status=JobStatus.running,
+            stage=JobStage.generating_note,
+            step="重新生成笔记块",
+            progress=70,
+            error="",
+        )
         metadata = _json.loads((job_dir / "metadata.json").read_text(encoding="utf-8"))
         duration = metadata.get("duration_seconds")
         transcript_payload = _json.loads((job_dir / "transcript.json").read_text(encoding="utf-8"))
@@ -856,30 +1049,72 @@ def _regenerate_chunk_job(job_id: str, job_dir: Path, config: JobConfig, chunk_i
         debug_log.event("regenerate_note_chunk", "starting", chunk_id=chunk_id)
         draft = regenerate_chunk_and_reduce(job_dir, config, duration, segments, chunk_id, system_prompt)
         debug_log.event("regenerate_note_chunk", "succeeded", chunk_id=chunk_id)
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
+            return
         write_job_metadata(job_id=job_id, job_dir=job_dir, config=config, title=draft.title, duration=duration)
         stale_zip = job_dir / "download.zip"
         if stale_zip.exists():
             stale_zip.unlink()
         video_path = find_source_video(job_dir)
         duration_value = float(duration) if duration is not None else None
+        store.update(job_id, stage=JobStage.generating_frames, step="关键帧抽取", progress=78)
         create_note_version_from_draft(
             job_dir=job_dir,
             video_path=video_path,
             draft=draft,
             duration=duration_value,
             config=config,
+            is_cancelled=lambda: store.is_cancel_requested(job_id),
         )
-        frame_candidates = build_frame_candidate_index(job_dir, video_path, duration=duration_value)
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
+            return
+        store.update(job_id, stage=JobStage.preparing_review, step="生成复核资料", progress=88)
+        frame_candidates = build_frame_candidate_index(
+            job_dir,
+            video_path,
+            duration=duration_value,
+            is_cancelled=lambda: store.is_cancel_requested(job_id),
+        )
         write_frame_candidate_index(job_dir, frame_candidates)
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
+            return
         quality_report = build_quality_report(job_dir)
         write_quality_report(job_dir, quality_report)
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
+            return
         mark_note_review_pending(job_dir)
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.awaiting_note_review, step="等待复核笔记", progress=92)
+        store.update(
+            job_id,
+            status=JobStatus.awaiting_note_review,
+            stage=JobStage.awaiting_note_review,
+            step="等待复核笔记",
+            progress=92,
+        )
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
     except Exception as exc:
+        if store.is_cancel_requested(job_id):
+            debug_log.event("regenerate_note_chunk", "cancelled", reason=str(exc))
+            store.refresh_artifacts(job_id)
+            store.mark_cancelled(job_id)
+            return
         debug_log.exception("regenerate_note_chunk", "failed", exc)
         store.refresh_artifacts(job_id)
-        store.update(job_id, status=JobStatus.failed, step="失败", error=str(exc), progress=100)
+        store.update(
+            job_id,
+            status=JobStatus.failed,
+            stage=JobStage.failed,
+            step="失败",
+            error=str(exc),
+            progress=100,
+        )
+        if store.is_cancel_requested(job_id):
+            store.mark_cancelled(job_id)
 
 
 @app.get("/api/jobs/{job_id}/note-versions", response_model=NoteVersionIndex)
@@ -911,7 +1146,7 @@ def update_note_version_selection(job_id: str, selection: NoteVersionSelection) 
         index = set_note_version_selection(job_dir, selection.selected_version_ids, selection.active_version_id)
     else:
         index = set_note_version_selection(job_dir, selection.selected_version_ids)
-    create_zip(job_dir)
+    mark_zip_dirty(job_dir)
     store.refresh_artifacts(job_id)
     return index
 
@@ -953,7 +1188,9 @@ def regenerate_note_version_endpoint(
         frame_limit=frame_limit,
         original_filename=str(metadata.get("original_filename") or "video"),
     )
-    background_tasks.add_task(
+    queue_job_state(job_id, step="等待重新生成笔记", progress=62)
+    enqueue_serialized(
+        background_tasks,
         regenerate_note_job,
         job_id=job_id,
         job_dir=job_dir,
@@ -1011,6 +1248,7 @@ def apply_transcript_correction_endpoint(
         raise HTTPException(status_code=400, detail="Note API Key is required.")
     if not request.note_model.strip():
         raise HTTPException(status_code=400, detail="Note model is required.")
+    ensure_job_can_queue(job_id)
     try:
         apply_pending_transcript_correction(job_dir)
     except (TranscriptCorrectionError, FileNotFoundError, ValueError) as exc:
@@ -1029,7 +1267,9 @@ def apply_transcript_correction_endpoint(
         frame_limit=request.frame_limit,
         original_filename=str(metadata.get("original_filename") or "video"),
     )
-    background_tasks.add_task(
+    queue_job_state(job_id, step="等待重新生成笔记", progress=62)
+    enqueue_serialized(
+        background_tasks,
         regenerate_note_job,
         job_id=job_id,
         job_dir=job_dir,

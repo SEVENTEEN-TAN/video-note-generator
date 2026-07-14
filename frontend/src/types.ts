@@ -2,11 +2,13 @@ export type NoteLanguage = "zh" | "en" | "follow";
 export type NoteStyle = "minimal" | "detailed" | "tutorial" | "academic" | "task_oriented" | "meeting_minutes";
 export type TranscriptionMode = "audio_transcriptions" | "chat_audio" | "local_faster_whisper";
 export type TranscriptionLanguage = "auto" | "zh" | "en";
+export type PerformanceMode = "fast" | "balanced" | "accurate";
 export type LocalWhisperDevice = "auto" | "cpu" | "cuda";
 export type LocalWhisperComputeType = "default" | "int8" | "int8_float16" | "float16" | "float32";
 export type RuntimePathSource = "environment" | "settings" | "default" | "missing";
 export type PythonPackageInstallMode = "default" | "user";
-export type JobStatus = "pending" | "running" | "awaiting_subtitle_confirmation" | "awaiting_note_review" | "succeeded" | "failed";
+export type JobStatus = "pending" | "running" | "cancelling" | "awaiting_subtitle_confirmation" | "awaiting_note_review" | "succeeded" | "failed" | "cancelled";
+export type JobStage = "queued" | "analyzing_video" | "extracting_audio" | "transcribing" | "awaiting_subtitle_review" | "generating_note" | "generating_frames" | "preparing_review" | "awaiting_note_review" | "finalizing" | "completed" | "failed" | "cancelling" | "cancelled";
 
 export type Artifact = {
   label: string;
@@ -34,11 +36,27 @@ export type FailureContext = {
   summary?: string;
 };
 
+export type TranscriptionWorkProgress = {
+  completed_seconds: number;
+  total_seconds: number;
+  completed_chunks: number;
+  total_chunks: number;
+  current_chunk?: number | null;
+  realtime_factor?: number | null;
+  eta_seconds?: number | null;
+  resumable: boolean;
+  cache_hits: number;
+  device: string;
+  compute_type: string;
+};
+
 export type JobState = {
   job_id: string;
   status: JobStatus;
   step: string;
+  stage?: JobStage;
   progress: number;
+  work_progress?: TranscriptionWorkProgress | null;
   error?: string | null;
   failure_context?: FailureContext | null;
   artifacts: Artifact[];
@@ -164,6 +182,7 @@ export type UserSettings = {
   transcription_model: string;
   local_whisper_device: LocalWhisperDevice;
   local_whisper_compute_type: LocalWhisperComputeType;
+  performance_mode: PerformanceMode;
   external_python_path: string;
   faster_whisper_model_dir: string;
   python_package_install_mode: PythonPackageInstallMode;

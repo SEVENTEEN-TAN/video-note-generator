@@ -28,7 +28,7 @@ from backend.app.note_versions import (
     regenerate_note_version,
     write_note_version_index,
 )
-from backend.app.processor import create_zip
+from backend.app.processor import create_zip, mark_zip_dirty
 
 
 def make_version(version_id: str, *, selected: bool = True, active: bool = False) -> NoteVersion:
@@ -375,6 +375,7 @@ def test_create_zip_keeps_existing_zip_when_rebuild_fails(tmp_path, monkeypatch)
             return False
 
     monkeypatch.setattr("backend.app.processor.ZipFile", BrokenZipFile)
+    mark_zip_dirty(job_dir)
 
     with pytest.raises(RuntimeError):
         create_zip(job_dir)
@@ -448,3 +449,179 @@ def test_regenerate_note_version_reuses_transcript_and_creates_new_version(tmp_p
     assert (job_dir / "note_versions" / "note_001" / "note.md").exists()
     assert (job_dir / "note_versions" / "note_001" / "frames" / "frame_001.jpg").exists()
     assert (job_dir / "note.md").read_text(encoding="utf-8-sig").startswith("# Regenerated")
+
+
+def test_note_version_frame_failure_leaves_no_partial_version_directory(tmp_path, monkeypatch) -> None:
+    video_path = tmp_path / "source_video" / "input.mp4"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"video")
+    calls = 0
+
+    def failing_extract(_video, output_path, timestamp, _duration):
+        nonlocal calls
+        calls += 1
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"partial")
+        if calls == 2:
+            raise RuntimeError("frame failed")
+        return timestamp
+
+    monkeypatch.setattr(note_versions, "extract_frame", failing_extract)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        note_api_key="secret",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        frame_limit=2,
+        original_filename="input.mp4",
+    )
+    draft = NoteDraft(
+        title="Transactional",
+        summary="summary",
+        chapters=[Chapter(title="One", start_time=0, end_time=20)],
+        key_moments=[
+            KeyMoment(time=5, reason="one", chapter_index=0),
+            KeyMoment(time=10, reason="two", chapter_index=0),
+        ],
+    )
+
+    with pytest.raises(RuntimeError, match="frame failed"):
+        note_versions.create_note_version_from_draft(
+            job_dir=tmp_path,
+            video_path=video_path,
+            draft=draft,
+            duration=20,
+            config=config,
+            version_id="note_001",
+        )
+
+    versions_root = tmp_path / "note_versions"
+    assert not (versions_root / "note_001").exists()
+    assert not list(versions_root.glob(".note_001.*.tmp"))
+    assert load_note_version_index(tmp_path).versions == []
+
+
+def test_new_note_version_hardlinks_compatible_existing_frames(tmp_path, monkeypatch) -> None:
+    video_path = tmp_path / "source_video" / "input.mp4"
+    video_path.parent.mkdir(parents=True)
+    video_path.write_bytes(b"video")
+    extracts = 0
+
+    def fake_extract(_video, output_path, timestamp, _duration):
+        nonlocal extracts
+        extracts += 1
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"shared frame")
+        return timestamp
+
+    monkeypatch.setattr(note_versions, "extract_frame", fake_extract)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        transcription_model="small",
+        note_api_key="secret",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        frame_limit=1,
+        original_filename="input.mp4",
+    )
+    draft = NoteDraft(
+        title="Reuse",
+        summary="summary",
+        chapters=[Chapter(title="One", start_time=0, end_time=20)],
+        key_moments=[KeyMoment(time=5, reason="same", chapter_index=0)],
+    )
+
+    note_versions.create_note_version_from_draft(
+        job_dir=tmp_path,
+        video_path=video_path,
+        draft=draft,
+        duration=20,
+        config=config,
+        version_id="note_001",
+    )
+    note_versions.create_note_version_from_draft(
+        job_dir=tmp_path,
+        video_path=video_path,
+        draft=draft,
+        duration=20,
+        config=config,
+        version_id="note_002",
+    )
+
+    assert extracts == 1
+    assert (tmp_path / "note_versions" / "note_002" / "frames" / "frame_001.jpg").read_bytes() == b"shared frame"
+
+
+def test_activate_note_version_copy_failure_preserves_previous_index_and_public_artifacts(tmp_path, monkeypatch) -> None:
+    version_one = make_version("note_001", selected=True, active=True)
+    version_two = make_version("note_002", selected=True, active=False)
+    for version, note_text, frame_bytes in (
+        (version_one, "# One", b"one"),
+        (version_two, "# Two", b"two"),
+    ):
+        version_dir = tmp_path / "note_versions" / version.id
+        (version_dir / "frames").mkdir(parents=True)
+        (version_dir / "note.md").write_text(note_text, encoding="utf-8")
+        (version_dir / "frames" / "frame_001.jpg").write_bytes(frame_bytes)
+    write_note_version_index(
+        tmp_path,
+        NoteVersionIndex(
+            active_version_id="note_001",
+            selected_version_ids=["note_001", "note_002"],
+            versions=[version_one, version_two],
+        ),
+    )
+    (tmp_path / "note.md").write_text("# One", encoding="utf-8")
+    (tmp_path / "frames").mkdir()
+    (tmp_path / "frames" / "frame_001.jpg").write_bytes(b"one")
+    monkeypatch.setattr(
+        note_versions.shutil,
+        "copytree",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("copy failed")),
+    )
+
+    with pytest.raises(OSError, match="copy failed"):
+        activate_note_version(tmp_path, "note_002")
+
+    assert load_note_version_index(tmp_path).active_version_id == "note_001"
+    assert (tmp_path / "note.md").read_text(encoding="utf-8") == "# One"
+    assert (tmp_path / "frames" / "frame_001.jpg").read_bytes() == b"one"
+
+
+def test_activate_note_version_index_failure_rolls_back_public_artifacts(tmp_path, monkeypatch) -> None:
+    version_one = make_version("note_001", selected=True, active=True)
+    version_two = make_version("note_002", selected=True, active=False)
+    for version, note_text, frame_bytes in (
+        (version_one, "# One", b"one"),
+        (version_two, "# Two", b"two"),
+    ):
+        version_dir = tmp_path / "note_versions" / version.id
+        (version_dir / "frames").mkdir(parents=True)
+        (version_dir / "note.md").write_text(note_text, encoding="utf-8")
+        (version_dir / "frames" / "frame_001.jpg").write_bytes(frame_bytes)
+    write_note_version_index(
+        tmp_path,
+        NoteVersionIndex(
+            active_version_id="note_001",
+            selected_version_ids=["note_001", "note_002"],
+            versions=[version_one, version_two],
+        ),
+    )
+    (tmp_path / "note.md").write_text("# One", encoding="utf-8")
+    (tmp_path / "frames").mkdir()
+    (tmp_path / "frames" / "frame_001.jpg").write_bytes(b"one")
+    real_writer = note_versions.write_note_version_index
+    monkeypatch.setattr(
+        note_versions,
+        "write_note_version_index",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("index failed")),
+    )
+
+    with pytest.raises(OSError, match="index failed"):
+        activate_note_version(tmp_path, "note_002")
+
+    monkeypatch.setattr(note_versions, "write_note_version_index", real_writer)
+    assert load_note_version_index(tmp_path).active_version_id == "note_001"
+    assert (tmp_path / "note.md").read_text(encoding="utf-8") == "# One"
+    assert (tmp_path / "frames" / "frame_001.jpg").read_bytes() == b"one"

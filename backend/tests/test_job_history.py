@@ -1508,6 +1508,47 @@ def test_get_job_loads_note_review_pending_state_from_disk(tmp_path, monkeypatch
     assert payload["progress"] == 92
 
 
+def test_note_review_marker_overrides_stale_interrupted_attempt(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    write_history_job(
+        tmp_path,
+        "recovered-note-review-job",
+        created_at="2026-07-06T00:00:00+00:00",
+        title="Recovered review",
+        original_filename="review.mp4",
+    )
+    append_debug_events(
+        tmp_path,
+        "recovered-note-review-job",
+        [
+            {
+                "ts": "2026-07-06T00:01:00+00:00",
+                "level": "INFO",
+                "stage": "continue_job_to_notes",
+                "message": "started",
+                "details": {},
+            },
+            {
+                "ts": "2026-07-06T00:02:00+00:00",
+                "level": "INFO",
+                "stage": "continue_job_to_notes",
+                "message": "cancelled",
+                "details": {"reason": "review asset preparation was cancelled"},
+            },
+        ],
+    )
+    (tmp_path / "recovered-note-review-job" / ".note-review.pending").write_text("1", encoding="utf-8")
+
+    response = TestClient(app).get("/api/jobs/recovered-note-review-job")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "awaiting_note_review"
+    assert payload["step"] == "等待复核笔记"
+    assert payload["progress"] == 92
+
+
 def test_get_job_uses_latest_debug_activity_as_loaded_timestamp(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))
@@ -1683,3 +1724,61 @@ def test_delete_job_returns_json_error_when_files_are_in_use(tmp_path, monkeypat
     assert response.status_code == 409
     assert "files are in use" in response.json()["detail"]
     assert (tmp_path / "locked-job").exists()
+
+
+def test_cancel_running_job_persists_cancelled_state(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    store = JobStore(tmp_path)
+    monkeypatch.setattr(main, "store", store)
+    job_id = "cancel-api-job"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir()
+    (job_dir / "metadata.json").write_text(json.dumps({"job_id": job_id, "title": "Cancel", "original_filename": "cancel.mp4"}), encoding="utf-8")
+    store.create(job_id)
+    store.update(job_id, status=main.JobStatus.running, step="字幕生成", progress=35)
+
+    response = TestClient(app).post(f"/api/jobs/{job_id}/cancel")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "cancelling"
+    assert response.json()["stage"] == "cancelling"
+    assert (job_dir / ".cancelled").exists()
+
+    store.mark_cancelled(job_id)
+    reloaded = JobStore(tmp_path).load_from_disk(job_id)
+    assert reloaded is not None
+    assert reloaded.status == main.JobStatus.cancelled
+    assert reloaded.step == "已取消"
+    assert reloaded.error is None
+    assert reloaded.progress == 35
+
+
+def test_cancel_completed_job_is_rejected(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    write_history_job(tmp_path, "completed-cancel", created_at="2026-06-21T00:00:00+00:00", title="Done", original_filename="done.mp4")
+
+    response = TestClient(app).post("/api/jobs/completed-cancel/cancel")
+
+    assert response.status_code == 409
+
+
+def test_delete_job_rejects_job_while_cancellation_is_in_progress(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    store = JobStore(tmp_path)
+    monkeypatch.setattr(main, "store", store)
+    job_id = "cancelling-delete-job"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir()
+    (job_dir / "metadata.json").write_text(
+        json.dumps({"job_id": job_id, "title": "Cancel", "original_filename": "cancel.mp4"}),
+        encoding="utf-8",
+    )
+    store.create(job_id)
+    store.update(job_id, status=main.JobStatus.running, step="字幕生成", progress=35)
+    store.request_cancel(job_id)
+
+    response = TestClient(app).delete(f"/api/jobs/{job_id}")
+
+    assert response.status_code == 409
+    assert job_dir.exists()

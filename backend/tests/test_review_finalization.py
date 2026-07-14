@@ -243,7 +243,9 @@ def test_regenerate_note_chunk_returns_to_note_review(tmp_path, monkeypatch) -> 
             key_moments=[KeyMoment(time=0.5, reason="New frame", chapter_index=0)],
         )
 
-    def fake_create_note_version_from_draft(*, job_dir, video_path, draft, duration, config, version_id=None):
+    def fake_create_note_version_from_draft(
+        *, job_dir, video_path, draft, duration, config, version_id=None, is_cancelled=None
+    ):
         (job_dir / "note.md").write_text(
             "# Regenerated chunk\n\n### Opening\n\n`00:00:00 - 00:00:01`\n\nNew detail\n",
             encoding="utf-8-sig",

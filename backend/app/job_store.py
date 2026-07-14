@@ -7,8 +7,71 @@ from pathlib import Path
 from threading import Lock
 
 from .filenames import normalize_uploaded_filename
-from .models import Artifact, FailureContext, JobPublicState, JobStatus, JobSummary
+from .job_migrations import migrate_job_directory
+from .models import (
+    Artifact,
+    FailureContext,
+    JobPublicState,
+    JobStage,
+    JobStatus,
+    JobSummary,
+    TranscriptPayload,
+    TranscriptionWorkProgress,
+)
 from .note_versions import ensure_root_note_has_version, load_note_version_index, resolve_job_relative_path
+
+
+STEP_STAGE_HINTS: tuple[tuple[tuple[str, ...], JobStage], ...] = (
+    (("等待", "排队"), JobStage.queued),
+    (("分析视频", "视频探测"), JobStage.analyzing_video),
+    (("音频", "提取"), JobStage.extracting_audio),
+    (("字幕", "转写"), JobStage.transcribing),
+    (("确认字幕",), JobStage.awaiting_subtitle_review),
+    (("关键帧", "配图"), JobStage.generating_frames),
+    (("复核资料", "质量报告"), JobStage.preparing_review),
+    (("复核笔记", "人工复核"), JobStage.awaiting_note_review),
+    (("定稿", "打包", "ZIP"), JobStage.finalizing),
+    (("完成", "历史记录载入"), JobStage.completed),
+    (("失败", "中断"), JobStage.failed),
+)
+
+CANCELLED_MARKER = ".cancelled"
+ARTIFACT_SIGNATURE_NAMES = (
+    "audio.mp3",
+    "subtitles.srt",
+    "subtitles.vtt",
+    "subtitles.md",
+    "transcript.json",
+    "note.md",
+    "metadata.json",
+    "debug.log",
+    "download.zip",
+    "frames",
+    "debug",
+    "review",
+)
+
+
+def infer_job_stage(status: JobStatus, step: str) -> JobStage:
+    if status == JobStatus.cancelling:
+        return JobStage.cancelling
+    if status == JobStatus.awaiting_subtitle_confirmation:
+        return JobStage.awaiting_subtitle_review
+    if status == JobStatus.awaiting_note_review:
+        return JobStage.awaiting_note_review
+    if status == JobStatus.succeeded:
+        return JobStage.completed
+    if status == JobStatus.failed:
+        return JobStage.failed
+    if status == JobStatus.cancelled:
+        return JobStage.cancelled
+    normalized = step.strip()
+    for hints, stage in STEP_STAGE_HINTS:
+        if any(hint in normalized for hint in hints):
+            return stage
+    if status == JobStatus.running:
+        return JobStage.generating_note
+    return JobStage.queued
 
 
 TERMINAL_DEBUG_STAGES = {
@@ -24,11 +87,128 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _read_cancel_marker(job_dir: Path) -> dict:
+    marker = job_dir / CANCELLED_MARKER
+    if not marker.exists():
+        return {}
+    try:
+        raw = marker.read_text(encoding="utf-8").strip()
+    except OSError:
+        return {}
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        # Older builds persisted the cancellation timestamp as plain text.
+        return {"requested_at": raw} if raw else {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _write_cancel_marker(job_dir: Path, payload: dict) -> None:
+    marker = job_dir / CANCELLED_MARKER
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _cancelled_progress(payload: dict) -> int:
+    try:
+        progress = int(payload.get("progress", 0))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, progress))
+
+
+def _work_progress_from_payload(payload: object) -> TranscriptionWorkProgress | None:
+    try:
+        return TranscriptionWorkProgress.model_validate(payload)
+    except (TypeError, ValueError):
+        return None
+
+
+def _artifact_signature(job_dir: Path) -> tuple:
+    signature = []
+    for name in ARTIFACT_SIGNATURE_NAMES:
+        path = job_dir / name
+        try:
+            stat = path.stat()
+            signature.append((name, stat.st_mtime_ns, stat.st_size, path.is_dir()))
+        except OSError:
+            signature.append((name, None, None, None))
+    return tuple(signature)
+
+
+def _infer_resumable_work_progress(
+    job_dir: Path,
+    metadata: dict,
+    status: JobStatus,
+) -> TranscriptionWorkProgress | None:
+    if status not in {JobStatus.cancelled, JobStatus.failed}:
+        return None
+    if metadata.get("transcription_mode") != "local_faster_whisper":
+        return None
+    source_dir = job_dir / "source_video"
+    if not source_dir.exists() or not any(path.is_file() for path in source_dir.iterdir()):
+        return None
+
+    manifest_path = job_dir / "work" / "asr" / "transcription_checkpoints" / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        chunks = manifest.get("chunks") if isinstance(manifest, dict) else []
+        chunks = chunks if isinstance(chunks, list) else []
+    except (OSError, TypeError, ValueError):
+        chunks = []
+
+    completed_indexes: set[int] = set()
+    completed_seconds = 0.0
+    results_dir = manifest_path.parent / "results"
+    for chunk in chunks:
+        if not isinstance(chunk, dict) or not isinstance(chunk.get("index"), int):
+            continue
+        index = chunk["index"]
+        result_path = results_dir / f"chunk_{index:04d}.json"
+        try:
+            TranscriptPayload.model_validate_json(result_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        completed_indexes.add(index)
+        try:
+            completed_seconds = max(completed_seconds, float(chunk.get("end") or 0.0))
+        except (TypeError, ValueError):
+            pass
+
+    try:
+        metadata_duration = float(metadata.get("duration_seconds") or 0.0)
+    except (TypeError, ValueError):
+        metadata_duration = 0.0
+    chunk_duration = 0.0
+    for chunk in chunks:
+        if not isinstance(chunk, dict):
+            continue
+        try:
+            chunk_duration = max(chunk_duration, float(chunk.get("end") or 0.0))
+        except (TypeError, ValueError):
+            continue
+    return TranscriptionWorkProgress(
+        completed_seconds=completed_seconds,
+        total_seconds=max(metadata_duration, chunk_duration),
+        completed_chunks=len(completed_indexes),
+        total_chunks=len(chunks),
+        current_chunk=None,
+        realtime_factor=None,
+        eta_seconds=None,
+        resumable=True,
+        cache_hits=len(completed_indexes),
+        device=str(metadata.get("local_whisper_device") or "auto"),
+        compute_type=str(metadata.get("local_whisper_compute_type") or "default"),
+    )
+
+
 class JobStore:
     def __init__(self, outputs_root: Path) -> None:
         self.outputs_root = outputs_root
         self._lock = Lock()
         self._jobs: dict[str, JobPublicState] = {}
+        self._cancel_requested: set[str] = set()
+        self._artifact_cache: dict[str, tuple[tuple, list[Artifact], str | None]] = {}
 
     def create(self, job_id: str) -> JobPublicState:
         now = _now_iso()
@@ -46,6 +226,79 @@ class JobStore:
             self._jobs[job_id] = state
         return state
 
+    def request_cancel(self, job_id: str) -> JobPublicState | None:
+        with self._lock:
+            state = self._jobs.get(job_id)
+            if state is None:
+                return None
+            if state.status in {JobStatus.cancelling, JobStatus.cancelled}:
+                return state
+            if state.status not in {JobStatus.pending, JobStatus.running}:
+                return state
+            now = _now_iso()
+            previous_step = state.step
+            self._cancel_requested.add(job_id)
+            state.status = JobStatus.cancelling
+            state.stage = JobStage.cancelling
+            state.step = "正在取消"
+            state.error = None
+            state.updated_at = now
+            try:
+                _write_cancel_marker(
+                    self.outputs_root / job_id,
+                    {
+                        "requested_at": now,
+                        "progress": state.progress,
+                        "step": previous_step,
+                        "work_progress": (
+                            state.work_progress.model_dump(mode="json") if state.work_progress is not None else None
+                        ),
+                    },
+                )
+            except OSError:
+                pass
+            return state
+
+    def mark_cancelled(self, job_id: str) -> JobPublicState | None:
+        with self._lock:
+            state = self._jobs.get(job_id)
+            if state is None:
+                return None
+            now = _now_iso()
+            marker_payload = _read_cancel_marker(self.outputs_root / job_id)
+            marker_payload["cancelled_at"] = now
+            marker_payload.setdefault("progress", state.progress)
+            marker_payload.setdefault("step", state.step)
+            try:
+                _write_cancel_marker(self.outputs_root / job_id, marker_payload)
+            except OSError:
+                pass
+            state.status = JobStatus.cancelled
+            state.stage = JobStage.cancelled
+            state.step = "已取消"
+            state.error = None
+            if state.work_progress is not None:
+                state.work_progress.resumable = True
+                marker_payload["work_progress"] = state.work_progress.model_dump(mode="json")
+                try:
+                    _write_cancel_marker(self.outputs_root / job_id, marker_payload)
+                except OSError:
+                    pass
+            state.updated_at = now
+            return state
+
+    def is_cancel_requested(self, job_id: str) -> bool:
+        with self._lock:
+            return job_id in self._cancel_requested
+
+    def clear_cancel_request(self, job_id: str) -> None:
+        with self._lock:
+            self._cancel_requested.discard(job_id)
+            try:
+                (self.outputs_root / job_id / CANCELLED_MARKER).unlink(missing_ok=True)
+            except OSError:
+                pass
+
     def get(self, job_id: str) -> JobPublicState | None:
         with self._lock:
             return self._jobs.get(job_id)
@@ -58,9 +311,13 @@ class JobStore:
         step: str | None = None,
         progress: int | None = None,
         error: str | None = None,
+        stage: JobStage | None = None,
+        work_progress: TranscriptionWorkProgress | None = None,
     ) -> None:
         with self._lock:
             state = self._jobs[job_id]
+            if job_id in self._cancel_requested:
+                return
             now = _now_iso()
             old_step = state.step
             new_step = step if step is not None else old_step
@@ -77,13 +334,26 @@ class JobStore:
                     state.failure_context = None
             if step is not None:
                 state.step = step
+            state.stage = stage if stage is not None else infer_job_stage(state.status, state.step)
             if progress is not None:
                 state.progress = max(0, min(100, progress))
+            if work_progress is not None:
+                state.work_progress = work_progress
             if error is not None:
                 state.error = error
 
     def refresh_artifacts(self, job_id: str) -> list[Artifact]:
         job_dir = self.outputs_root / job_id
+        signature = _artifact_signature(job_dir)
+        with self._lock:
+            cached = self._artifact_cache.get(job_id)
+            if cached is not None and cached[0] == signature:
+                artifacts = list(cached[1])
+                state = self._jobs.get(job_id)
+                if state:
+                    state.artifacts = artifacts
+                    state.download_filename = cached[2]
+                return artifacts
         artifacts: list[Artifact] = []
         candidates = [
             ("audio.mp3", "原视频音频 MP3", "audio"),
@@ -130,10 +400,12 @@ class JobStore:
                         Artifact(label=label, path=rel, kind=kind, asset_url=f"/api/jobs/{job_id}/assets/{rel}")
                     )
         with self._lock:
+            download_filename = _zip_download_filename(job_dir) if (job_dir / "download.zip").exists() else None
+            self._artifact_cache[job_id] = (signature, list(artifacts), download_filename)
             state = self._jobs.get(job_id)
             if state:
                 state.artifacts = artifacts
-                state.download_filename = _zip_download_filename(job_dir) if (job_dir / "download.zip").exists() else None
+                state.download_filename = download_filename
                 if state.status == JobStatus.failed and state.failure_context is None:
                     state.failure_context = _latest_disk_failure_context(job_dir)
         return artifacts
@@ -143,36 +415,61 @@ class JobStore:
         if not job_dir.exists() or not job_dir.is_dir():
             return None
 
-        metadata = self._read_metadata(job_dir)
+        metadata = migrate_job_directory(job_dir)
         artifacts = self.refresh_artifacts(job_id)
         if (job_dir / "note.md").exists():
             ensure_root_note_has_version(job_dir)
             artifacts = self.refresh_artifacts(job_id)
         version_index = load_note_version_index(job_dir)
-        timestamp = str(_job_history_activity_timestamp(job_dir) or metadata.get("created_at") or _mtime_iso(job_dir))
+        cancel_marker = _read_cancel_marker(job_dir)
+        timestamp = str(
+            cancel_marker.get("cancelled_at")
+            or cancel_marker.get("requested_at")
+            or _job_history_activity_timestamp(job_dir)
+            or metadata.get("created_at")
+            or _mtime_iso(job_dir)
+        )
         status = _infer_disk_job_status(job_dir, artifacts, version_index)
         interrupted_event = _latest_interrupted_processing_event(job_dir)
         failure_error = _latest_disk_failure_error(job_dir)
         failure_context = _latest_disk_failure_context(job_dir) if status == JobStatus.failed else None
+        work_progress = _work_progress_from_payload(cancel_marker.get("work_progress"))
+        if work_progress is None:
+            work_progress = _infer_resumable_work_progress(job_dir, metadata, status)
+        if status == JobStatus.succeeded:
+            step = "已从历史记录载入"
+            progress = 100
+        elif status == JobStatus.cancelled:
+            step = "已取消"
+            progress = _cancelled_progress(cancel_marker)
+        elif status == JobStatus.awaiting_subtitle_confirmation:
+            step = "等待确认字幕"
+            progress = 40
+        elif status == JobStatus.awaiting_note_review:
+            step = "等待复核笔记"
+            progress = 92
+        elif interrupted_event:
+            step = "最近一次处理中断"
+            progress = 100
+        elif failure_error:
+            step = "最近一次处理失败"
+            progress = 100
+        else:
+            step = "历史任务不完整"
+            progress = 100
+
         state = JobPublicState(
             job_id=job_id,
             status=status,
-            step=(
-                "已从历史记录载入"
-                if status == JobStatus.succeeded
-                else "等待确认字幕"
-                if status == JobStatus.awaiting_subtitle_confirmation
-                else "最近一次处理中断"
-                if interrupted_event
-                else "最近一次处理失败"
-                if failure_error
-                else "历史任务不完整"
-            ),
-            progress=100,
+            step=step,
+            stage=infer_job_stage(status, ""),
+            progress=progress,
+            work_progress=work_progress,
             error=(
                 None
                 if status in (
                     JobStatus.succeeded,
+                    JobStatus.cancelled,
                     JobStatus.awaiting_subtitle_confirmation,
                     JobStatus.awaiting_note_review,
                 )
@@ -186,9 +483,6 @@ class JobStore:
             stage_elapsed_seconds=0,
             download_filename=_zip_download_filename(job_dir) if (job_dir / "download.zip").exists() else None,
         )
-        if status == JobStatus.awaiting_note_review:
-            state.step = "等待复核笔记"
-            state.progress = 92
         with self._lock:
             self._jobs[job_id] = state
         return state
@@ -213,6 +507,8 @@ class JobStore:
     def remove(self, job_id: str) -> None:
         with self._lock:
             self._jobs.pop(job_id, None)
+            self._cancel_requested.discard(job_id)
+            self._artifact_cache.pop(job_id, None)
 
     def _iter_job_dirs(self) -> list[Path]:
         return [
@@ -222,7 +518,7 @@ class JobStore:
         ]
 
     def _summarize_job_dir(self, job_dir: Path) -> JobSummary:
-        metadata = self._read_metadata(job_dir)
+        metadata = migrate_job_directory(job_dir)
         version_index = load_note_version_index(job_dir)
         artifacts = self.refresh_artifacts(job_dir.name)
         with self._lock:
@@ -300,6 +596,13 @@ def _job_history_activity_timestamp(job_dir: Path) -> str | None:
 
 
 def _infer_disk_job_status(job_dir: Path, artifacts: list[Artifact], version_index) -> JobStatus:
+    if (job_dir / CANCELLED_MARKER).exists():
+        return JobStatus.cancelled
+    # A review marker is an authoritative recovery point. A previous attempt
+    # may have been interrupted while preparing optional review assets, but
+    # once the note is explicitly marked for review it must remain reachable.
+    if (job_dir / ".note-review.pending").exists():
+        return JobStatus.awaiting_note_review
     if _latest_interrupted_processing_event(job_dir):
         return JobStatus.failed
 
@@ -308,8 +611,6 @@ def _infer_disk_job_status(job_dir: Path, artifacts: list[Artifact], version_ind
         return JobStatus.failed
 
     artifact_paths = {artifact.path for artifact in artifacts}
-    if (job_dir / ".note-review.pending").exists():
-        return JobStatus.awaiting_note_review
     if "note.md" in artifact_paths:
         return JobStatus.succeeded
     if "subtitles.md" in artifact_paths and (job_dir / "subtitles.pending").exists():

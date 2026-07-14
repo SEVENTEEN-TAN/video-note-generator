@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from backend.app import job_store
 from backend.app.job_store import JobStore
-from backend.app.models import FailureContext, JobStatus
+from backend.app.models import FailureContext, JobStage, JobStatus
 
 
 def test_job_store_tracks_step_timing(tmp_path, monkeypatch) -> None:
@@ -64,3 +64,109 @@ def test_job_store_clears_stale_failure_context_when_job_restarts(tmp_path) -> N
     assert restarted.status == JobStatus.running
     assert restarted.error == ""
     assert restarted.failure_context is None
+
+
+def test_job_store_persists_cancelled_state_across_reload(tmp_path) -> None:
+    job_id = "cancelled-job"
+    job_dir = tmp_path / job_id
+    job_dir.mkdir()
+    (job_dir / "metadata.json").write_text('{"job_id":"cancelled-job","title":"demo","original_filename":"demo.mp4"}', encoding="utf-8")
+
+    store = JobStore(tmp_path)
+    store.create(job_id)
+    store.update(job_id, status=JobStatus.running, stage=JobStage.transcribing, step="字幕生成", progress=35)
+    cancelled = store.request_cancel(job_id)
+
+    assert cancelled is not None
+    assert cancelled.status == JobStatus.cancelling
+    assert cancelled.stage == JobStage.cancelling
+    assert (job_dir / ".cancelled").exists()
+
+    finished = store.mark_cancelled(job_id)
+    assert finished is not None
+    assert finished.status == JobStatus.cancelled
+
+    reloaded = JobStore(tmp_path).load_from_disk(job_id)
+    assert reloaded is not None
+    assert reloaded.status == JobStatus.cancelled
+    assert reloaded.stage == JobStage.cancelled
+    assert reloaded.step == "已取消"
+    assert reloaded.progress == 35
+    assert reloaded.error is None
+
+
+def test_job_store_exposes_stable_stage_for_processing_steps(tmp_path) -> None:
+    store = JobStore(tmp_path)
+    store.create("stage-job")
+    store.update("stage-job", status=JobStatus.running, step="关键帧抽取", progress=78)
+
+    state = store.get("stage-job")
+    assert state is not None
+    assert state.stage.value == "generating_frames"
+
+
+def test_cancelled_job_ignores_late_worker_updates(tmp_path) -> None:
+    store = JobStore(tmp_path)
+    job_id = "late-update-job"
+    (tmp_path / job_id).mkdir()
+    store.create(job_id)
+    store.update(job_id, status=JobStatus.running, step="字幕生成", progress=35)
+    store.request_cancel(job_id)
+
+    store.update(job_id, status=JobStatus.failed, step="失败", progress=100, error="late failure")
+
+    state = store.get(job_id)
+    assert state is not None
+    assert state.status == JobStatus.cancelling
+    assert state.stage == JobStage.cancelling
+    assert state.error is None
+
+    store.mark_cancelled(job_id)
+    store.update(job_id, status=JobStatus.failed, step="失败", progress=100, error="later failure")
+    finished = store.get(job_id)
+    assert finished is not None
+    assert finished.status == JobStatus.cancelled
+    assert finished.stage == JobStage.cancelled
+    assert finished.error is None
+
+
+def test_job_store_explicit_stage_does_not_depend_on_display_copy(tmp_path) -> None:
+    store = JobStore(tmp_path)
+    store.create("explicit-stage-job")
+
+    store.update(
+        "explicit-stage-job",
+        status=JobStatus.running,
+        stage=JobStage.finalizing,
+        step="写入下载包",
+        progress=92,
+    )
+
+    state = store.get("explicit-stage-job")
+    assert state is not None
+    assert state.stage == JobStage.finalizing
+
+
+def test_clearing_cancel_request_allows_a_cancelled_job_to_be_requeued(tmp_path) -> None:
+    store = JobStore(tmp_path)
+    job_id = "retry-cancelled-job"
+    (tmp_path / job_id).mkdir()
+    store.create(job_id)
+    store.request_cancel(job_id)
+    store.mark_cancelled(job_id)
+
+    store.clear_cancel_request(job_id)
+    store.update(
+        job_id,
+        status=JobStatus.pending,
+        stage=JobStage.queued,
+        step="等待重新生成笔记",
+        progress=62,
+        error="",
+    )
+
+    state = store.get(job_id)
+    assert state is not None
+    assert state.status == JobStatus.pending
+    assert state.stage == JobStage.queued
+    assert not (tmp_path / job_id / ".cancelled").exists()

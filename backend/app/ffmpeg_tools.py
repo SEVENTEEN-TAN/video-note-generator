@@ -368,7 +368,7 @@ def extract_frames(
     if not requests:
         return {}
     resolved: list[tuple[Path, float]] = []
-    args = ["-y", "-hide_banner", "-i", str(video_path)]
+    args = ["-y", "-hide_banner"]
     for output_path, timestamp in requests:
         safe_time = max(0.0, timestamp)
         if duration and duration > 1:
@@ -376,7 +376,11 @@ def extract_frames(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.unlink(missing_ok=True)
         resolved.append((output_path, safe_time))
-        args.extend(["-ss", f"{safe_time:.3f}", "-frames:v", "1", "-q:v", "2", str(output_path)])
+        # One input per timestamp keeps -ss before -i, so every seek uses the
+        # container index instead of decoding from the beginning of the video.
+        args.extend(["-ss", f"{safe_time:.3f}", "-i", str(video_path)])
+    for input_index, (output_path, _safe_time) in enumerate(resolved):
+        args.extend(["-map", f"{input_index}:v:0", "-frames:v", "1", "-q:v", "2", str(output_path)])
     try:
         _run_ffmpeg_with_optional_cancellation(args, is_cancelled)
         if all(path.exists() and path.stat().st_size > 0 for path, _time in resolved):

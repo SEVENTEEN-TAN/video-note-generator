@@ -9,9 +9,11 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 outputs/
+config/settings.json
 backend/models/
 .agents/
 .worktrees/
+.codex-run/
 *.pyc
 *.log
 *.tsbuildinfo

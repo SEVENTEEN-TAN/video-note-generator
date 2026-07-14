@@ -93,6 +93,111 @@ def test_process_uploaded_subtitle_job_writes_transcript_without_audio_extractio
     assert metadata["uploaded_subtitle_filename"] == "input.srt"
 
 
+def test_process_transcription_job_stops_after_active_transcription_is_cancelled(tmp_path, monkeypatch) -> None:
+    job_id = "cancel-during-transcription"
+    outputs_root = tmp_path / "outputs"
+    job_dir = outputs_root / job_id
+    source_dir = job_dir / "source_video"
+    source_dir.mkdir(parents=True)
+    video_path = source_dir / "input.mp4"
+    video_path.write_bytes(b"video")
+    store = JobStore(outputs_root)
+    store.create(job_id)
+
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.audio_transcriptions,
+        transcription_api_key="transcription-key",
+        transcription_base_url="https://api.openai.com/v1",
+        transcription_model="whisper-1",
+        note_api_key="note-key",
+        note_base_url="https://api.openai.com/v1",
+        note_model="gpt-5.5",
+        note_language=NoteLanguage.zh,
+        frame_limit=1,
+        original_filename="input.mp4",
+    )
+
+    monkeypatch.setattr(processor, "probe_duration", lambda _path: 12.5)
+    monkeypatch.setattr(processor, "extract_mp3", lambda _video, audio: audio.write_bytes(b"audio"))
+
+    def transcribe_and_cancel(*_args, **_kwargs) -> dict:
+        cancellation = store.request_cancel(job_id)
+        assert cancellation is not None
+        assert cancellation.status == JobStatus.cancelling
+        return {"text": "discard me", "segments": [{"start": 0.0, "end": 1.0, "text": "discard me"}]}
+
+    monkeypatch.setattr(processor, "transcribe_audio", transcribe_and_cancel)
+
+    processor.process_transcription_job(
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        config=config,
+        store=store,
+    )
+
+    state = store.get(job_id)
+    assert state is not None
+    assert state.status == JobStatus.cancelled
+    assert state.step == "已取消"
+    assert (job_dir / "audio.mp3").exists()
+    assert not (job_dir / "transcript.json").exists()
+    assert not (job_dir / "subtitles.pending").exists()
+
+
+def test_cancelled_queued_subtitle_regeneration_preserves_reviewed_outputs(tmp_path, monkeypatch) -> None:
+    job_id = "cancel-queued-subtitle-regeneration"
+    outputs_root = tmp_path / "outputs"
+    job_dir = outputs_root / job_id
+    source_dir = job_dir / "source_video"
+    source_dir.mkdir(parents=True)
+    video_path = source_dir / "input.mp4"
+    video_path.write_bytes(b"video")
+    (job_dir / "note.md").write_text("# reviewed note", encoding="utf-8")
+    (job_dir / "download.zip").write_bytes(b"zip")
+    (job_dir / "note_versions").mkdir()
+    (job_dir / "note_versions" / "keep.txt").write_text("keep", encoding="utf-8")
+    (job_dir / "review").mkdir()
+    (job_dir / "review" / "keep.txt").write_text("keep", encoding="utf-8")
+
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    store.request_cancel(job_id)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.audio_transcriptions,
+        transcription_api_key="transcription-key",
+        transcription_base_url="https://api.openai.com/v1",
+        transcription_model="whisper-1",
+        note_api_key="placeholder",
+        note_base_url="https://api.openai.com/v1",
+        note_model="placeholder",
+        note_language=NoteLanguage.zh,
+        frame_limit=1,
+        original_filename="input.mp4",
+    )
+    monkeypatch.setattr(
+        processor,
+        "extract_mp3",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("cancelled jobs must not start FFmpeg")),
+    )
+
+    processor.regenerate_subtitles_job(
+        job_id=job_id,
+        job_dir=job_dir,
+        video_path=video_path,
+        config=config,
+        store=store,
+    )
+
+    state = store.get(job_id)
+    assert state is not None
+    assert state.status == JobStatus.cancelled
+    assert (job_dir / "note.md").read_text(encoding="utf-8") == "# reviewed note"
+    assert (job_dir / "download.zip").exists()
+    assert (job_dir / "note_versions" / "keep.txt").exists()
+    assert (job_dir / "review" / "keep.txt").exists()
+
+
 def test_process_job_handles_many_transcript_segments(tmp_path, monkeypatch) -> None:
     job_id = "many-segments-job"
     outputs_root = tmp_path / "outputs"
