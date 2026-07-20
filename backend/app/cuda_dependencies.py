@@ -5,6 +5,7 @@ from pathlib import Path
 from .install_tasks import PackageInstallController, PackageInstallState
 from .runtime_config import get_python_package_install_args
 from .runtime_paths import get_backend_requirements_file
+from .settings import save_user_settings
 from .transcription import find_external_python
 
 
@@ -16,12 +17,17 @@ def get_cuda_dependency_requirements_path() -> Path:
     return get_backend_requirements_file("requirements-cuda.txt")
 
 
+def persist_external_python_path(python_path: str) -> None:
+    save_user_settings({"external_python_path": python_path})
+
+
 _controller = PackageInstallController(
     packages=(),
     failure_message="CUDA dependency installation failed.",
     python_finder=find_external_python,
     install_args_provider=get_python_package_install_args,
     requirements_file_provider=get_cuda_dependency_requirements_path,
+    success_callback=persist_external_python_path,
 )
 
 

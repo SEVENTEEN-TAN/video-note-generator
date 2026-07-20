@@ -178,6 +178,57 @@ def test_activate_note_version_rejects_missing_frames_before_deleting_current_fr
     assert (frames_dir / "frame_001.jpg").read_bytes() == b"active frame"
 
 
+def test_activate_note_version_invalidates_review_artifacts_from_previous_version(tmp_path) -> None:
+    versions = [make_version("note_001"), make_version("note_002")]
+    for version in versions:
+        version_dir = tmp_path / "note_versions" / version.id
+        (version_dir / "frames").mkdir(parents=True)
+        (version_dir / "note.md").write_text(f"# {version.id}", encoding="utf-8")
+    write_note_version_index(
+        tmp_path,
+        NoteVersionIndex(
+            active_version_id="note_001",
+            selected_version_ids=[version.id for version in versions],
+            versions=versions,
+        ),
+    )
+    activate_note_version(tmp_path, "note_001")
+    review_dir = tmp_path / "review"
+    (review_dir / "frame_candidates").mkdir(parents=True)
+    (review_dir / "frame_candidates" / "candidate.jpg").write_bytes(b"old")
+    for filename in ("frame_candidates.json", "frame_candidates.cache.json", "quality_report.json", "quality_report.md"):
+        (review_dir / filename).write_text("{}", encoding="utf-8")
+
+    activate_note_version(tmp_path, "note_002")
+
+    assert not (review_dir / "frame_candidates").exists()
+    assert not (review_dir / "frame_candidates.json").exists()
+    assert not (review_dir / "frame_candidates.cache.json").exists()
+    assert not (review_dir / "quality_report.json").exists()
+    assert not (review_dir / "quality_report.md").exists()
+
+
+def test_activate_note_version_invalidates_review_when_index_is_active_but_root_note_is_stale(tmp_path) -> None:
+    version = make_version("note_002", active=True)
+    version_dir = tmp_path / "note_versions" / version.id
+    (version_dir / "frames").mkdir(parents=True)
+    (version_dir / "note.md").write_text("# Regenerated", encoding="utf-8")
+    (tmp_path / "frames").mkdir()
+    (tmp_path / "note.md").write_text("# Previous", encoding="utf-8")
+    write_note_version_index(
+        tmp_path,
+        NoteVersionIndex(active_version_id=version.id, selected_version_ids=[version.id], versions=[version]),
+    )
+    review_dir = tmp_path / "review"
+    review_dir.mkdir()
+    (review_dir / "frame_candidates.json").write_text("{}", encoding="utf-8")
+
+    activate_note_version(tmp_path, version.id)
+
+    assert (tmp_path / "note.md").read_text(encoding="utf-8") == "# Regenerated"
+    assert not (review_dir / "frame_candidates.json").exists()
+
+
 def test_note_version_patch_rejects_missing_frames_before_changing_active(tmp_path, monkeypatch) -> None:
     outputs_root = tmp_path / "outputs"
     job_id = "missing-frames-job"

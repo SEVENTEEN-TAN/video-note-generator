@@ -9,8 +9,9 @@ from backend.app import main
 from backend.app.frame_candidates import write_frame_candidate_index
 from backend.app.job_store import JobStore
 from backend.app.main import app
-from backend.app.models import FrameCandidate, FrameCandidateIndex
-from backend.app.review_drafts import build_review_draft, load_review_draft, update_review_draft_paragraph
+from backend.app.models import FrameCandidate, FrameCandidateIndex, NoteStyle, NoteVersion, NoteVersionIndex
+from backend.app.note_versions import activate_note_version, write_note_version_index
+from backend.app.review_drafts import build_review_draft, get_or_build_review_draft, load_review_draft, update_review_draft_paragraph
 
 
 def seed_review_draft_job(job_dir: Path) -> None:
@@ -100,6 +101,75 @@ def test_update_review_draft_paragraph_persists_human_edits(tmp_path) -> None:
     assert updated.paragraphs[0].selected_frame_ids == []
     assert updated.paragraphs[0].status == "edited"
     assert reloaded.paragraphs[0].body == "Human edited intro."
+
+
+def seed_versioned_review_job(job_dir: Path) -> None:
+    versions: list[NoteVersion] = []
+    for version_id, title, body in (
+        ("note_001", "Version One", "Body one."),
+        ("note_002", "Version Two", "Body two."),
+    ):
+        version_dir = job_dir / "note_versions" / version_id
+        (version_dir / "frames").mkdir(parents=True)
+        (version_dir / "note.md").write_text(
+            f"# {title}\n\n### Chapter\n\n\u006000:00:00 - 00:00:10\u0060\n\n{body}",
+            encoding="utf-8-sig",
+        )
+        versions.append(
+            NoteVersion(
+                id=version_id,
+                label=title,
+                note_style=NoteStyle.detailed,
+                note_language="zh",
+                note_model="test",
+                note_base_url="https://example.test/v1",
+                frame_limit=1,
+                note_path=f"note_versions/{version_id}/note.md",
+                frame_dir=f"note_versions/{version_id}/frames",
+            )
+        )
+    write_note_version_index(
+        job_dir,
+        NoteVersionIndex(
+            active_version_id="note_001",
+            selected_version_ids=["note_001", "note_002"],
+            versions=versions,
+        ),
+    )
+
+
+def test_review_drafts_are_bound_to_the_selected_note_version(tmp_path) -> None:
+    seed_versioned_review_job(tmp_path)
+
+    activate_note_version(tmp_path, "note_001")
+    first = build_review_draft(tmp_path, "note_001")
+    activate_note_version(tmp_path, "note_002")
+    second = get_or_build_review_draft(tmp_path, "note_002")
+
+    assert first.note_version_id == "note_001"
+    assert first.title == "Version One"
+    assert first.paragraphs[0].body == "Body one."
+    assert second.note_version_id == "note_002"
+    assert second.title == "Version Two"
+    assert second.paragraphs[0].body == "Body two."
+    assert load_review_draft(tmp_path, "note_001").paragraphs[0].body == "Body one."
+
+
+def test_review_draft_api_returns_the_requested_note_version(tmp_path, monkeypatch) -> None:
+    outputs_root = tmp_path / "outputs"
+    job_id = "versioned-review-job"
+    job_dir = outputs_root / job_id
+    job_dir.mkdir(parents=True)
+    seed_versioned_review_job(job_dir)
+    activate_note_version(job_dir, "note_002")
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
+    monkeypatch.setattr(main, "store", JobStore(outputs_root))
+
+    response = TestClient(app).get(f"/api/jobs/{job_id}/review-draft?version_id=note_002")
+
+    assert response.status_code == 200
+    assert response.json()["note_version_id"] == "note_002"
+    assert response.json()["paragraphs"][0]["body"] == "Body two."
 
 
 def test_review_draft_api_builds_and_updates_paragraph(tmp_path, monkeypatch) -> None:

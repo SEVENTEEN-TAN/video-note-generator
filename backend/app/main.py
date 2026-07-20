@@ -866,11 +866,13 @@ def reject_job_frame_candidate(job_id: str, candidate_id: str) -> FrameCandidate
 
 
 @app.get("/api/jobs/{job_id}/review-draft", response_model=ReviewDraft)
-def get_job_review_draft(job_id: str) -> ReviewDraft:
+def get_job_review_draft(job_id: str, version_id: str | None = None) -> ReviewDraft:
     job_dir = safe_job_dir(job_id)
     try:
-        draft = get_or_build_review_draft(job_dir)
+        draft = get_or_build_review_draft(job_dir, version_id)
     except FileNotFoundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     store.refresh_artifacts(job_id)
     return draft
@@ -881,6 +883,7 @@ def update_job_review_draft_paragraph(
     job_id: str,
     paragraph_id: str,
     update: ReviewDraftParagraphUpdate,
+    version_id: str | None = None,
 ) -> ReviewDraft:
     job_dir = safe_job_dir(job_id)
     try:
@@ -890,20 +893,27 @@ def update_job_review_draft_paragraph(
             body=update.body,
             selected_frame_ids=update.selected_frame_ids,
             status=update.status,
+            version_id=version_id,
         )
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     store.refresh_artifacts(job_id)
     return draft
 
 
 @app.post("/api/jobs/{job_id}/finalize", response_model=JobPublicState)
-def finalize_job(job_id: str) -> JobPublicState:
+def finalize_job(job_id: str, version_id: str | None = None) -> JobPublicState:
     job_dir = safe_job_dir(job_id)
     if not is_note_review_pending(job_dir):
         raise HTTPException(status_code=409, detail="note review is not pending.")
+    if version_id:
+        index = load_note_version_index(job_dir)
+        if index.active_version_id != version_id:
+            raise HTTPException(status_code=409, detail="The selected note version is no longer active. Reload it before finalizing.")
     try:
-        finalize_reviewed_note(job_dir)
+        finalize_reviewed_note(job_dir, version_id)
         report = build_quality_report(job_dir)
         write_quality_report(job_dir, report)
         mark_zip_dirty(job_dir)

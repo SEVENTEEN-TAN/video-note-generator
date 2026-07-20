@@ -209,6 +209,11 @@ def activate_note_version(job_dir: Path, version_id: str) -> NoteVersionIndex:
         versions=current_index.versions,
     )
     root_note = job_dir / "note.md"
+    review_context_changed = (
+        current_index.active_version_id != version_id
+        or not root_note.exists()
+        or source_note.read_bytes() != root_note.read_bytes()
+    )
     root_frames = job_dir / "frames"
     token = uuid4().hex
     temporary_note = job_dir / f".note.{token}.tmp"
@@ -236,10 +241,24 @@ def activate_note_version(job_dir: Path, version_id: str) -> NoteVersionIndex:
             raise
         backup_note.unlink(missing_ok=True)
         shutil.rmtree(backup_frames, ignore_errors=True)
+        if review_context_changed:
+            invalidate_review_artifacts(job_dir)
         return index
     finally:
         temporary_note.unlink(missing_ok=True)
         shutil.rmtree(temporary_frames, ignore_errors=True)
+
+
+def invalidate_review_artifacts(job_dir: Path) -> None:
+    review_dir = job_dir / "review"
+    for filename in (
+        "frame_candidates.json",
+        "frame_candidates.cache.json",
+        "quality_report.json",
+        "quality_report.md",
+    ):
+        (review_dir / filename).unlink(missing_ok=True)
+    shutil.rmtree(review_dir / "frame_candidates", ignore_errors=True)
 
 
 def ensure_root_note_has_version(job_dir: Path) -> NoteVersionIndex:

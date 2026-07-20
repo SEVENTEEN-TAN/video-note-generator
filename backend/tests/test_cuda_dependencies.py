@@ -15,6 +15,8 @@ class FakeCompletedProcess:
 def test_run_cuda_dependency_install_invokes_external_python_pip(monkeypatch) -> None:
     cuda_dependencies.clear_cuda_dependency_install_state()
     monkeypatch.setattr(cuda_dependencies, "find_external_python", lambda: "python")
+    persisted: list[dict[str, str]] = []
+    monkeypatch.setattr(cuda_dependencies, "save_user_settings", persisted.append)
 
     def fake_install(self, python_path: str) -> None:
         assert python_path == "python"
@@ -31,6 +33,7 @@ def test_run_cuda_dependency_install_invokes_external_python_pip(monkeypatch) ->
     assert finished.progress == 100
     assert finished.error == ""
     assert finished.python_path == "python"
+    assert persisted == [{"external_python_path": "python"}]
 
 
 

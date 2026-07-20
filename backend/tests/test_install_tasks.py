@@ -62,6 +62,26 @@ def test_package_install_controller_passes_install_args_before_packages(monkeypa
     assert calls == [["python", "-m", "pip", "install", "--user", "demo-package"]]
 
 
+def test_package_install_controller_persists_successful_python_path(monkeypatch) -> None:
+    persisted: list[str] = []
+    controller = PackageInstallController(
+        packages=PACKAGES,
+        failure_message="install failed",
+        python_finder=lambda: r"C:\Python311\python.exe",
+        success_callback=persisted.append,
+    )
+
+    monkeypatch.setattr(
+        "backend.app.install_tasks.subprocess.run",
+        lambda *_args, **_kwargs: type("Completed", (), {"returncode": 0, "stdout": "", "stderr": ""})(),
+    )
+
+    controller.run()
+
+    assert persisted == [r"C:\Python311\python.exe"]
+    assert controller.get_state().status == "succeeded"
+
+
 def test_package_install_controller_installs_from_requirements_file(tmp_path, monkeypatch) -> None:
     calls: list[list[str]] = []
     requirements_path = tmp_path / "requirements-local.txt"

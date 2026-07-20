@@ -139,6 +139,8 @@ export type RuntimeState = {
     external_worker_available: boolean;
     worker_ready: boolean;
     worker_error: string;
+    worker_error_code: string;
+    worker_probe_error: string;
     ctranslate2_available: boolean;
     ctranslate2_version: string;
     cuda_available: boolean;
@@ -318,6 +320,8 @@ export type ReviewDraftParagraph = {
 };
 
 export type ReviewDraft = {
+  note_version_id?: string | null;
+  source_note_sha256: string;
   title: string;
   paragraphs: ReviewDraftParagraph[];
 };

@@ -8,6 +8,8 @@ from backend.app.install_tasks import PackageInstallController
 def test_run_local_dependency_install_invokes_external_python_pip(monkeypatch) -> None:
     local_dependencies.clear_local_dependency_install_state()
     monkeypatch.setattr(local_dependencies, "find_external_python", lambda: "python")
+    persisted: list[dict[str, str]] = []
+    monkeypatch.setattr(local_dependencies, "save_user_settings", persisted.append)
 
     def fake_install(self, python_path: str) -> None:
         assert python_path == "python"
@@ -24,6 +26,7 @@ def test_run_local_dependency_install_invokes_external_python_pip(monkeypatch) -
     assert finished.progress == 100
     assert finished.error == ""
     assert finished.python_path == "python"
+    assert persisted == [{"external_python_path": "python"}]
 
 
 

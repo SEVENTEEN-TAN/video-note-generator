@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from .frame_candidates import load_frame_candidate_index
 from .models import ReviewDraft, ReviewDraftParagraph, ReviewSubtitleSegment, TranscriptPayload
+from .note_versions import get_note_version, load_note_version_index, resolve_job_relative_path, safe_note_version_id
 
 
 REVIEW_DRAFT_PATH = Path("review") / "review_draft.json"
@@ -25,29 +27,58 @@ class ParsedReviewChapter:
     body: str
 
 
-def review_draft_path(job_dir: Path) -> Path:
+def resolve_review_version_id(job_dir: Path, version_id: str | None = None) -> str | None:
+    index = load_note_version_index(job_dir)
+    resolved = version_id or index.active_version_id
+    if resolved is None:
+        return None
+    safe_note_version_id(resolved)
+    if get_note_version(index, resolved) is None:
+        raise FileNotFoundError(f"Note version not found: {resolved}")
+    return resolved
+
+
+def review_note_path(job_dir: Path, version_id: str | None = None) -> Path:
+    resolved = resolve_review_version_id(job_dir, version_id)
+    if resolved is None:
+        return job_dir / "note.md"
+    version = get_note_version(load_note_version_index(job_dir), resolved)
+    if version is None:
+        raise FileNotFoundError(f"Note version not found: {resolved}")
+    return resolve_job_relative_path(job_dir, version.note_path)
+
+
+def review_draft_path(job_dir: Path, version_id: str | None = None) -> Path:
+    resolved = resolve_review_version_id(job_dir, version_id)
+    if resolved is not None:
+        return job_dir / "note_versions" / resolved / REVIEW_DRAFT_PATH
     return job_dir / REVIEW_DRAFT_PATH
 
 
-def load_review_draft(job_dir: Path) -> ReviewDraft | None:
-    path = review_draft_path(job_dir)
+def load_review_draft(job_dir: Path, version_id: str | None = None) -> ReviewDraft | None:
+    resolved = resolve_review_version_id(job_dir, version_id)
+    path = review_draft_path(job_dir, resolved)
     if not path.exists():
         return None
     try:
-        return ReviewDraft.model_validate_json(path.read_text(encoding="utf-8"))
+        draft = ReviewDraft.model_validate_json(path.read_text(encoding="utf-8"))
+        if resolved is not None and draft.note_version_id != resolved:
+            return None
+        return draft
     except (OSError, ValueError):
         return None
 
 
-def write_review_draft(job_dir: Path, draft: ReviewDraft) -> Path:
-    path = review_draft_path(job_dir)
+def write_review_draft(job_dir: Path, draft: ReviewDraft, version_id: str | None = None) -> Path:
+    path = review_draft_path(job_dir, version_id or draft.note_version_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(draft.model_dump_json(indent=2), encoding="utf-8")
     return path
 
 
-def build_review_draft(job_dir: Path) -> ReviewDraft:
-    note_path = job_dir / "note.md"
+def build_review_draft(job_dir: Path, version_id: str | None = None) -> ReviewDraft:
+    resolved = resolve_review_version_id(job_dir, version_id)
+    note_path = review_note_path(job_dir, resolved)
     if not note_path.exists():
         raise FileNotFoundError("note.md is required to build a review draft.")
     note_text = note_path.read_text(encoding="utf-8-sig")
@@ -67,13 +98,26 @@ def build_review_draft(job_dir: Path) -> ReviewDraft:
         )
         for chapter in _parse_review_chapters(note_text)
     ]
-    draft = ReviewDraft(title=title, paragraphs=paragraphs)
-    write_review_draft(job_dir, draft)
+    draft = ReviewDraft(
+        note_version_id=resolved,
+        source_note_sha256=hashlib.sha256(note_text.encode("utf-8")).hexdigest(),
+        title=title,
+        paragraphs=paragraphs,
+    )
+    write_review_draft(job_dir, draft, resolved)
     return draft
 
 
-def get_or_build_review_draft(job_dir: Path) -> ReviewDraft:
-    return load_review_draft(job_dir) or build_review_draft(job_dir)
+def get_or_build_review_draft(job_dir: Path, version_id: str | None = None) -> ReviewDraft:
+    resolved = resolve_review_version_id(job_dir, version_id)
+    draft = load_review_draft(job_dir, resolved)
+    note_path = review_note_path(job_dir, resolved)
+    if draft is not None and note_path.exists():
+        note_text = note_path.read_text(encoding="utf-8-sig")
+        source_hash = hashlib.sha256(note_text.encode("utf-8")).hexdigest()
+        if draft.source_note_sha256 == source_hash:
+            return draft
+    return build_review_draft(job_dir, resolved)
 
 
 def update_review_draft_paragraph(
@@ -83,8 +127,10 @@ def update_review_draft_paragraph(
     body: str,
     selected_frame_ids: list[str],
     status: str,
+    version_id: str | None = None,
 ) -> ReviewDraft:
-    draft = get_or_build_review_draft(job_dir)
+    resolved = resolve_review_version_id(job_dir, version_id)
+    draft = get_or_build_review_draft(job_dir, resolved)
     updated_paragraphs: list[ReviewDraftParagraph] = []
     found = False
     for paragraph in draft.paragraphs:
@@ -104,7 +150,7 @@ def update_review_draft_paragraph(
     if not found:
         raise FileNotFoundError(f"Review paragraph not found: {paragraph_id}")
     updated = draft.model_copy(update={"paragraphs": updated_paragraphs})
-    write_review_draft(job_dir, updated)
+    write_review_draft(job_dir, updated, resolved)
     return updated
 
 

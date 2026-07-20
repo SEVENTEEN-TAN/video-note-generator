@@ -17,8 +17,12 @@ from backend.app.models import (
     JobStatus,
     KeyMoment,
     NoteDraft,
+    NoteStyle,
+    NoteVersion,
+    NoteVersionIndex,
 )
 from backend.app.note_chunks import NoteChunkIndex, NoteChunkMeta, chunk_index_path, chunks_dir
+from backend.app.note_versions import write_note_version_index
 from backend.app.processor import create_zip
 from backend.app.review_finalization import (
     NOTE_REVIEW_PENDING_MARKER,
@@ -132,6 +136,16 @@ def test_finalize_reviewed_note_requires_pending_marker(tmp_path) -> None:
         finalize_reviewed_note(tmp_path)
 
 
+def test_finalize_reviewed_note_rejects_review_draft_after_source_changes(tmp_path) -> None:
+    seed_review_job(tmp_path)
+    build_review_draft(tmp_path)
+    (tmp_path / "note.md").write_text("# Changed after review began", encoding="utf-8")
+    mark_note_review_pending(tmp_path)
+
+    with pytest.raises(ValueError, match="changed after the review draft was created"):
+        finalize_reviewed_note(tmp_path)
+
+
 def test_create_zip_includes_review_reports(tmp_path) -> None:
     (tmp_path / "note.md").write_text("# Demo", encoding="utf-8")
     (tmp_path / "review").mkdir()
@@ -187,6 +201,44 @@ def test_finalize_endpoint_rejects_job_without_pending_review(tmp_path, monkeypa
     response = TestClient(app).post(f"/api/jobs/{job_id}/finalize")
 
     assert response.status_code == 409
+
+
+def test_finalize_endpoint_rejects_a_version_that_is_not_active(tmp_path, monkeypatch) -> None:
+    outputs_root = tmp_path / "outputs"
+    job_id = "wrong-version-finalize"
+    job_dir = outputs_root / job_id
+    job_dir.mkdir(parents=True)
+    versions = [
+        NoteVersion(
+            id=version_id,
+            label=version_id,
+            note_style=NoteStyle.detailed,
+            note_language="zh",
+            note_model="test",
+            note_base_url="https://example.test/v1",
+            frame_limit=1,
+            note_path=f"note_versions/{version_id}/note.md",
+            frame_dir=f"note_versions/{version_id}/frames",
+        )
+        for version_id in ("note_001", "note_002")
+    ]
+    write_note_version_index(
+        job_dir,
+        NoteVersionIndex(
+            active_version_id="note_001",
+            selected_version_ids=[version.id for version in versions],
+            versions=versions,
+        ),
+    )
+    mark_note_review_pending(job_dir)
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
+    monkeypatch.setattr(main, "store", JobStore(outputs_root))
+
+    response = TestClient(app).post(f"/api/jobs/{job_id}/finalize?version_id=note_002")
+
+    assert response.status_code == 409
+    assert "no longer active" in response.json()["detail"]
+    assert (job_dir / NOTE_REVIEW_PENDING_MARKER).exists()
 
 
 def seed_note_chunk_index(job_dir: Path) -> None:

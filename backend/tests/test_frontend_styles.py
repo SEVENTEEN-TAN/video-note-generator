@@ -113,7 +113,7 @@ def test_result_panel_uses_compact_review_actions_and_collapsible_outputs() -> N
     assert "保存本段" in app_text
     assert "onRegenerateNote" in app_text
     assert "chunk ? onRegenerateChunk(chunk.id) : onRegenerateNote()" in app_text
-    assert "Promise.all" in app_text
+    assert app_text.index("await fetchFrameCandidates") < app_text.index("await fetchReviewDraft")
     assert "fetchFrameCandidates(job.job_id)" in app_text
     assert 'className="frame-candidate-group-actions"' in app_text
     assert 'className="frame-candidate-title-line"' in app_text

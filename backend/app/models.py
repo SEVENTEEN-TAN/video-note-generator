@@ -257,6 +257,8 @@ class ReviewDraftParagraph(BaseModel):
 
 
 class ReviewDraft(BaseModel):
+    note_version_id: str | None = None
+    source_note_sha256: str = ""
     title: str = ""
     paragraphs: list[ReviewDraftParagraph] = Field(default_factory=list)
 

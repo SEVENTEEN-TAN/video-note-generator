@@ -219,6 +219,13 @@ export function App() {
   const isLocalTranscription = transcriptionMode === "local_faster_whisper";
   const hasUploadedSubtitle = Boolean(subtitle);
   const runtimeLocalStatus = health?.runtime?.faster_whisper;
+  const runtimeProbeFailed = Boolean(runtimeLocalStatus?.worker_error_code);
+  const needsLocalDependencyInstall =
+    isLocalTranscription &&
+    Boolean(runtimeLocalStatus) &&
+    !runtimeLocalStatus?.internal_available &&
+    !runtimeLocalStatus?.worker_ready &&
+    !runtimeProbeFailed;
   const selectedLocalModelAvailable =
     !isLocalTranscription || !health?.runtime || health.runtime.local_models.models.includes(transcriptionModel);
   const localTranscriptionReady = !isLocalTranscription || !runtimeLocalStatus || runtimeLocalStatus.ready_for_cpu;
@@ -274,7 +281,7 @@ export function App() {
       {noteVersions && noteVersions.versions.length > 0 && (
         <label className="version-inline compact">
           <span>版本</span>
-          <select disabled={isBusy} value={previewVersionId} onChange={handleNoteVersionChange}>
+          <select disabled={isBusy || isFrameReviewOpen} value={previewVersionId} onChange={handleNoteVersionChange}>
             {noteVersions.versions.map((version) => (
               <option key={version.id} value={version.id}>
                 {formatVersionOption(version)}
@@ -339,6 +346,8 @@ export function App() {
   useEffect(() => {
     void refreshHealth();
     void refreshJobHistory();
+    const retryTimers = [2000, 5000].map((delay) => window.setTimeout(() => void refreshHealth(), delay));
+    return () => retryTimers.forEach((timer) => window.clearTimeout(timer));
   }, []);
 
   useEffect(() => {
@@ -594,10 +603,8 @@ export function App() {
       return;
     }
     try {
-      const [nextFrameCandidateIndex, nextReviewDraft] = await Promise.all([
-        fetchFrameCandidates(job.job_id),
-        fetchReviewDraft(job.job_id)
-      ]);
+      const nextFrameCandidateIndex = await fetchFrameCandidates(job.job_id);
+      const nextReviewDraft = await fetchReviewDraft(job.job_id, previewVersionId || undefined);
       setFrameCandidateIndex(nextFrameCandidateIndex);
       setReviewDraft(nextReviewDraft);
       setFrameCandidateError("");
@@ -625,11 +632,16 @@ export function App() {
     setReviewDraftSavingId(paragraphId);
     try {
       setReviewDraft(
-        await updateReviewDraftParagraph(job.job_id, paragraphId, {
-          body,
-          selected_frame_ids: selectedFrameIds,
-          status
-        })
+        await updateReviewDraftParagraph(
+          job.job_id,
+          paragraphId,
+          {
+            body,
+            selected_frame_ids: selectedFrameIds,
+            status
+          },
+          previewVersionId || undefined
+        )
       );
       setFrameCandidateError("");
     } catch (error) {
@@ -646,7 +658,7 @@ export function App() {
     setIsFinalizingJob(true);
     setFinalizeError("");
     try {
-      const nextJob = await finalizeJob(job.job_id);
+      const nextJob = await finalizeJob(job.job_id, previewVersionId || undefined);
       setJob(nextJob);
       await refreshJobHistory();
     } catch (error) {
@@ -744,7 +756,12 @@ export function App() {
         return;
       }
       if (!localTranscriptionReady) {
-        setSubmitError(runtimeLocalStatus?.install_hint || runtimeLocalStatus?.worker_error || "本地转写环境未就绪，请先补齐依赖。");
+        setSubmitError(
+          runtimeLocalStatus?.worker_probe_error ||
+            runtimeLocalStatus?.worker_error ||
+            runtimeLocalStatus?.install_hint ||
+            "本地转写环境未就绪，请检查运行环境。"
+        );
         return;
       }
     }
@@ -1941,7 +1958,7 @@ export function App() {
                           ? "当前本地转写 CPU 环境已就绪，可直接使用。"
                           : health?.runtime?.faster_whisper.install_hint || "当前本地转写依赖未就绪，请先补齐外部 Python 环境。"}
                     </p>
-                    {!health?.runtime?.faster_whisper.worker_ready && (
+                    {needsLocalDependencyInstall && (
                       <div className="model-download-box">
                         <p className="inline-warning">
                           <AlertTriangle size={15} />
@@ -1973,6 +1990,18 @@ export function App() {
                           </p>
                         )}
                         {localDependencyInstallError && <p className="inline-error">{localDependencyInstallError}</p>}
+                      </div>
+                    )}
+                    {isLocalTranscription && runtimeProbeFailed && !runtimeLocalStatus?.internal_available && (
+                      <div className="model-download-box">
+                        <p className="inline-warning">
+                          <AlertTriangle size={15} />
+                          运行环境检测失败：{runtimeLocalStatus?.worker_probe_error || "外部转写进程无法验证。"}
+                        </p>
+                        <button className="small-button" onClick={() => void refreshHealth()} type="button">
+                          <RefreshCw size={15} />
+                          重新检测
+                        </button>
                       </div>
                     )}
                     {canOfferCudaInstall && (
@@ -2188,7 +2217,7 @@ function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
       ? runtime.faster_whisper.install_hint
       : runtime.faster_whisper.worker_ready
         ? `外部 Python worker：${runtime.faster_whisper.external_python_path ?? "已发现"} · ${formatRuntimeSource(runtime.faster_whisper.external_python_source)}`
-        : runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint;
+        : runtime.faster_whisper.worker_probe_error || runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint;
   const cudaDetail = runtime.faster_whisper.cuda_available
     ? `CTranslate2 检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备 · ${runtime.faster_whisper.cuda_source ?? "runtime"}`
     : runtime.faster_whisper.cuda_error
@@ -2202,7 +2231,7 @@ function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
       ? "未检测到外部 Python 3.10+，本地转写无法启用"
       : runtime.faster_whisper.worker_ready
         ? `${runtime.faster_whisper.external_python_path ?? "外部 Python"} · ${pythonSource} · ${formatInstallMode(runtime.faster_whisper.python_package_install_mode)}`
-        : `${runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint} · ${pythonSource}`;
+        : `${runtime.faster_whisper.worker_probe_error || runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint} · ${pythonSource}`;
   const modelDetail = runtime.faster_whisper.model_available
     ? `${runtime.local_models.models.join(", ")} · ${runtime.local_models.root} · ${modelSource}`
     : `未发现已缓存模型 · ${runtime.local_models.root} · ${modelSource}`;

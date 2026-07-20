@@ -26,12 +26,14 @@ class PackageInstallController:
         python_finder: Callable[[], str | None] | None = None,
         install_args_provider: Callable[[], Sequence[str]] | None = None,
         requirements_file_provider: Callable[[], Path] | None = None,
+        success_callback: Callable[[str], None] | None = None,
     ) -> None:
         self._packages = tuple(packages)
         self._failure_message = failure_message
         self._python_finder = python_finder
         self._install_args_provider = install_args_provider
         self._requirements_file_provider = requirements_file_provider
+        self._success_callback = success_callback
         self._state = PackageInstallState()
         self._lock = threading.Lock()
 
@@ -65,6 +67,8 @@ class PackageInstallController:
         self.set_state(status="running", progress=10, error="", python_path=python_path)
         try:
             self.install_packages(python_path)
+            if self._success_callback is not None:
+                self._success_callback(python_path)
             self.set_state(status="succeeded", progress=100, error="", python_path=python_path)
         except Exception as exc:
             self.set_state(status="failed", progress=0, error=str(exc), python_path=python_path)

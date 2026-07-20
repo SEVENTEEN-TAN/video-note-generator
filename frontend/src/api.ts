@@ -115,8 +115,9 @@ export async function rejectFrameCandidate(jobId: string, candidateId: string): 
   return response.json();
 }
 
-export async function fetchReviewDraft(jobId: string): Promise<ReviewDraft> {
-  const response = await fetch(`/api/jobs/${jobId}/review-draft`);
+export async function fetchReviewDraft(jobId: string, versionId?: string): Promise<ReviewDraft> {
+  const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
+  const response = await fetch(`/api/jobs/${jobId}/review-draft${query}`);
   if (!response.ok) {
     throw new Error(await readResponseError(response, "人工审核稿读取失败。"));
   }
@@ -130,9 +131,11 @@ export async function updateReviewDraftParagraph(
     body: string;
     selected_frame_ids: string[];
     status: ReviewDraftParagraphStatus;
-  }
+  },
+  versionId?: string
 ): Promise<ReviewDraft> {
-  const response = await fetch(`/api/jobs/${jobId}/review-draft/paragraphs/${paragraphId}`, {
+  const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
+  const response = await fetch(`/api/jobs/${jobId}/review-draft/paragraphs/${paragraphId}${query}`, {
     body: JSON.stringify(payload),
     headers: { "Content-Type": "application/json" },
     method: "PATCH"
@@ -143,8 +146,9 @@ export async function updateReviewDraftParagraph(
   return response.json();
 }
 
-export async function finalizeJob(jobId: string): Promise<JobState> {
-  const response = await fetch(`/api/jobs/${jobId}/finalize`, { method: "POST" });
+export async function finalizeJob(jobId: string, versionId?: string): Promise<JobState> {
+  const query = versionId ? `?version_id=${encodeURIComponent(versionId)}` : "";
+  const response = await fetch(`/api/jobs/${jobId}/finalize${query}`, { method: "POST" });
   if (!response.ok) {
     throw new Error(await readResponseError(response, "确认定稿失败。"));
   }

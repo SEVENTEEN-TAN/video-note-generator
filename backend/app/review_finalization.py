@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 from collections import defaultdict
@@ -26,16 +27,20 @@ def is_note_review_pending(job_dir: Path) -> bool:
     return (job_dir / NOTE_REVIEW_PENDING_MARKER).exists()
 
 
-def finalize_reviewed_note(job_dir: Path) -> None:
+def finalize_reviewed_note(job_dir: Path, version_id: str | None = None) -> None:
     marker = job_dir / NOTE_REVIEW_PENDING_MARKER
     if not marker.exists():
         raise PermissionError("note review is not pending.")
-    review_draft = load_review_draft(job_dir)
+    review_draft = load_review_draft(job_dir, version_id)
     selected = _selected_candidates_from_review_draft(job_dir, review_draft) if review_draft else _selected_candidates(job_dir)
     if not selected:
         raise ValueError("No selected frame candidates.")
     frame_map = _copy_selected_frames(job_dir, selected)
     source_note = (job_dir / "note.md").read_text(encoding="utf-8-sig")
+    if review_draft is not None:
+        source_hash = hashlib.sha256(source_note.encode("utf-8")).hexdigest()
+        if review_draft.source_note_sha256 != source_hash:
+            raise ValueError("The note changed after the review draft was created. Reload the review draft before finalizing.")
     final_note = (
         _render_note_with_review_draft(source_note, review_draft, selected, frame_map)
         if review_draft

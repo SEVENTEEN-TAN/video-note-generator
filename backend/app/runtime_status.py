@@ -32,6 +32,8 @@ def get_external_runtime_status(python_path: str | None, worker_path: str) -> di
         "python_path": python_path or "",
         "faster_whisper_available": False,
         "faster_whisper_error": "",
+        "worker_error_code": "",
+        "worker_error": "",
         "ctranslate2_available": False,
         "ctranslate2_version": "",
         "cuda_device_count": None,
@@ -41,7 +43,8 @@ def get_external_runtime_status(python_path: str | None, worker_path: str) -> di
         "source": "external",
     }
     if not python_path:
-        status["cuda_error"] = "External Python was not found."
+        status["worker_error_code"] = "python_not_found"
+        status["worker_error"] = "External Python was not found."
         return status
     try:
         completed = subprocess.run(
@@ -54,9 +57,15 @@ def get_external_runtime_status(python_path: str | None, worker_path: str) -> di
             env=transcription.external_worker_env(),
         )
         if completed.returncode != 0:
-            status["cuda_error"] = completed.stderr.strip() or completed.stdout.strip() or "External CUDA status check failed."
+            status["worker_error_code"] = "worker_process_failed"
+            status["worker_error"] = completed.stderr.strip() or completed.stdout.strip() or "External worker status check failed."
             return status
-        payload = json.loads(completed.stdout)
+        try:
+            payload = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            status["worker_error_code"] = "worker_invalid_response"
+            status["worker_error"] = str(exc)
+            return status
         status.update(
             {
                 "python_path": str(payload.get("python_path") or python_path),
@@ -70,8 +79,15 @@ def get_external_runtime_status(python_path: str | None, worker_path: str) -> di
                 "cuda_dll_dirs": payload.get("cuda_dll_dirs") or [],
             }
         )
+    except subprocess.TimeoutExpired as exc:
+        status["worker_error_code"] = "worker_timeout"
+        status["worker_error"] = str(exc)
+    except OSError as exc:
+        status["worker_error_code"] = "worker_launch_failed"
+        status["worker_error"] = str(exc)
     except Exception as exc:
-        status["cuda_error"] = str(exc)
+        status["worker_error_code"] = "worker_probe_failed"
+        status["worker_error"] = str(exc)
     return status
 
 
@@ -89,11 +105,14 @@ def build_faster_whisper_install_hint(
     python_available: bool,
     worker_ready: bool,
     worker_error: str,
+    worker_error_code: str = "",
 ) -> str:
     if internal_available or worker_ready:
         return ""
     if not python_available:
         return "Install Python 3.10+, then run python -m pip install -r backend/requirements.txt. Restart the app or set VIDEO_NOTE_PYTHON_PATH if Python is not on PATH."
+    if worker_error_code:
+        return worker_error or "The external transcription worker could not be verified."
     if worker_error:
         return (
             "Install the local transcription packages into the external Python environment with "
@@ -116,6 +135,8 @@ def get_runtime_status() -> dict:
     python_available = bool(external_python_path)
     worker_ready = bool(external_runtime and external_runtime.get("faster_whisper_available"))
     worker_error = str(external_runtime.get("faster_whisper_error") or "") if external_runtime else ""
+    worker_error_code = str(external_runtime.get("worker_error_code") or "") if external_runtime else ""
+    worker_probe_error = str(external_runtime.get("worker_error") or "") if external_runtime else ""
     faster_whisper_available = internal_faster_whisper_available or worker_ready
     internal_cuda_status = get_internal_cuda_status()
     cuda_status = choose_cuda_status(internal_cuda_status, external_runtime)
@@ -129,7 +150,8 @@ def get_runtime_status() -> dict:
         internal_available=internal_faster_whisper_available,
         python_available=python_available,
         worker_ready=worker_ready,
-        worker_error=worker_error,
+        worker_error=worker_probe_error or worker_error,
+        worker_error_code=worker_error_code,
     )
 
     return {
@@ -152,6 +174,8 @@ def get_runtime_status() -> dict:
             "external_worker_available": external_worker_available,
             "worker_ready": worker_ready,
             "worker_error": worker_error,
+            "worker_error_code": worker_error_code,
+            "worker_probe_error": worker_probe_error,
             "ctranslate2_available": bool(external_runtime and external_runtime.get("ctranslate2_available")),
             "ctranslate2_version": str(external_runtime.get("ctranslate2_version") or "") if external_runtime else "",
             "cuda_available": bool(cuda_status["cuda_runtime_available"]),
