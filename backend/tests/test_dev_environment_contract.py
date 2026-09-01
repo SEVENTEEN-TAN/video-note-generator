@@ -49,3 +49,4 @@ def test_desktop_release_uses_node24_compatible_official_actions() -> None:
     assert "actions/checkout@v5" in workflow
     assert "actions/setup-node@v5" in workflow
     assert "actions/setup-python@v6" in workflow
+    assert "actions/upload-artifact@v6" in workflow
