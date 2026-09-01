@@ -63,25 +63,28 @@ jobs:
           path: VideoNoteGenerator-windows-x64.zip
           if-no-files-found: error
 
-      - name: Publish rolling release
+      - name: Publish versioned release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_RUN_NUMBER: ${{ github.run_number }}
+          RELEASE_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
-          $tag = "desktop-latest"
-          $zip = "VideoNoteGenerator-windows-x64.zip"
-          $shortSha = "${{ github.sha }}".Substring(0, 7)
-          $notes = "Automated Windows desktop build for commit $shortSha. This release is updated on each push to main."
-
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -f $tag "${{ github.sha }}"
-          git push --force origin "refs/tags/$tag"
-
-          gh release view $tag *> $null
-          if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $zip --clobber
-            gh release edit $tag --title "Latest Desktop Build" --notes $notes
-          } else {
-            gh release create $tag $zip --title "Latest Desktop Build" --notes $notes --latest
+          $releaseDate = Get-Date -Format "yyyy.MM.dd"
+          $version = "$releaseDate.$env:RELEASE_RUN_NUMBER"
+          if ($env:RELEASE_RUN_ATTEMPT -ne "1") {
+            $version = "$version.$env:RELEASE_RUN_ATTEMPT"
           }
+
+          $tag = "desktop-v$version"
+          $zip = "VideoNoteGenerator-windows-x64.zip"
+          $shortSha = $env:RELEASE_SHA.Substring(0, 7)
+          $title = "Video Note Generator Desktop v$version"
+          $notes = "Automated Windows desktop build for commit $shortSha."
+
+          gh release create $tag $zip `
+            --target $env:RELEASE_SHA `
+            --title $title `
+            --notes $notes `
+            --latest

@@ -50,3 +50,16 @@ def test_desktop_release_uses_node24_compatible_official_actions() -> None:
     assert "actions/setup-node@v5" in workflow
     assert "actions/setup-python@v6" in workflow
     assert "actions/upload-artifact@v6" in workflow
+
+
+def test_desktop_release_creates_a_unique_versioned_release_for_each_build() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "desktop-release.yml").read_text(encoding="utf-8")
+
+    assert "Publish versioned release" in workflow
+    assert "github.run_number" in workflow
+    assert "github.run_attempt" in workflow
+    assert 'gh release create $tag $zip' in workflow
+    assert "--target $env:RELEASE_SHA" in workflow
+    assert "--latest" in workflow
+    assert "desktop-latest" not in workflow
+    assert "git push --force" not in workflow
