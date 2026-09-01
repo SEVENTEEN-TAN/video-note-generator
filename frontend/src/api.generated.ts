@@ -1,4 +1,4 @@
-// OpenAPI-SHA256: 0b85c4d51405894a087f5f2506026e829384869c98b8ab7e7444815fb0ab2f2f
+// OpenAPI-SHA256: 233f8cd6eefbff510c7e58c6b67146cc68d19581489d25f03b2e54d5a63deeef
 export interface paths {
     "/api/health": {
         parameters: {

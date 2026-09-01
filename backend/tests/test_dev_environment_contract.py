@@ -41,3 +41,11 @@ def test_desktop_build_refreshes_openapi_types_before_frontend_build() -> None:
     build_index = script.index("npm --prefix frontend run build")
 
     assert export_index < generate_index < build_index
+
+
+def test_desktop_release_uses_node24_compatible_official_actions() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "desktop-release.yml").read_text(encoding="utf-8")
+
+    assert "actions/checkout@v5" in workflow
+    assert "actions/setup-node@v5" in workflow
+    assert "actions/setup-python@v6" in workflow

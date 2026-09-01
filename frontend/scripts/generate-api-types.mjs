@@ -8,8 +8,9 @@ const frontendRoot = fileURLToPath(new URL("../", import.meta.url));
 const schemaUrl = new URL("../openapi.json", import.meta.url);
 const outputUrl = new URL("../src/api.generated.ts", import.meta.url);
 const mode = process.argv.includes("--check") ? "check" : "write";
-const schemaBytes = await readFile(schemaUrl);
-const schemaHash = createHash("sha256").update(schemaBytes).digest("hex");
+const schemaText = await readFile(schemaUrl, "utf8");
+const normalizedSchemaText = schemaText.replace(/\r\n?/g, "\n");
+const schemaHash = createHash("sha256").update(normalizedSchemaText, "utf8").digest("hex");
 const ast = await openapiTS(schemaUrl);
 const generated = `// OpenAPI-SHA256: ${schemaHash}\n${astToString(ast)}`;
 

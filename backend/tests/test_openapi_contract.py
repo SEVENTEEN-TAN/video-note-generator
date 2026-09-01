@@ -21,7 +21,8 @@ def test_exported_openapi_document_matches_fastapi_schema() -> None:
 
 
 def test_generated_types_record_current_openapi_fingerprint() -> None:
-    schema_hash = hashlib.sha256(OPENAPI_PATH.read_bytes()).hexdigest()
+    normalized_schema = OPENAPI_PATH.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+    schema_hash = hashlib.sha256(normalized_schema.encode("utf-8")).hexdigest()
     generated = GENERATED_TYPES_PATH.read_text(encoding="utf-8")
     match = re.match(r"// OpenAPI-SHA256: ([0-9a-f]{64})\n", generated)
 
@@ -33,6 +34,12 @@ def test_generated_types_record_current_openapi_fingerprint() -> None:
     assert "RuntimeState:" in generated
     assert "HealthState:" in generated
     assert "NoteChunkIndex:" in generated
+
+
+def test_exported_openapi_document_uses_lf_line_endings() -> None:
+    exported = OPENAPI_PATH.read_bytes()
+
+    assert b"\r\n" not in exported
 
 
 def test_frontend_api_dtos_are_aliases_of_generated_components() -> None:
