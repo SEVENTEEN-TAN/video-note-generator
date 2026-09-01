@@ -7,7 +7,8 @@ import subprocess
 from . import transcription
 from .ffmpeg_tools import get_ffmpeg_path
 from .runtime_config import get_configured_external_python, get_configured_model_root, get_python_package_install_mode
-from .settings import get_settings_path
+from .runtime_models import RuntimeState
+from .settings import get_settings_storage_status
 
 
 def get_internal_cuda_status() -> dict:
@@ -153,11 +154,69 @@ def get_runtime_status() -> dict:
         worker_error=worker_probe_error or worker_error,
         worker_error_code=worker_error_code,
     )
+    ffmpeg_available = bool(ffmpeg_path)
+    capabilities = {
+        "video_processing": _capability(
+            ffmpeg_available,
+            available_reason="FFmpeg is available for video probing, audio extraction, and frame capture.",
+            unavailable_reason="FFmpeg is required for video processing.",
+        ),
+        "uploaded_subtitle": _capability(
+            ffmpeg_available,
+            available_reason="Uploaded subtitles can be parsed and paired with the video.",
+            unavailable_reason="FFmpeg is required to probe the video and extract note frames.",
+        ),
+        "local_transcription_cpu": _capability(
+            ffmpeg_available and ready_for_cpu,
+            available_reason="FFmpeg, Faster Whisper, and a local model are ready for CPU transcription.",
+            unavailable_reason=_local_transcription_unavailable_reason(
+                ffmpeg_available=ffmpeg_available,
+                engine_available=faster_whisper_available,
+                model_available=model_available,
+                install_hint=install_hint,
+            ),
+        ),
+        "local_transcription_cuda": _capability(
+            ffmpeg_available and ready_for_cuda,
+            available_reason="Local Faster Whisper is ready for CUDA transcription.",
+            unavailable_reason=(
+                _local_transcription_unavailable_reason(
+                    ffmpeg_available=ffmpeg_available,
+                    engine_available=faster_whisper_available,
+                    model_available=model_available,
+                    install_hint=install_hint,
+                )
+                if not ready_for_cpu
+                else str(cuda_status.get("cuda_error") or "CUDA runtime libraries are not ready.")
+            ),
+        ),
+        "audio_transcriptions": _capability(
+            ffmpeg_available,
+            available_reason="The local video preparation path is ready; endpoint credentials are checked when a job starts.",
+            unavailable_reason="FFmpeg is required before audio can be sent to a transcription endpoint.",
+            requires_credentials=True,
+        ),
+        "chat_audio": _capability(
+            ffmpeg_available,
+            available_reason="The local audio chunking path is ready; endpoint credentials are checked when a job starts.",
+            unavailable_reason="FFmpeg is required before audio chunks can be sent to a chat endpoint.",
+            requires_credentials=True,
+        ),
+        "note_generation": _capability(
+            True,
+            available_reason="The note client is installed; endpoint credentials are checked when notes are generated.",
+            unavailable_reason="The note client is unavailable.",
+            requires_credentials=True,
+        ),
+    }
 
-    return {
-        "ok": bool(ffmpeg_path) and faster_whisper_available,
+    payload = {
+        # Backward-compatible core readiness. Optional local transcription is
+        # represented separately in the capability matrix.
+        "ok": capabilities["video_processing"]["available"],
+        "capabilities": capabilities,
         "ffmpeg": {
-            "available": bool(ffmpeg_path),
+            "available": ffmpeg_available,
             "path": ffmpeg_path,
             "install_hint": "" if ffmpeg_path else "Install FFmpeg, then restart the app. Windows: winget install Gyan.FFmpeg, or install backend dependencies with python -m pip install -r backend/requirements.txt.",
         },
@@ -197,8 +256,36 @@ def get_runtime_status() -> dict:
             "models": local_models,
             "hint": "Put Faster Whisper model folders here for local transcription. The app validates local files before starting a job and will not rely on a first-run network download.",
         },
-        "settings": {
-            "path": str(get_settings_path()),
-            "warning": "API keys saved here are stored in local plaintext JSON.",
-        },
+        "settings": get_settings_storage_status(),
     }
+    return RuntimeState.model_validate(payload).model_dump(mode="json")
+
+
+def _capability(
+    available: bool,
+    *,
+    available_reason: str,
+    unavailable_reason: str,
+    requires_credentials: bool = False,
+) -> dict:
+    return {
+        "available": bool(available),
+        "reason": available_reason if available else unavailable_reason,
+        "requires_credentials": requires_credentials,
+    }
+
+
+def _local_transcription_unavailable_reason(
+    *,
+    ffmpeg_available: bool,
+    engine_available: bool,
+    model_available: bool,
+    install_hint: str,
+) -> str:
+    if not ffmpeg_available:
+        return "FFmpeg is required for local transcription."
+    if not engine_available:
+        return install_hint or "Faster Whisper is not available."
+    if not model_available:
+        return "No validated local Faster Whisper model is available."
+    return "Local transcription is not ready."

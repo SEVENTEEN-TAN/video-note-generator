@@ -89,12 +89,21 @@ Desktop build script performs, in order:
 
 `backend/app/main.py` is the API composition root. It owns:
 
-- runtime/status endpoints: `/api/ready`, `/api/health`, `/api/runtime`
-- local settings persistence: `/api/settings`
-- local model download and CUDA dependency install endpoints
+- FastAPI lifespan, CORS, router registration, shared job dependencies, and static frontend mounting
 - job lifecycle endpoints: create job, poll job state, preview note/subtitles, download assets/ZIP
 - note version management and note regeneration endpoints
-- static frontend mounting when a built bundle exists
+
+Extracted domain routers currently own:
+
+- `backend/app/api/runtime.py`: `/api/ready`, `/api/health`, `/api/runtime`, local dependency installation, model download, and Faster Whisper cache release
+- `backend/app/api/settings.py`: local settings read/update/delete
+- `backend/app/api/downloads.py`: note/subtitle previews, version previews, artifact serving, final ZIP, and diagnostics ZIP
+- `backend/app/api/review.py`: quality reports, frame candidate reads and decisions, review drafts/assets, and finalization
+- `backend/app/api/subtitles.py`: subtitle confirmation/regeneration and transcript-correction preview/application
+- `backend/app/api/notes.py`: note chunk reads/regeneration and note version reads/selection/regeneration
+- `backend/app/api/jobs.py`: frame suggestions, job creation/history/state, cancellation, transcription resume, storage/cache management, and deletion
+
+`backend/app/note_regeneration.py` owns the recoverable single-chunk regeneration operation and keeps the `_regenerate_chunk_job` operation type stable. `backend/app/job_paths.py` owns validated job directory and artifact path resolution. Domain routers must not import `backend.app.main`; use injected dependencies or move shared behavior into application/service modules instead. `main.py` should remain the composition root and must not regain domain route handlers.
 
 `/api/ready` is intentionally cheap and should stay independent from expensive runtime detection; there is a regression test for that in `backend/tests/test_runtime_api.py`.
 
@@ -111,15 +120,19 @@ The main orchestration is in `backend/app/processor.py`:
 
 Any change to artifact names or layout must be checked against ZIP creation and frontend download/preview code, because both assume stable filenames like `note.md`, `subtitles.md`, `download.zip`, and `frames/*.jpg`.
 
+Upload handling is centralized in `backend/app/upload_limits.py`. Both `/api/jobs` and `/api/jobs/frame-suggestion` must keep the pre-parse `Content-Length` limit, declared-size/disk-space preflight, streaming byte-count enforcement, and cleanup of unregistered job or temporary directories. Limits are overrideable with `VIDEO_NOTE_MAX_VIDEO_UPLOAD_BYTES`, `VIDEO_NOTE_MAX_SUBTITLE_UPLOAD_BYTES`, and `VIDEO_NOTE_UPLOAD_MIN_FREE_BYTES`.
+
 ### Data and validation models
 
 `backend/app/models.py` is the shared schema layer for:
 
-- job config submitted by the UI
+- stage-specific job configuration: `JobInputConfig`, `TranscriptionConfig`, `NotePreferences`, and `NoteGenerationConfig`
 - transcription modes and local Whisper runtime options
 - transcript payloads and note draft structure
 - note version metadata
 - public job state returned to the frontend
+
+Job creation must not require or persist a note API key. It stores `NotePreferences`; note credentials are validated only at subtitle confirmation or another note-generation entry point. `JobConfig` remains only as a compatibility adapter for older callers and test fixtures; new production code must consume the narrow stage config it needs.
 
 If you change enums or validation rules here, trace the impact through both FastAPI form handling in `backend/app/main.py` and mirrored TypeScript unions/types in `frontend/src/App.tsx`.
 
@@ -181,23 +194,34 @@ When changing note draft schema or markdown rendering, inspect the whole chain:
 - `llm.py` output schema
 - `markdown.py` rendering
 - `note_versions.py` persisted version metadata
-- frontend preview/version selection logic in `frontend/src/App.tsx`
+- frontend preview/version selection logic in `frontend/src/useNoteWorkflow.ts` and `frontend/src/ResultWorkbench.tsx`
 
 ### Frontend structure
 
-This frontend is intentionally thin and mostly contained in `frontend/src/App.tsx`.
+`frontend/src/App.tsx` remains the page-level composition component. It owns workbench selection, keyboard shortcuts, and feature-hook composition.
 
-That file currently holds:
+Extracted feature views currently include:
 
-- API-facing TypeScript types mirroring backend payloads
-- the main upload/configuration form
-- runtime health polling
-- job polling
-- model download / CUDA install polling
-- note preview and subtitle preview fetching
-- note version selection and regeneration flows
+- `TaskConfigPanel.tsx`: controlled video/SRT selection, note preferences, create/cancel/resume controls
+- `SettingsModal.tsx`: settings shell, persistence controls, runtime summary, and grouped modal/note/transcription inputs
+- `SettingsTranscriptionSection.tsx`: transcription mode/language selection and local-vs-remote section composition
+- `SettingsLocalTranscriptionSection.tsx`: Faster Whisper model/runtime, device/compute, Python/CUDA dependency, and model-download controls
+- `SettingsRemoteTranscriptionSection.tsx`: remote transcription endpoint, model, and API key fields
+- `SettingsNoteApiSection.tsx`: note endpoint presets, model, and API key fields
+- `ResultWorkbench.tsx`: controlled downloads, workbench navigation, note/subtitle/frame previews, chunk management, and manual-review entry points; its inputs are grouped by context, downloads, frames, note, and subtitle, and it does not own job polling or current-job identity
+- `FrameReviewModal.tsx`: review-draft editing and frame selection
+- `RuntimeStatus.tsx`, `QualityStatusControl.tsx`, `TranscriptCorrectionModal.tsx`, `JobHistoryPanel.tsx`, and `WorkbenchNavigation.tsx`: focused presentation components
+- `useJobResources.ts`: artifact-revision-aware loading and cancellation of job-derived resources
+- `useSubtitleWorkflow.ts`: subtitle confirmation, regeneration, AI correction, correction application, and stale-response isolation across job switches
+- `useNoteWorkflow.ts`: note-version switching, full/chunk regeneration, finalization, revision-conflict handling, and stale-response isolation
+- `useReviewWorkflow.ts`: manual-review preparation, paragraph saving, quality refresh, modal state, revision-conflict handling, and stale-response isolation
+- `useRuntimeTasks.ts`: model download, local/CUDA dependency installation, non-overlapping polling, launch-failure mapping, and runtime refresh on completion
+- `useSettings.ts`: typed settings state, defaults, initial loading, field updates, persistence, clearing, unmount protection, and runtime refresh
+- `useJobLifecycle.ts`: current-job state, primary polling, history loading, job switching, cancellation, transcription resume, deletion, and stale-response isolation
+- `useJobCreation.ts`: video/SRT selection, pre-submit runtime validation, form-data construction, local-model download entry, job creation, input cleanup coordination, and stale-response isolation
+- `useHealthState.ts`: runtime health state, non-overlapping startup retries, explicit refresh, request cancellation, unmount protection, and stale-response isolation
 
-Because most state lives in one component, backend contract changes usually require coordinated edits in this single file.
+Feature views must not own global job polling or current-job switching. Keep network mutations and cross-feature state in `App.tsx` or focused hooks, and pass typed values/callbacks into presentation components.
 
 ## Files and directories with special roles
 

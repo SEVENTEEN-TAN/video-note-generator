@@ -5,9 +5,10 @@ import json
 from fastapi.testclient import TestClient
 
 from backend.app import main
+from backend.app.job_state import load_job_state
 from backend.app.job_store import JobStore
 from backend.app.main import app
-from backend.app.models import JobStatus
+from backend.app.models import JobStatus, TranscriptionWorkProgress
 from backend.app.storage_policy import (
     cleanup_transcription_cache,
     estimate_local_job_storage,
@@ -81,7 +82,20 @@ def test_cache_cleanup_api_rejects_active_job_and_preserves_final_files(tmp_path
     )
     store = JobStore(tmp_path)
     store.create(job_id)
-    store.update(job_id, status=JobStatus.running, step="字幕生成", progress=35)
+    store.update(
+        job_id,
+        status=JobStatus.running,
+        step="字幕生成",
+        progress=35,
+        work_progress=TranscriptionWorkProgress(
+            completed_seconds=60,
+            total_seconds=120,
+            completed_chunks=2,
+            total_chunks=4,
+            resumable=True,
+            cache_hits=2,
+        ),
+    )
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", store)
     client = TestClient(app)
@@ -89,9 +103,20 @@ def test_cache_cleanup_api_rejects_active_job_and_preserves_final_files(tmp_path
     assert client.delete(f"/api/jobs/{job_id}/transcription/cache").status_code == 409
 
     store.update(job_id, status=JobStatus.failed, step="失败", progress=35)
+    revision_before_cleanup = store.get(job_id).state_revision
     response = client.delete(f"/api/jobs/{job_id}/transcription/cache")
 
     assert response.status_code == 200
     assert response.json()["freed_bytes"] == 5
     assert not cache_dir.exists()
     assert (job_dir / "note.md").exists()
+    state = store.get(job_id)
+    persisted = load_job_state(job_dir)
+    assert state is not None
+    assert state.work_progress is not None
+    assert state.work_progress.resumable is False
+    assert state.work_progress.cache_hits == 0
+    assert state.state_revision == revision_before_cleanup + 1
+    assert persisted is not None
+    assert persisted.work_progress == state.work_progress
+    assert persisted.state_revision == state.state_revision

@@ -31,6 +31,9 @@ def test_runtime_status_reports_dependencies_and_local_models(tmp_path, monkeypa
     assert status["faster_whisper"]["python_available"] is False
     assert status["faster_whisper"]["worker_ready"] is False
     assert status["faster_whisper"]["ready_for_cpu"] is True
+    assert status["capabilities"]["video_processing"]["available"] is True
+    assert status["capabilities"]["local_transcription_cpu"]["available"] is True
+    assert status["capabilities"]["audio_transcriptions"]["available"] is True
     assert status["local_models"]["root"] == str(model_root)
     assert status["local_models"]["models"] == ["large-v3", "small"]
 
@@ -53,6 +56,8 @@ def test_runtime_status_reports_install_hints_when_dependencies_missing(tmp_path
     assert status["faster_whisper"]["ready_for_cpu"] is False
     assert "Install Python 3.10+" in status["faster_whisper"]["install_hint"]
     assert status["local_models"]["models"] == []
+    assert status["capabilities"]["video_processing"]["available"] is False
+    assert status["capabilities"]["audio_transcriptions"]["available"] is False
 
 
 def test_runtime_status_marks_external_worker_unavailable_without_required_packages(tmp_path, monkeypatch) -> None:
@@ -85,7 +90,7 @@ def test_runtime_status_marks_external_worker_unavailable_without_required_packa
 
     status = runtime_status.get_runtime_status()
 
-    assert status["ok"] is False
+    assert status["ok"] is True
     assert status["faster_whisper"]["external_worker_available"] is True
     assert status["faster_whisper"]["python_available"] is True
     assert status["faster_whisper"]["worker_ready"] is False
@@ -93,6 +98,9 @@ def test_runtime_status_marks_external_worker_unavailable_without_required_packa
     assert status["faster_whisper"]["ready_for_cpu"] is False
     assert status["faster_whisper"]["worker_error"] == "No module named 'faster_whisper'"
     assert "backend/requirements.txt" in status["faster_whisper"]["install_hint"]
+    assert status["capabilities"]["video_processing"]["available"] is True
+    assert status["capabilities"]["local_transcription_cpu"]["available"] is False
+    assert status["capabilities"]["audio_transcriptions"]["available"] is True
 
 
 def test_runtime_status_reports_external_cuda_runtime_error(tmp_path, monkeypatch) -> None:

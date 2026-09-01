@@ -2,13 +2,17 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-from backend.app import main
+from backend.app.api import runtime as runtime_routes
 from backend.app.main import app
 from backend.app.runtime_status import get_external_runtime_status
 
 
 def test_ready_endpoint_does_not_run_runtime_detection(monkeypatch) -> None:
-    monkeypatch.setattr(main, "get_runtime_status", lambda: (_ for _ in ()).throw(RuntimeError("too slow")))
+    monkeypatch.setattr(
+        runtime_routes,
+        "get_runtime_status",
+        lambda: (_ for _ in ()).throw(RuntimeError("too slow")),
+    )
     client = TestClient(app)
 
     response = client.get("/api/ready")

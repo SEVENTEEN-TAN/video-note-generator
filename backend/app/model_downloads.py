@@ -7,6 +7,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
 
+from .install_tasks import TaskStatus
 from .transcription import (
     TranscriptionError,
     external_worker_env,
@@ -33,7 +34,7 @@ class ModelDownloadRequest(BaseModel):
 
 class ModelDownloadState(BaseModel):
     model_name: str
-    status: str = "pending"
+    status: TaskStatus = "pending"
     progress: int = 0
     error: str = ""
     model_root: str
@@ -91,7 +92,13 @@ def run_model_download(model_name: str) -> None:
         set_model_download_state(model_name, status="failed", progress=0, error=str(exc), model_root=model_root)
 
 
-def set_model_download_state(model_name: str, status: str, progress: int, error: str, model_root: Path) -> None:
+def set_model_download_state(
+    model_name: str,
+    status: TaskStatus,
+    progress: int,
+    error: str,
+    model_root: Path,
+) -> None:
     with _lock:
         _states[model_name] = ModelDownloadState(
             model_name=model_name,

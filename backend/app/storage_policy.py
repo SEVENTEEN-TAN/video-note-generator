@@ -4,6 +4,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from .operation_leases import assert_current_operation_lease
+
 
 @dataclass(frozen=True)
 class StorageEstimate:
@@ -80,6 +82,7 @@ def cleanup_transcription_cache(job_dir: Path) -> int:
         raise ValueError("Transcription cache path escapes the job directory.")
     before = _directory_size(cache_root)
     if cache_root.exists():
+        assert_current_operation_lease()
         shutil.rmtree(cache_root)
     return before
 

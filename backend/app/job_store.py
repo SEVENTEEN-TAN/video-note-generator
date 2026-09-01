@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import time
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from threading import Lock
 
-from .filenames import normalize_uploaded_filename
+from .atomic_io import atomic_write_json, atomic_write_text
+from .filenames import ZIP_DIRTY_MARKER, normalize_uploaded_filename
 from .job_migrations import migrate_job_directory
+from .job_state import JobStateSnapshot, load_job_state, write_job_state
 from .models import (
     Artifact,
     FailureContext,
@@ -19,6 +24,8 @@ from .models import (
     TranscriptionWorkProgress,
 )
 from .note_versions import ensure_root_note_has_version, load_note_version_index, resolve_job_relative_path
+from .operation_leases import assert_current_operation_lease, current_operation_lease_lost
+from .operation_store import OperationStatus, load_job_operation, sync_operation_with_job_state
 
 
 STEP_STAGE_HINTS: tuple[tuple[tuple[str, ...], JobStage], ...] = (
@@ -49,7 +56,33 @@ ARTIFACT_SIGNATURE_NAMES = (
     "frames",
     "debug",
     "review",
+    "note_versions/versions.json",
+    "review/quality_report.json",
+    "review/quality_report.md",
+    "review/frame_candidates.json",
+    "subtitles.pending",
+    ".note-review.pending",
+    ZIP_DIRTY_MARKER,
 )
+RESOURCE_REVISION_NAMES = (
+    "subtitles.md",
+    "transcript.json",
+    "note.md",
+    "note_versions/versions.json",
+    "note_chunks/index.json",
+    "review/quality_report.json",
+    "review/frame_candidates.json",
+    "review/review_draft.json",
+    "frames",
+    "subtitles.pending",
+    ".note-review.pending",
+    ZIP_DIRTY_MARKER,
+)
+RESOURCE_REVISION_GLOBS = (
+    "note_versions/*/review/review_draft.json",
+)
+_STATE_FIELD_UNSET = object()
+DEFAULT_STATE_PERSIST_INTERVAL_SECONDS = 0.75
 
 
 def infer_job_stage(status: JobStatus, step: str) -> JobStage:
@@ -105,8 +138,7 @@ def _read_cancel_marker(job_dir: Path) -> dict:
 
 def _write_cancel_marker(job_dir: Path, payload: dict) -> None:
     marker = job_dir / CANCELLED_MARKER
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    atomic_write_json(marker, payload)
 
 
 def _cancelled_progress(payload: dict) -> int:
@@ -134,6 +166,105 @@ def _artifact_signature(job_dir: Path) -> tuple:
         except OSError:
             signature.append((name, None, None, None))
     return tuple(signature)
+
+
+def _artifact_revision(job_dir: Path) -> str:
+    digest = hashlib.sha256()
+    for name in RESOURCE_REVISION_NAMES:
+        path = job_dir / name
+        try:
+            stat = path.stat()
+            item = (name, stat.st_mtime_ns, stat.st_size, path.is_dir())
+        except OSError:
+            item = (name, None, None, None)
+        digest.update(repr(item).encode("utf-8"))
+        digest.update(b"\0")
+    for pattern in RESOURCE_REVISION_GLOBS:
+        for path in sorted(job_dir.glob(pattern)):
+            try:
+                stat = path.stat()
+                relative_path = path.relative_to(job_dir).as_posix()
+                item = (relative_path, stat.st_mtime_ns, stat.st_size, path.is_dir())
+            except OSError:
+                continue
+            digest.update(repr(item).encode("utf-8"))
+            digest.update(b"\0")
+    return digest.hexdigest()[:16]
+
+
+def _snapshot_status(
+    job_dir: Path,
+    snapshot: JobStateSnapshot,
+    operation,
+    legacy_status: JobStatus,
+    *,
+    repair_markers: bool = False,
+) -> JobStatus:
+    if (job_dir / CANCELLED_MARKER).exists():
+        return JobStatus.cancelled
+    if (job_dir / ".note-review.pending").exists():
+        return JobStatus.awaiting_note_review
+    if (job_dir / "subtitles.pending").exists():
+        return JobStatus.awaiting_subtitle_confirmation
+    if snapshot.status == JobStatus.awaiting_subtitle_confirmation:
+        return legacy_status
+    if snapshot.status == JobStatus.awaiting_note_review:
+        if _finalization_completed(job_dir):
+            return JobStatus.succeeded
+        if repair_markers:
+            atomic_write_text(job_dir / ".note-review.pending", "1", encoding="utf-8")
+        return JobStatus.awaiting_note_review
+    if (
+        snapshot.status in {JobStatus.pending, JobStatus.running, JobStatus.cancelling}
+        and operation is not None
+        and operation.status
+        in {
+            OperationStatus.waiting_for_credentials,
+            OperationStatus.failed,
+            OperationStatus.interrupted,
+        }
+    ):
+        return JobStatus.failed
+    return snapshot.status
+
+
+def _finalization_completed(job_dir: Path) -> bool:
+    path = job_dir / "review" / "finalization.json"
+    if not path.exists() or not (job_dir / "download.zip").is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("status") == "completed"
+
+
+def _recovered_step_and_progress(
+    status: JobStatus,
+    *,
+    cancel_marker: dict,
+    operation,
+    interrupted_event: dict | None,
+    failure_error: str | None,
+) -> tuple[str, int]:
+    if status == JobStatus.succeeded:
+        return "已从历史记录载入", 100
+    if status == JobStatus.cancelled:
+        return "已取消", _cancelled_progress(cancel_marker)
+    if status == JobStatus.awaiting_subtitle_confirmation:
+        return "等待确认字幕", 40
+    if status == JobStatus.awaiting_note_review:
+        return "等待复核笔记", 92
+    if operation is not None and operation.status in {
+        OperationStatus.waiting_for_credentials,
+        OperationStatus.interrupted,
+    }:
+        return "等待重试", max(0, min(100, operation.progress))
+    if interrupted_event:
+        return "最近一次处理中断", 100
+    if failure_error:
+        return "最近一次处理失败", 100
+    return "历史任务不完整", 100
 
 
 def _infer_resumable_work_progress(
@@ -203,28 +334,41 @@ def _infer_resumable_work_progress(
 
 
 class JobStore:
-    def __init__(self, outputs_root: Path) -> None:
+    def __init__(
+        self,
+        outputs_root: Path,
+        *,
+        state_persist_interval_seconds: float = DEFAULT_STATE_PERSIST_INTERVAL_SECONDS,
+        monotonic_clock: Callable[[], float] = time.monotonic,
+    ) -> None:
         self.outputs_root = outputs_root
+        self._state_persist_interval_seconds = max(0.0, state_persist_interval_seconds)
+        self._monotonic_clock = monotonic_clock
         self._lock = Lock()
         self._jobs: dict[str, JobPublicState] = {}
         self._cancel_requested: set[str] = set()
         self._artifact_cache: dict[str, tuple[tuple, list[Artifact], str | None]] = {}
+        self._last_state_persisted_at: dict[str, float] = {}
 
     def create(self, job_id: str) -> JobPublicState:
         now = _now_iso()
+        artifact_revision = _artifact_revision(self.outputs_root / job_id)
         state = JobPublicState(
             job_id=job_id,
             status=JobStatus.pending,
             step="等待处理",
             progress=0,
             artifacts=[],
+            artifact_revision=artifact_revision,
+            state_revision=1,
             step_started_at=now,
             updated_at=now,
             stage_elapsed_seconds=0,
         )
+        self._persist_state(job_id, state)
         with self._lock:
             self._jobs[job_id] = state
-        return state
+        return _copy_public_state(state)
 
     def request_cancel(self, job_id: str) -> JobPublicState | None:
         with self._lock:
@@ -232,9 +376,9 @@ class JobStore:
             if state is None:
                 return None
             if state.status in {JobStatus.cancelling, JobStatus.cancelled}:
-                return state
+                return _copy_public_state(state)
             if state.status not in {JobStatus.pending, JobStatus.running}:
-                return state
+                return _copy_public_state(state)
             now = _now_iso()
             previous_step = state.step
             self._cancel_requested.add(job_id)
@@ -243,6 +387,7 @@ class JobStore:
             state.step = "正在取消"
             state.error = None
             state.updated_at = now
+            state.state_revision += 1
             try:
                 _write_cancel_marker(
                     self.outputs_root / job_id,
@@ -257,13 +402,17 @@ class JobStore:
                 )
             except OSError:
                 pass
-            return state
+            self._persist_state(job_id, state)
+            self._sync_operation_state(job_id, state)
+            return _copy_public_state(state)
 
     def mark_cancelled(self, job_id: str) -> JobPublicState | None:
+        snapshot = load_job_state(self.outputs_root / job_id)
         with self._lock:
             state = self._jobs.get(job_id)
             if state is None:
                 return None
+            _merge_newer_snapshot(state, snapshot)
             now = _now_iso()
             marker_payload = _read_cancel_marker(self.outputs_root / job_id)
             marker_payload["cancelled_at"] = now
@@ -278,30 +427,45 @@ class JobStore:
             state.step = "已取消"
             state.error = None
             if state.work_progress is not None:
-                state.work_progress.resumable = True
+                state.work_progress = state.work_progress.model_copy(
+                    update={"resumable": True},
+                    deep=True,
+                )
                 marker_payload["work_progress"] = state.work_progress.model_dump(mode="json")
                 try:
                     _write_cancel_marker(self.outputs_root / job_id, marker_payload)
                 except OSError:
                     pass
             state.updated_at = now
-            return state
+            state.state_revision += 1
+            self._persist_state(job_id, state)
+            self._sync_operation_state(job_id, state)
+            return _copy_public_state(state)
 
     def is_cancel_requested(self, job_id: str) -> bool:
+        if current_operation_lease_lost():
+            return True
         with self._lock:
-            return job_id in self._cancel_requested
+            if job_id in self._cancel_requested:
+                return True
+        return (self.outputs_root / job_id / CANCELLED_MARKER).exists()
 
     def clear_cancel_request(self, job_id: str) -> None:
         with self._lock:
             self._cancel_requested.discard(job_id)
             try:
+                assert_current_operation_lease()
                 (self.outputs_root / job_id / CANCELLED_MARKER).unlink(missing_ok=True)
             except OSError:
                 pass
 
     def get(self, job_id: str) -> JobPublicState | None:
+        snapshot = load_job_state(self.outputs_root / job_id)
         with self._lock:
-            return self._jobs.get(job_id)
+            state = self._jobs.get(job_id)
+            if state is not None:
+                _merge_newer_snapshot(state, snapshot)
+            return _copy_public_state(state) if state is not None else None
 
     def update(
         self,
@@ -312,12 +476,20 @@ class JobStore:
         progress: int | None = None,
         error: str | None = None,
         stage: JobStage | None = None,
-        work_progress: TranscriptionWorkProgress | None = None,
+        work_progress: TranscriptionWorkProgress | None | object = _STATE_FIELD_UNSET,
+        failure_context: FailureContext | None | object = _STATE_FIELD_UNSET,
+        throttle_persistence: bool = False,
     ) -> None:
         with self._lock:
             state = self._jobs[job_id]
-            if job_id in self._cancel_requested:
+            if (
+                job_id in self._cancel_requested
+                or (self.outputs_root / job_id / CANCELLED_MARKER).exists()
+            ):
                 return
+            previous_status = state.status
+            previous_stage = state.stage
+            previous_work_progress = state.work_progress
             now = _now_iso()
             old_step = state.step
             new_step = step if step is not None else old_step
@@ -330,21 +502,76 @@ class JobStore:
                 state.stage_elapsed_seconds = max(0, (current - started).total_seconds())
             if status is not None:
                 state.status = status
-                if status != JobStatus.failed:
+                if status != JobStatus.failed and failure_context is _STATE_FIELD_UNSET:
                     state.failure_context = None
             if step is not None:
                 state.step = step
             state.stage = stage if stage is not None else infer_job_stage(state.status, state.step)
             if progress is not None:
                 state.progress = max(0, min(100, progress))
-            if work_progress is not None:
-                state.work_progress = work_progress
+            if work_progress is not _STATE_FIELD_UNSET:
+                state.work_progress = (
+                    work_progress.model_copy(deep=True)
+                    if isinstance(work_progress, TranscriptionWorkProgress)
+                    else None
+                )
+            if failure_context is not _STATE_FIELD_UNSET:
+                state.failure_context = (
+                    failure_context.model_copy(deep=True)
+                    if isinstance(failure_context, FailureContext)
+                    else None
+                )
             if error is not None:
                 state.error = error
+            should_persist = (
+                not throttle_persistence
+                or state.status != previous_status
+                or state.stage != previous_stage
+                or _work_progress_crossed_durable_boundary(
+                    previous_work_progress,
+                    state.work_progress,
+                    supplied=work_progress is not _STATE_FIELD_UNSET,
+                )
+                or self._state_persist_interval_elapsed(job_id)
+            )
+            if should_persist:
+                state.state_revision += 1
+                self._persist_state(job_id, state)
+            if state.status != previous_status or state.stage != previous_stage:
+                self._sync_operation_state(job_id, state)
+
+    def _persist_state(self, job_id: str, state: JobPublicState) -> None:
+        write_job_state(self.outputs_root / job_id, state)
+        self._last_state_persisted_at[job_id] = self._monotonic_clock()
+
+    def _state_persist_interval_elapsed(self, job_id: str) -> bool:
+        last_persisted_at = self._last_state_persisted_at.get(job_id)
+        if last_persisted_at is None:
+            return True
+        return (
+            self._monotonic_clock() - last_persisted_at
+            >= self._state_persist_interval_seconds
+        )
+
+    def _sync_operation_state(self, job_id: str, state: JobPublicState) -> None:
+        try:
+            sync_operation_with_job_state(
+                self.outputs_root / job_id,
+                job_status=state.status.value,
+                stage=state.stage.value,
+                step=state.step,
+                progress=state.progress,
+                error=state.error or "",
+            )
+        except (OSError, ValueError):
+            # Operation journaling must not turn a completed processing stage
+            # into a user-visible job failure.
+            pass
 
     def refresh_artifacts(self, job_id: str) -> list[Artifact]:
         job_dir = self.outputs_root / job_id
         signature = _artifact_signature(job_dir)
+        artifact_revision = _artifact_revision(job_dir)
         with self._lock:
             cached = self._artifact_cache.get(job_id)
             if cached is not None and cached[0] == signature:
@@ -352,7 +579,9 @@ class JobStore:
                 state = self._jobs.get(job_id)
                 if state:
                     state.artifacts = artifacts
+                    state.artifact_revision = artifact_revision
                     state.download_filename = cached[2]
+                    self._persist_failure_context_if_missing(job_id, job_dir, state)
                 return artifacts
         artifacts: list[Artifact] = []
         candidates = [
@@ -405,10 +634,25 @@ class JobStore:
             state = self._jobs.get(job_id)
             if state:
                 state.artifacts = artifacts
+                state.artifact_revision = artifact_revision
                 state.download_filename = download_filename
-                if state.status == JobStatus.failed and state.failure_context is None:
-                    state.failure_context = _latest_disk_failure_context(job_dir)
+                self._persist_failure_context_if_missing(job_id, job_dir, state)
         return artifacts
+
+    def _persist_failure_context_if_missing(
+        self,
+        job_id: str,
+        job_dir: Path,
+        state: JobPublicState,
+    ) -> None:
+        if state.status != JobStatus.failed or state.failure_context is not None:
+            return
+        failure_context = _latest_disk_failure_context(job_dir)
+        if failure_context is None:
+            return
+        state.failure_context = failure_context
+        state.state_revision += 1
+        self._persist_state(job_id, state)
 
     def load_from_disk(self, job_id: str) -> JobPublicState | None:
         job_dir = self.outputs_root / job_id
@@ -422,70 +666,113 @@ class JobStore:
             artifacts = self.refresh_artifacts(job_id)
         version_index = load_note_version_index(job_dir)
         cancel_marker = _read_cancel_marker(job_dir)
-        timestamp = str(
+        fallback_timestamp = str(
             cancel_marker.get("cancelled_at")
             or cancel_marker.get("requested_at")
             or _job_history_activity_timestamp(job_dir)
             or metadata.get("created_at")
             or _mtime_iso(job_dir)
         )
-        status = _infer_disk_job_status(job_dir, artifacts, version_index)
+        snapshot = load_job_state(job_dir)
+        legacy_status = _infer_disk_job_status(job_dir, artifacts, version_index)
+        operation = load_job_operation(job_dir)
         interrupted_event = _latest_interrupted_processing_event(job_dir)
         failure_error = _latest_disk_failure_error(job_dir)
-        failure_context = _latest_disk_failure_context(job_dir) if status == JobStatus.failed else None
-        work_progress = _work_progress_from_payload(cancel_marker.get("work_progress"))
-        if work_progress is None:
-            work_progress = _infer_resumable_work_progress(job_dir, metadata, status)
-        if status == JobStatus.succeeded:
-            step = "已从历史记录载入"
-            progress = 100
-        elif status == JobStatus.cancelled:
-            step = "已取消"
-            progress = _cancelled_progress(cancel_marker)
-        elif status == JobStatus.awaiting_subtitle_confirmation:
-            step = "等待确认字幕"
-            progress = 40
-        elif status == JobStatus.awaiting_note_review:
-            step = "等待复核笔记"
-            progress = 92
-        elif interrupted_event:
-            step = "最近一次处理中断"
-            progress = 100
-        elif failure_error:
-            step = "最近一次处理失败"
-            progress = 100
+        if snapshot is not None:
+            status = _snapshot_status(
+                job_dir,
+                snapshot,
+                operation,
+                legacy_status,
+                repair_markers=True,
+            )
+            snapshot_status_changed = status != snapshot.status
+            if snapshot_status_changed:
+                step, progress = _recovered_step_and_progress(
+                    status,
+                    cancel_marker=cancel_marker,
+                    operation=operation,
+                    interrupted_event=interrupted_event,
+                    failure_error=failure_error,
+                )
+                stage = infer_job_stage(status, "")
+            else:
+                step = snapshot.step
+                progress = snapshot.progress
+                stage = snapshot.stage
+            marker_work_progress = _work_progress_from_payload(cancel_marker.get("work_progress"))
+            work_progress = snapshot.work_progress or marker_work_progress
+            if work_progress is None:
+                work_progress = _infer_resumable_work_progress(job_dir, metadata, status)
+            if status == JobStatus.failed:
+                error = snapshot.error or failure_error or "最近一次处理未完成，正在等待重试。"
+                failure_context = snapshot.failure_context or _latest_disk_failure_context(job_dir)
+            elif status in {
+                JobStatus.succeeded,
+                JobStatus.cancelled,
+                JobStatus.awaiting_subtitle_confirmation,
+                JobStatus.awaiting_note_review,
+            }:
+                error = None
+                failure_context = None
+            else:
+                error = snapshot.error
+                failure_context = snapshot.failure_context
+            timestamp = snapshot.updated_at or fallback_timestamp
+            step_started_at = snapshot.step_started_at or timestamp
+            stage_elapsed_seconds = snapshot.stage_elapsed_seconds
+            state_revision = snapshot.state_revision + (1 if snapshot_status_changed else 0)
         else:
-            step = "历史任务不完整"
-            progress = 100
+            status = legacy_status
+            step, progress = _recovered_step_and_progress(
+                status,
+                cancel_marker=cancel_marker,
+                operation=operation,
+                interrupted_event=interrupted_event,
+                failure_error=failure_error,
+            )
+            stage = infer_job_stage(status, "")
+            work_progress = _work_progress_from_payload(cancel_marker.get("work_progress"))
+            if work_progress is None:
+                work_progress = _infer_resumable_work_progress(job_dir, metadata, status)
+            error = (
+                None
+                if status
+                in {
+                    JobStatus.succeeded,
+                    JobStatus.cancelled,
+                    JobStatus.awaiting_subtitle_confirmation,
+                    JobStatus.awaiting_note_review,
+                }
+                else failure_error or "历史任务缺少完整笔记输出，可能在上次生成中断。"
+            )
+            failure_context = _latest_disk_failure_context(job_dir) if status == JobStatus.failed else None
+            timestamp = fallback_timestamp
+            step_started_at = timestamp
+            stage_elapsed_seconds = 0
+            state_revision = 1
 
         state = JobPublicState(
             job_id=job_id,
             status=status,
             step=step,
-            stage=infer_job_stage(status, ""),
+            stage=stage,
             progress=progress,
             work_progress=work_progress,
-            error=(
-                None
-                if status in (
-                    JobStatus.succeeded,
-                    JobStatus.cancelled,
-                    JobStatus.awaiting_subtitle_confirmation,
-                    JobStatus.awaiting_note_review,
-                )
-                else failure_error
-                or "历史任务缺少完整笔记输出，可能在上次生成中断。"
-            ),
+            error=error,
             failure_context=failure_context,
             artifacts=artifacts,
-            step_started_at=timestamp,
+            artifact_revision=_artifact_revision(job_dir),
+            state_revision=state_revision,
+            step_started_at=step_started_at,
             updated_at=timestamp,
-            stage_elapsed_seconds=0,
+            stage_elapsed_seconds=stage_elapsed_seconds,
             download_filename=_zip_download_filename(job_dir) if (job_dir / "download.zip").exists() else None,
         )
+        self._persist_state(job_id, state)
         with self._lock:
             self._jobs[job_id] = state
-        return state
+        return _copy_public_state(state)
 
     def list_history(self) -> list[JobSummary]:
         if not self.outputs_root.exists():
@@ -509,6 +796,7 @@ class JobStore:
             self._jobs.pop(job_id, None)
             self._cancel_requested.discard(job_id)
             self._artifact_cache.pop(job_id, None)
+            self._last_state_persisted_at.pop(job_id, None)
 
     def _iter_job_dirs(self) -> list[Path]:
         return [
@@ -527,14 +815,36 @@ class JobStore:
         updated_at = str(_job_history_activity_timestamp(job_dir) or created_at)
         original_filename = normalize_uploaded_filename(str(metadata.get("original_filename") or job_dir.name))
         title = normalize_uploaded_filename(str(metadata.get("title") or original_filename), fallback=original_filename)
-        status = memory_state.status if memory_state else _infer_disk_job_status(job_dir, artifacts, version_index)
+        snapshot = load_job_state(job_dir)
+        legacy_status = _infer_disk_job_status(job_dir, artifacts, version_index)
+        operation = load_job_operation(job_dir)
+        if memory_state is not None:
+            status = memory_state.status
+        elif snapshot is not None:
+            status = _snapshot_status(
+                job_dir,
+                snapshot,
+                operation,
+                legacy_status,
+                repair_markers=False,
+            )
+        else:
+            status = legacy_status
         error = None
         failure_context = None
         if status == JobStatus.failed:
-            error = memory_state.error if memory_state and memory_state.error else _latest_disk_failure_error(job_dir)
+            error = (
+                memory_state.error
+                if memory_state and memory_state.error
+                else snapshot.error
+                if snapshot and snapshot.error
+                else _latest_disk_failure_error(job_dir)
+            )
             failure_context = (
                 memory_state.failure_context
                 if memory_state and memory_state.failure_context
+                else snapshot.failure_context
+                if snapshot and snapshot.failure_context
                 else _latest_disk_failure_context(job_dir)
             )
         return JobSummary(
@@ -542,7 +852,13 @@ class JobStore:
             title=title,
             original_filename=original_filename,
             created_at=created_at,
-            updated_at=memory_state.updated_at if memory_state and memory_state.updated_at else updated_at,
+            updated_at=(
+                memory_state.updated_at
+                if memory_state and memory_state.updated_at
+                else snapshot.updated_at
+                if snapshot and snapshot.updated_at
+                else updated_at
+            ),
             status=status,
             error=error,
             failure_context=failure_context,
@@ -566,6 +882,59 @@ def _mtime_iso(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()
 
 
+def _copy_public_state(state: JobPublicState) -> JobPublicState:
+    return state.model_copy(deep=True)
+
+
+def _merge_newer_snapshot(
+    state: JobPublicState,
+    snapshot: JobStateSnapshot | None,
+) -> None:
+    if snapshot is None or snapshot.state_revision <= state.state_revision:
+        return
+    state.status = snapshot.status
+    state.stage = snapshot.stage
+    state.step = snapshot.step
+    state.progress = snapshot.progress
+    state.work_progress = (
+        snapshot.work_progress.model_copy(deep=True)
+        if snapshot.work_progress is not None
+        else None
+    )
+    state.error = snapshot.error
+    state.failure_context = (
+        snapshot.failure_context.model_copy(deep=True)
+        if snapshot.failure_context is not None
+        else None
+    )
+    state.step_started_at = snapshot.step_started_at
+    state.updated_at = snapshot.updated_at
+    state.stage_elapsed_seconds = snapshot.stage_elapsed_seconds
+    state.state_revision = snapshot.state_revision
+
+
+def _work_progress_crossed_durable_boundary(
+    previous: TranscriptionWorkProgress | None,
+    current: TranscriptionWorkProgress | None,
+    *,
+    supplied: bool,
+) -> bool:
+    if not supplied:
+        return False
+    if previous is None or current is None:
+        return previous != current
+    return (
+        previous.total_seconds != current.total_seconds
+        or previous.completed_chunks != current.completed_chunks
+        or previous.total_chunks != current.total_chunks
+        or previous.current_chunk != current.current_chunk
+        or previous.resumable != current.resumable
+        or previous.cache_hits != current.cache_hits
+        or previous.device != current.device
+        or previous.compute_type != current.compute_type
+    )
+
+
 def _zip_download_filename(job_dir: Path) -> str:
     metadata_path = job_dir / "metadata.json"
     metadata: dict = {}
@@ -582,11 +951,18 @@ def _zip_download_filename(job_dir: Path) -> str:
 
 
 def _job_history_activity_timestamp(job_dir: Path) -> str | None:
-    timestamps = [
+    timestamps: list[str] = []
+    snapshot = load_job_state(job_dir)
+    if snapshot and snapshot.updated_at:
+        timestamps.append(snapshot.updated_at)
+    timestamps.extend(
         record.get("ts")
         for record in _debug_log_events(job_dir)
         if isinstance(record.get("ts"), str) and record.get("ts")
-    ]
+    )
+    operation = load_job_operation(job_dir)
+    if operation and operation.updated_at:
+        timestamps.append(operation.updated_at)
     if timestamps:
         return max(timestamps)
     debug_log = job_dir / "debug.log"
@@ -603,6 +979,16 @@ def _infer_disk_job_status(job_dir: Path, artifacts: list[Artifact], version_ind
     # once the note is explicitly marked for review it must remain reachable.
     if (job_dir / ".note-review.pending").exists():
         return JobStatus.awaiting_note_review
+    operation = load_job_operation(job_dir)
+    if operation and operation.status in {
+        OperationStatus.queued,
+        OperationStatus.recovering,
+        OperationStatus.running,
+        OperationStatus.waiting_for_credentials,
+        OperationStatus.failed,
+        OperationStatus.interrupted,
+    }:
+        return JobStatus.failed
     if _latest_interrupted_processing_event(job_dir):
         return JobStatus.failed
 
@@ -626,6 +1012,14 @@ def _infer_disk_job_status(job_dir: Path, artifacts: list[Artifact], version_ind
 
 
 def _latest_disk_failure_error(job_dir: Path) -> str | None:
+    operation = load_job_operation(job_dir)
+    if operation and operation.status in {
+        OperationStatus.waiting_for_credentials,
+        OperationStatus.failed,
+        OperationStatus.interrupted,
+    }:
+        return operation.error or "最近一次处理未完成，正在等待重试。"
+
     interrupted_event = _latest_interrupted_processing_event(job_dir)
     if interrupted_event:
         return _summarize_interrupted_processing_event(interrupted_event)
@@ -1024,7 +1418,7 @@ def _latest_interrupted_processing_event(job_dir: Path) -> dict | None:
         message = record.get("message")
         if message in {"started", "starting"}:
             latest_started_index = index
-        elif message in {"failed", "succeeded", "awaiting_confirmation"}:
+        elif message in {"failed", "succeeded", "awaiting_confirmation", "awaiting_review"}:
             latest_terminal_index = index
 
     if latest_started_index is None:
@@ -1040,7 +1434,7 @@ def _latest_terminal_debug_event(job_dir: Path) -> dict | None:
         if (
             isinstance(record, dict)
             and record.get("stage") in TERMINAL_DEBUG_STAGES
-            and record.get("message") in {"failed", "succeeded", "awaiting_confirmation"}
+            and record.get("message") in {"failed", "succeeded", "awaiting_confirmation", "awaiting_review"}
         ):
             latest = record
     return latest

@@ -9,6 +9,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from .atomic_io import atomic_write_json
+from .operation_leases import assert_current_operation_lease
 from .models import TranscriptPayload, TranscriptSegment
 from .transcription_plans import TranscriptionExecutionPlan, plan_fingerprint
 
@@ -27,18 +29,6 @@ class ChunkSpec(BaseModel):
     start: float
     end: float
     path: Path
-
-
-def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Write JSON through a same-directory temporary file and replace."""
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(f"{path.suffix}.tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary.replace(path)
 
 
 def _relative_path(path: Path, root: Path) -> str:
@@ -118,6 +108,7 @@ class TranscriptionCheckpointSession:
     def _clear_results(self) -> None:
         if not self.results_dir.exists():
             return
+        assert_current_operation_lease()
         for result_path in self.results_dir.glob("*.json"):
             try:
                 result_path.unlink()

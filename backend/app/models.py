@@ -83,7 +83,15 @@ class TranscriptionLanguage(str, Enum):
     en = "en"
 
 
-class JobConfig(BaseModel):
+class JobInputConfig(BaseModel):
+    original_filename: str
+
+
+class FrameGenerationConfig(BaseModel):
+    frame_limit: int = Field(default=6, ge=1, le=24)
+
+
+class TranscriptionConfig(JobInputConfig):
     transcription_mode: TranscriptionMode = TranscriptionMode.audio_transcriptions
     transcription_api_key: str = ""
     transcription_base_url: str = "https://api.openai.com/v1"
@@ -92,23 +100,10 @@ class JobConfig(BaseModel):
     local_whisper_compute_type: LocalWhisperComputeType | str = ""
     performance_mode: PerformanceMode = PerformanceMode.balanced
     transcription_language: TranscriptionLanguage | str = TranscriptionLanguage.auto
-    note_api_key: str
-    note_base_url: str = "https://api.openai.com/v1"
-    note_model: str = "gpt-5.5"
-    note_language: NoteLanguage
-    note_style: NoteStyle = NoteStyle.detailed
-    extras: str = ""
-    frame_limit: int = Field(default=6, ge=1, le=24)
-    original_filename: str
 
-    @field_validator(
-        "transcription_model",
-        "note_api_key",
-        "note_base_url",
-        "note_model",
-    )
+    @field_validator("transcription_model")
     @classmethod
-    def require_non_empty(cls, value: str) -> str:
+    def require_transcription_model(cls, value: str) -> str:
         value = value.strip()
         if not value:
             raise ValueError("This field is required.")
@@ -145,6 +140,28 @@ class JobConfig(BaseModel):
             raise ValueError("transcription_language must be auto, zh, or en.")
         return value
 
+    @model_validator(mode="after")
+    def require_remote_transcription_credentials(self) -> "TranscriptionConfig":
+        if self.transcription_mode != TranscriptionMode.local_faster_whisper:
+            if not self.transcription_api_key.strip():
+                raise ValueError("Transcription API Key is required for remote transcription modes.")
+            if not self.transcription_base_url.strip():
+                raise ValueError("Transcription Base URL is required for remote transcription modes.")
+        return self
+
+
+class NotePreferences(JobInputConfig, FrameGenerationConfig):
+    note_base_url: str = "https://api.openai.com/v1"
+    note_model: str = "gpt-5.5"
+    note_language: NoteLanguage
+    note_style: NoteStyle = NoteStyle.detailed
+    extras: str = ""
+
+    @field_validator("note_base_url", "note_model")
+    @classmethod
+    def normalize_note_endpoint_fields(cls, value: str) -> str:
+        return value.strip()
+
     @field_validator("extras")
     @classmethod
     def normalize_extras(cls, value: str) -> str:
@@ -153,14 +170,69 @@ class JobConfig(BaseModel):
             raise ValueError("extras must be 2000 characters or fewer.")
         return value
 
-    @model_validator(mode="after")
-    def require_remote_transcription_credentials(self) -> "JobConfig":
-        if self.transcription_mode != TranscriptionMode.local_faster_whisper:
-            if not self.transcription_api_key.strip():
-                raise ValueError("Transcription API Key is required for remote transcription modes.")
-            if not self.transcription_base_url.strip():
-                raise ValueError("Transcription Base URL is required for remote transcription modes.")
-        return self
+
+class NoteGenerationConfig(NotePreferences):
+    note_api_key: str
+
+    @field_validator("note_api_key", "note_base_url", "note_model")
+    @classmethod
+    def require_note_service_fields(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("This field is required.")
+        return value
+
+
+class JobConfig(TranscriptionConfig, FrameGenerationConfig):
+    """Legacy composite config retained for compatibility with older callers and fixtures."""
+
+    note_api_key: str
+    note_base_url: str = "https://api.openai.com/v1"
+    note_model: str = "gpt-5.5"
+    note_language: NoteLanguage
+    note_style: NoteStyle = NoteStyle.detailed
+    extras: str = ""
+
+    @field_validator("note_api_key", "note_base_url", "note_model")
+    @classmethod
+    def require_note_service_fields(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("This field is required.")
+        return value
+
+    @field_validator("extras")
+    @classmethod
+    def normalize_extras(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) > 2000:
+            raise ValueError("extras must be 2000 characters or fewer.")
+        return value
+
+    def for_transcription(self) -> TranscriptionConfig:
+        return TranscriptionConfig(
+            transcription_mode=self.transcription_mode,
+            transcription_api_key=self.transcription_api_key,
+            transcription_base_url=self.transcription_base_url,
+            transcription_model=self.transcription_model,
+            local_whisper_device=self.local_whisper_device,
+            local_whisper_compute_type=self.local_whisper_compute_type,
+            performance_mode=self.performance_mode,
+            transcription_language=self.transcription_language,
+            original_filename=self.original_filename,
+        )
+
+    def for_note_generation(self) -> NoteGenerationConfig:
+        return NoteGenerationConfig(
+            note_api_key=self.note_api_key,
+            note_base_url=self.note_base_url,
+            note_model=self.note_model,
+            note_language=self.note_language,
+            note_style=self.note_style,
+            extras=self.extras,
+            frame_limit=self.frame_limit,
+            original_filename=self.original_filename,
+        )
 
 
 class TranscriptSegment(BaseModel):
@@ -179,6 +251,7 @@ class QualityScores(BaseModel):
     structure: float = Field(ge=0, le=1)
     frames: float = Field(ge=0, le=1)
     stability: float = Field(ge=0, le=1)
+    evidence: float = Field(default=1.0, ge=0, le=1)
 
 
 class QualityIssue(BaseModel):
@@ -211,6 +284,8 @@ class FrameCandidate(BaseModel):
     id: str
     chapter_index: int
     time: float
+    anchor_time: float | None = None
+    time_offset: float = 0
     path: str
     reason: str
     note_excerpt: str = ""
@@ -219,6 +294,15 @@ class FrameCandidate(BaseModel):
     hash: str
     duplicate_of: str | None = None
     similarity: float = Field(ge=0, le=1)
+    quality_score: float = Field(default=0.5, ge=0, le=1)
+    brightness: float | None = Field(default=None, ge=0, le=1)
+    contrast: float | None = Field(default=None, ge=0, le=1)
+    sharpness: float | None = Field(default=None, ge=0, le=1)
+    dark_ratio: float | None = Field(default=None, ge=0, le=1)
+    bright_ratio: float | None = Field(default=None, ge=0, le=1)
+    stability_score: float = Field(default=0.5, ge=0, le=1)
+    transition_score: float = Field(default=0, ge=0, le=1)
+    scene_sample_count: int = Field(default=0, ge=0)
     risk_flags: list[str] = Field(default_factory=list)
     selected: bool = False
     rejected: bool = False
@@ -242,6 +326,7 @@ class ReviewSubtitleSegment(BaseModel):
     start: float
     end: float
     text: str
+    segment_id: str = ""
 
 
 class ReviewDraftParagraph(BaseModel):
@@ -252,15 +337,28 @@ class ReviewDraftParagraph(BaseModel):
     end_time: float
     body: str = ""
     subtitle_segments: list[ReviewSubtitleSegment] = Field(default_factory=list)
+    evidence_segment_ids: list[str] = Field(default_factory=list)
+    evidence_reference_valid: bool = False
+    unsupported_numeric_claims: list[str] = Field(default_factory=list)
+    unsupported_technical_identifiers: list[str] = Field(default_factory=list)
     selected_frame_ids: list[str] = Field(default_factory=list)
     status: Literal["needs_review", "edited", "approved"] = "needs_review"
 
 
 class ReviewDraft(BaseModel):
+    schema_version: int = 1
     note_version_id: str | None = None
     source_note_sha256: str = ""
+    source_transcript_sha256: str = ""
+    finalized_note_sha256: str = ""
     title: str = ""
     paragraphs: list[ReviewDraftParagraph] = Field(default_factory=list)
+
+
+class ReviewAssets(BaseModel):
+    frame_candidates: FrameCandidateIndex
+    quality_report: QualityReport
+    review_draft: ReviewDraft
 
 
 class ReviewDraftParagraphUpdate(BaseModel):
@@ -349,6 +447,8 @@ class Chapter(BaseModel):
     title: str
     start_time: float = 0.0
     end_time: float = 0.0
+    start_segment_id: str | None = None
+    end_segment_id: str | None = None
     bullets: list[str] = Field(default_factory=list)
     detail: str = ""
     quote_times: list[str] = Field(default_factory=list)
@@ -373,6 +473,7 @@ class KeyMoment(BaseModel):
     time: float
     reason: str
     chapter_index: int | None = None
+    segment_id: str | None = None
     frame_path: str | None = None
 
     @field_validator("time", mode="before")
@@ -439,6 +540,8 @@ class NoteVersion(BaseModel):
     frame_limit: int
     note_path: str
     frame_dir: str
+    draft_path: str | None = None
+    evidence_path: str | None = None
     selected: bool = True
     active: bool = False
     extras_present: bool = False
@@ -506,6 +609,8 @@ class JobPublicState(BaseModel):
     error: str | None = None
     failure_context: FailureContext | None = Field(default=None, exclude_if=lambda value: value is None)
     artifacts: list[Artifact] = Field(default_factory=list)
+    artifact_revision: str = ""
+    state_revision: int = Field(default=0, ge=0)
     step_started_at: str | None = None
     updated_at: str | None = None
     stage_elapsed_seconds: float = 0

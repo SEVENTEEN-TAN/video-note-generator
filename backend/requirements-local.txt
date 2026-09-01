@@ -5,3 +5,4 @@ openai==1.59.7
 pydantic==2.12.5
 imageio-ffmpeg==0.5.1
 faster-whisper==1.1.1
+requests>=2.31.0,<3.0.0

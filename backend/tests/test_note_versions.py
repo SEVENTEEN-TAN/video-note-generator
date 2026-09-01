@@ -11,6 +11,7 @@ from backend.app.main import app
 from backend.app.models import (
     Chapter,
     JobConfig,
+    JobStatus,
     KeyMoment,
     NoteDraft,
     NoteLanguage,
@@ -266,6 +267,40 @@ def test_note_version_patch_rejects_missing_frames_before_changing_active(tmp_pa
     assert (frames_dir / "frame_001.jpg").read_bytes() == b"active frame"
 
 
+def test_note_version_regeneration_rejects_unconfirmed_subtitles(tmp_path, monkeypatch) -> None:
+    outputs_root = tmp_path / "outputs"
+    job_id = "unconfirmed-note-version-job"
+    job_dir = outputs_root / job_id
+    (job_dir / "source_video").mkdir(parents=True)
+    (job_dir / "source_video" / "input.mp4").write_bytes(b"video")
+    (job_dir / "transcript.json").write_text(
+        '{"text":"hello","segments":[{"start":0,"end":1,"text":"hello"}]}',
+        encoding="utf-8",
+    )
+    (job_dir / "subtitles.pending").write_text("1", encoding="utf-8")
+
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    store.update(job_id, status=JobStatus.awaiting_subtitle_confirmation, step="等待确认字幕", progress=40)
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
+    monkeypatch.setattr(main, "store", store)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        f"/api/jobs/{job_id}/note-versions",
+        data={
+            "note_api_key": "key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "frame_limit": "1",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "must be confirmed" in response.json()["detail"]
+
+
 def test_ensure_root_note_has_version_snapshots_legacy_manual_note(tmp_path) -> None:
     job_dir = tmp_path / "job"
     job_dir.mkdir()
@@ -325,7 +360,25 @@ def test_create_zip_includes_selected_note_versions_with_relative_frames(tmp_pat
         frames_dir = version_dir / "frames"
         frames_dir.mkdir(parents=True)
         (version_dir / "note.md").write_text(f"# {version_id}\n\n![frame](frames/frame_001.jpg)", encoding="utf-8")
+        (version_dir / "draft.json").write_text(json.dumps({"title": version_id}), encoding="utf-8")
+        (version_dir / "evidence.json").write_text(
+            json.dumps({"transcript_sha256": version_id}),
+            encoding="utf-8",
+        )
+        (version_dir / "review").mkdir()
+        (version_dir / "review" / "review_draft.json").write_text(
+            json.dumps({"note_version_id": version_id}),
+            encoding="utf-8",
+        )
         (frames_dir / "frame_001.jpg").write_bytes(b"jpg")
+
+    def archived_version(version_id: str, *, selected: bool = True, active: bool = False) -> NoteVersion:
+        return make_version(version_id, selected=selected, active=active).model_copy(
+            update={
+                "draft_path": f"note_versions/{version_id}/draft.json",
+                "evidence_path": f"note_versions/{version_id}/evidence.json",
+            }
+        )
 
     write_note_version_index(
         job_dir,
@@ -333,9 +386,9 @@ def test_create_zip_includes_selected_note_versions_with_relative_frames(tmp_pat
             active_version_id="note_002",
             selected_version_ids=["note_001", "note_002"],
             versions=[
-                make_version("note_001", selected=True),
-                make_version("note_002", selected=True, active=True),
-                make_version("note_003", selected=False),
+                archived_version("note_001", selected=True),
+                archived_version("note_002", selected=True, active=True),
+                archived_version("note_003", selected=False),
             ],
         ),
     )
@@ -347,10 +400,19 @@ def test_create_zip_includes_selected_note_versions_with_relative_frames(tmp_pat
 
     assert "note.md" in names
     assert "notes/note_001/note.md" in names
+    assert "notes/note_001/draft.json" in names
+    assert "notes/note_001/evidence.json" in names
+    assert "notes/note_001/review_draft.json" in names
     assert "notes/note_001/frames/frame_001.jpg" in names
     assert "notes/note_002/note.md" in names
+    assert "notes/note_002/draft.json" in names
+    assert "notes/note_002/evidence.json" in names
+    assert "notes/note_002/review_draft.json" in names
     assert "notes/note_002/frames/frame_001.jpg" in names
     assert "notes/note_003/note.md" not in names
+    assert "notes/note_003/draft.json" not in names
+    assert "notes/note_003/evidence.json" not in names
+    assert "notes/note_003/review_draft.json" not in names
 
 
 def test_create_zip_ignores_unsafe_note_version_paths_from_disk_index(tmp_path) -> None:
@@ -496,6 +558,11 @@ def test_regenerate_note_version_reuses_transcript_and_creates_new_version(tmp_p
     version = regenerate_note_version(job_dir, config)
 
     assert version.id == "note_001"
+    assert version.draft_path == "note_versions/note_001/draft.json"
+    saved_draft = NoteDraft.model_validate_json(
+        (job_dir / "note_versions" / "note_001" / "draft.json").read_text(encoding="utf-8")
+    )
+    assert saved_draft.title == "Regenerated"
     assert version.note_style == NoteStyle.meeting_minutes
     assert (job_dir / "note_versions" / "note_001" / "note.md").exists()
     assert (job_dir / "note_versions" / "note_001" / "frames" / "frame_001.jpg").exists()

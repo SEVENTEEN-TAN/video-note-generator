@@ -225,6 +225,9 @@ def test_transcript_correction_apply_endpoint_applies_pending_and_queues_regener
         json.dumps({"text": "hello world", "segments": [{"start": 0.0, "end": 2.0, "text": "hello world"}]}),
         encoding="utf-8",
     )
+    (job_dir / "subtitles.pending").write_text("1", encoding="utf-8")
+    (job_dir / "note_chunks").mkdir()
+    (job_dir / "note_chunks" / "index.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
     monkeypatch.setattr(main, "store", JobStore(tmp_path))
     monkeypatch.setattr(main, "regenerate_note_job", lambda **_kwargs: None)
@@ -245,6 +248,8 @@ def test_transcript_correction_apply_endpoint_applies_pending_and_queues_regener
     assert response.status_code == 200
     assert (job_dir / TRANSCRIPT_CORRECTED).exists()
     assert "hello world" in (job_dir / "subtitles.md").read_text(encoding="utf-8-sig")
+    assert not (job_dir / "subtitles.pending").exists()
+    assert not (job_dir / "note_chunks").exists()
 
 
 def test_regenerate_note_version_prefers_corrected_transcript(tmp_path, monkeypatch) -> None:

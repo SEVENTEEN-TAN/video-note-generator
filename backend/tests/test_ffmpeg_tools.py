@@ -12,6 +12,7 @@ from backend.app.ffmpeg_tools import (
     FFmpegError,
     extract_frame,
     extract_frames,
+    extract_grayscale_frames,
     get_ffmpeg_path,
     prepare_audio_artifacts,
     load_prepared_audio_artifacts,
@@ -155,6 +156,41 @@ def test_extract_frame_falls_back_when_short_video_seek_has_no_frame(tmp_path) -
     assert frame_path.stat().st_size > 0
 
 
+def test_extract_grayscale_frames_reads_real_ffmpeg_samples(tmp_path) -> None:
+    video_path = tmp_path / "scene-samples.mp4"
+    try:
+        run_ffmpeg(
+            [
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=160x90:rate=10",
+                "-t",
+                "2",
+                "-pix_fmt",
+                "yuv420p",
+                "-c:v",
+                "libx264",
+                str(video_path),
+            ]
+        )
+    except FFmpegError as exc:
+        pytest.skip(f"FFmpeg test video generation is unavailable: {exc}")
+
+    samples = extract_grayscale_frames(
+        video_path,
+        [0.5, 1.0, 1.5],
+        duration=2,
+        width=64,
+        height=36,
+    )
+
+    assert list(samples) == [0.5, 1.0, 1.5]
+    assert all(len(payload) == 64 * 36 for payload in samples.values())
+    assert all(any(payload) for payload in samples.values())
+
+
 def test_extract_frames_batches_multiple_timestamps_in_one_ffmpeg_call(tmp_path, monkeypatch) -> None:
     video_path = Path("input.mp4")
     first = tmp_path / "first.jpg"
@@ -176,6 +212,36 @@ def test_extract_frames_batches_multiple_timestamps_in_one_ffmpeg_call(tmp_path,
     assert commands[0].index("-ss") < commands[0].index("-i")
     assert [commands[0][commands[0].index("-map") + 1], commands[0][commands[0].index("-map", commands[0].index("-map") + 1) + 1]] == ["0:v:0", "1:v:0"]
     assert actual == {first: 5.0, second: 10.0}
+
+
+def test_extract_grayscale_frames_batches_samples_and_reads_exact_payload(tmp_path, monkeypatch) -> None:
+    video_path = Path("input.mp4")
+    commands: list[list[str]] = []
+    width = 8
+    height = 6
+
+    def fake_run(args, **_kwargs):
+        commands.append(args)
+        for index, value in enumerate(args):
+            if value == "rawvideo":
+                Path(args[index + 1]).write_bytes(bytes([index % 255]) * (width * height))
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(ffmpeg_tools, "run_ffmpeg", fake_run)
+
+    samples = extract_grayscale_frames(
+        video_path,
+        [5.0, 5.0, 10.0],
+        duration=20,
+        width=width,
+        height=height,
+    )
+
+    assert list(samples) == [5.0, 10.0]
+    assert all(len(payload) == width * height for payload in samples.values())
+    assert len(commands) == 1
+    assert commands[0].count("-i") == 2
+    assert commands[0].count("rawvideo") == 2
 
 
 def test_prepare_long_local_audio_uses_one_source_read_and_flac_chunks(tmp_path, monkeypatch) -> None:

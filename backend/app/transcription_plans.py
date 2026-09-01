@@ -4,7 +4,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 
-from .models import JobConfig, PerformanceMode
+from .models import PerformanceMode, TranscriptionConfig
 
 
 @dataclass(frozen=True)
@@ -42,7 +42,7 @@ _DECODE_PRESETS: dict[str, tuple[int, int]] = {
 
 
 def resolve_execution_plan(
-    config: JobConfig,
+    config: TranscriptionConfig,
     duration_seconds: float,
     hardware: HardwareProfile,
 ) -> TranscriptionExecutionPlan:

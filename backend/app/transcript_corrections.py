@@ -5,8 +5,14 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .atomic_io import atomic_write_json
 from .llm import LLMError, call_json_model
-from .models import JobConfig, TranscriptCorrectionPreview, TranscriptCorrectionSegment, TranscriptSegment
+from .models import (
+    NoteGenerationConfig,
+    TranscriptCorrectionPreview,
+    TranscriptCorrectionSegment,
+    TranscriptSegment,
+)
 from .subtitles import transcript_segments_from_payload, write_subtitle_files
 from .time_utils import seconds_to_hhmmss
 
@@ -52,7 +58,7 @@ def load_preferred_transcript_payload(job_dir: Path) -> dict:
 
 
 def correct_transcript_segments(
-    config: JobConfig,
+    config: NoteGenerationConfig,
     segments: list[TranscriptSegment],
     instructions: str = "",
 ) -> list[dict]:
@@ -159,7 +165,7 @@ def build_correction_preview(
 
 def create_transcript_correction(
     job_dir: Path,
-    config: JobConfig,
+    config: NoteGenerationConfig,
     instructions: str = "",
 ) -> TranscriptCorrectionPreview:
     original_segments = load_original_segments(job_dir)
@@ -167,7 +173,7 @@ def create_transcript_correction(
     corrected_segments = normalize_corrections(original_segments, corrections)
     payload = transcript_payload_from_segments(corrected_segments)
     preview = build_correction_preview(original_segments, corrected_segments)
-    write_json_atomic(job_dir / TRANSCRIPT_CORRECTED_PENDING, payload)
+    atomic_write_json(job_dir / TRANSCRIPT_CORRECTED_PENDING, payload)
     return preview
 
 
@@ -182,7 +188,7 @@ def apply_pending_transcript_correction(job_dir: Path) -> TranscriptCorrectionPr
     original_segments = load_original_segments(job_dir)
     corrected_segments = transcript_segments_from_payload(pending_payload)
     preview = build_correction_preview(original_segments, corrected_segments)
-    write_json_atomic(job_dir / TRANSCRIPT_CORRECTED, transcript_payload_from_segments(corrected_segments))
+    atomic_write_json(job_dir / TRANSCRIPT_CORRECTED, transcript_payload_from_segments(corrected_segments))
     write_subtitle_files(corrected_segments, job_dir)
     return preview
 
@@ -243,13 +249,3 @@ def transcript_payload_from_segments(segments: list[TranscriptSegment]) -> dict:
             for segment in segments
         ],
     }
-
-
-def write_json_atomic(path: Path, payload: dict) -> None:
-    tmp_path = path.with_name(f"{path.name}.tmp")
-    try:
-        tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        tmp_path.replace(path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()

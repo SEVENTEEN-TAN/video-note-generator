@@ -5,8 +5,10 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from .atomic_io import atomic_write_json
 from .llm import (
     LLMError,
+    anchor_note_draft_to_segments,
     build_chunk_prompt,
     call_note_model,
     chunk_segments,
@@ -15,7 +17,7 @@ from .llm import (
     render_transcript_lines,
     _build_prior_context,
 )
-from .models import JobConfig, NoteDraft, TranscriptSegment
+from .models import NoteDraft, NoteGenerationConfig, TranscriptSegment
 
 
 CHUNKS_DIR_NAME = "note_chunks"
@@ -77,17 +79,11 @@ def save_note_chunks(
         )
         metas.append(meta)
         draft_path = out_dir / f"{chunk_id}.json"
-        draft_path.write_text(
-            json.dumps(draft.model_dump(mode="json"), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        atomic_write_json(draft_path, draft.model_dump(mode="json"))
         seg_offset += len(chunk_segs)
 
     index = NoteChunkIndex(chunks=metas, total_segments=len(segments))
-    chunk_index_path(job_dir).write_text(
-        json.dumps(index.model_dump(mode="json"), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(chunk_index_path(job_dir), index.model_dump(mode="json"))
     return index
 
 
@@ -119,7 +115,7 @@ def load_all_chunk_drafts(job_dir: Path, index: NoteChunkIndex) -> list[NoteDraf
 
 def regenerate_chunk_and_reduce(
     job_dir: Path,
-    config: JobConfig,
+    config: NoteGenerationConfig,
     duration: float | None,
     segments: list[TranscriptSegment],
     chunk_id: str,
@@ -187,22 +183,17 @@ def regenerate_chunk_and_reduce(
 
     # Save the new draft
     draft_path = chunks_dir(job_dir) / f"{chunk_id}.json"
-    draft_path.write_text(
-        json.dumps(new_draft.model_dump(mode="json"), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(draft_path, new_draft.model_dump(mode="json"))
 
     # Update index
     meta.status = new_status
     meta.title = (new_draft.title or "").strip()
-    chunk_index_path(job_dir).write_text(
-        json.dumps(index.model_dump(mode="json"), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    atomic_write_json(chunk_index_path(job_dir), index.model_dump(mode="json"))
 
     # Reload all drafts and re-reduce
     all_drafts = load_all_chunk_drafts(job_dir, index)
-    return reduce_note_drafts(config, duration, all_drafts, system_prompt)
+    reduced = reduce_note_drafts(config, duration, all_drafts, system_prompt)
+    return anchor_note_draft_to_segments(reduced, segments, duration)
 
 
 def _build_adjacent_transcript_context(chunk_lists: list[list[TranscriptSegment]], target_index: int) -> str:

@@ -10,12 +10,16 @@ try {
     Write-Host "Installing frontend dependencies..."
     npm --prefix frontend install
 
-    Write-Host "Building frontend..."
-    npm --prefix frontend run build
-
     Write-Host "Installing Python dependencies..."
     python -m pip install -r backend/requirements.txt
     python -m pip install -r desktop/requirements.txt
+
+    Write-Host "Generating frontend API types from FastAPI OpenAPI..."
+    python scripts/export-openapi.py --output frontend/openapi.json
+    npm --prefix frontend run generate:api
+
+    Write-Host "Building frontend..."
+    npm --prefix frontend run build
 
     Write-Host "Building Windows desktop app..."
     python -m PyInstaller --clean --noconfirm desktop/VideoNoteGenerator.spec

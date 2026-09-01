@@ -4,14 +4,17 @@ import subprocess
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel
 
 from .transcription import TranscriptionError, external_worker_env
 
+TaskStatus = Literal["idle", "pending", "running", "succeeded", "failed"]
+
 
 class PackageInstallState(BaseModel):
-    status: str = "idle"
+    status: TaskStatus = "idle"
     progress: int = 0
     error: str = ""
     python_path: str = ""
@@ -73,7 +76,7 @@ class PackageInstallController:
         except Exception as exc:
             self.set_state(status="failed", progress=0, error=str(exc), python_path=python_path)
 
-    def set_state(self, *, status: str, progress: int, error: str, python_path: str) -> None:
+    def set_state(self, *, status: TaskStatus, progress: int, error: str, python_path: str) -> None:
         with self._lock:
             self._state = PackageInstallState(
                 status=status,

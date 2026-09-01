@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 from zipfile import ZipFile
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import main
+from backend.app import main, note_regeneration, processor, review_finalization
 from backend.app.frame_candidates import write_frame_candidate_index
 from backend.app.job_store import JobStore
 from backend.app.main import app
@@ -25,11 +26,14 @@ from backend.app.note_chunks import NoteChunkIndex, NoteChunkMeta, chunk_index_p
 from backend.app.note_versions import write_note_version_index
 from backend.app.processor import create_zip
 from backend.app.review_finalization import (
+    FINALIZATION_MANIFEST_PATH,
     NOTE_REVIEW_PENDING_MARKER,
+    complete_review_finalization,
     finalize_reviewed_note,
     mark_note_review_pending,
 )
-from backend.app.review_drafts import build_review_draft, update_review_draft_paragraph
+from backend.app.review_drafts import build_review_draft, load_review_draft, update_review_draft_paragraph
+from backend.app.review_quality import build_quality_report
 
 
 def seed_review_job(job_dir: Path) -> None:
@@ -94,13 +98,14 @@ def seed_review_job(job_dir: Path) -> None:
     )
 
 
-def test_finalize_reviewed_note_applies_selected_frames_and_removes_marker(tmp_path) -> None:
+def test_finalize_reviewed_note_applies_selected_frames_and_completes_after_publication(tmp_path) -> None:
     seed_review_job(tmp_path)
     mark_note_review_pending(tmp_path)
 
     finalize_reviewed_note(tmp_path)
 
-    assert not (tmp_path / NOTE_REVIEW_PENDING_MARKER).exists()
+    assert (tmp_path / NOTE_REVIEW_PENDING_MARKER).exists()
+    assert (tmp_path / FINALIZATION_MANIFEST_PATH).exists()
     assert (tmp_path / "frames" / "frame_001.jpg").read_bytes() == b"new-one"
     assert (tmp_path / "frames" / "frame_002.jpg").read_bytes() == b"new-two"
     note_text = (tmp_path / "note.md").read_text(encoding="utf-8-sig")
@@ -108,25 +113,93 @@ def test_finalize_reviewed_note_applies_selected_frames_and_removes_marker(tmp_p
     assert "![Selected advanced frame](frames/frame_002.jpg)" in note_text
     assert "![old](frames/frame_001.jpg)" not in note_text
 
+    complete_review_finalization(tmp_path)
+
+    assert not (tmp_path / NOTE_REVIEW_PENDING_MARKER).exists()
+    assert not (tmp_path / "review" / "finalization_staging").exists()
+
 
 def test_finalize_reviewed_note_uses_human_review_draft_body(tmp_path) -> None:
     seed_review_job(tmp_path)
+    (tmp_path / "transcript.json").write_text(
+        '{"text":"MCP supports 3 tools.","segments":[{"start":0,"end":60,"text":"MCP supports 3 tools."}]}',
+        encoding="utf-8",
+    )
     draft = build_review_draft(tmp_path)
     update_review_draft_paragraph(
         tmp_path,
         draft.paragraphs[0].id,
-        body="Human approved intro.",
+        body="Human approved intro with 9 tools and GPT-9.",
         selected_frame_ids=["chapter_001_candidate_001"],
         status="approved",
     )
     mark_note_review_pending(tmp_path)
 
     finalize_reviewed_note(tmp_path)
+    complete_review_finalization(tmp_path)
 
     note_text = (tmp_path / "note.md").read_text(encoding="utf-8-sig")
-    assert "Human approved intro." in note_text
+    assert "Human approved intro with 9 tools and GPT-9." in note_text
     assert "Intro detail." not in note_text
     assert "![Selected intro frame](frames/frame_001.jpg)" in note_text
+    finalized_draft = load_review_draft(tmp_path)
+    assert finalized_draft is not None
+    assert finalized_draft.finalized_note_sha256 == hashlib.sha256(note_text.encode("utf-8")).hexdigest()
+    report = build_quality_report(tmp_path)
+    assert any(
+        issue.type == "unsupported_numeric_evidence" and "9" in issue.message
+        for issue in report.issues
+    )
+    assert any(
+        issue.type == "unsupported_technical_identifier" and "GPT-9" in issue.message
+        for issue in report.issues
+    )
+
+
+def test_finalize_reviewed_note_resumes_after_note_commit_is_interrupted(tmp_path, monkeypatch) -> None:
+    seed_review_job(tmp_path)
+    mark_note_review_pending(tmp_path)
+    original_sync = review_finalization._sync_active_note_version
+    calls = 0
+
+    def fail_once(job_dir, final_note):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("simulated interruption")
+        return original_sync(job_dir, final_note)
+
+    monkeypatch.setattr(review_finalization, "_sync_active_note_version", fail_once)
+
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        finalize_reviewed_note(tmp_path)
+
+    assert (tmp_path / NOTE_REVIEW_PENDING_MARKER).exists()
+    manifest = (tmp_path / FINALIZATION_MANIFEST_PATH).read_text(encoding="utf-8")
+    assert '"status": "prepared"' in manifest
+    assert "![Selected intro frame](frames/frame_001.jpg)" in (tmp_path / "note.md").read_text(encoding="utf-8-sig")
+
+    finalize_reviewed_note(tmp_path)
+    complete_review_finalization(tmp_path)
+
+    assert calls == 2
+    assert not (tmp_path / NOTE_REVIEW_PENDING_MARKER).exists()
+    assert (tmp_path / "frames" / "frame_001.jpg").read_bytes() == b"new-one"
+
+
+def test_new_review_preparation_discards_stale_finalization_transaction(tmp_path) -> None:
+    seed_review_job(tmp_path)
+    mark_note_review_pending(tmp_path)
+    finalize_reviewed_note(tmp_path)
+
+    assert (tmp_path / FINALIZATION_MANIFEST_PATH).exists()
+    assert (tmp_path / "review" / "finalization_staging").exists()
+
+    mark_note_review_pending(tmp_path)
+
+    assert not (tmp_path / FINALIZATION_MANIFEST_PATH).exists()
+    assert not (tmp_path / "review" / "finalization_staging").exists()
+    assert (tmp_path / NOTE_REVIEW_PENDING_MARKER).exists()
 
 
 def test_finalize_reviewed_note_requires_pending_marker(tmp_path) -> None:
@@ -146,12 +219,33 @@ def test_finalize_reviewed_note_rejects_review_draft_after_source_changes(tmp_pa
         finalize_reviewed_note(tmp_path)
 
 
+def test_finalize_reviewed_note_rejects_review_draft_after_transcript_changes(tmp_path) -> None:
+    seed_review_job(tmp_path)
+    (tmp_path / "transcript.json").write_text(
+        '{"text":"MCP supports 3 tools.","segments":[{"start":0,"end":120,"text":"MCP supports 3 tools."}]}',
+        encoding="utf-8",
+    )
+    build_review_draft(tmp_path)
+    (tmp_path / "transcript.corrected.json").write_text(
+        '{"text":"MCP supports 4 tools.","segments":[{"start":0,"end":120,"text":"MCP supports 4 tools."}]}',
+        encoding="utf-8",
+    )
+    mark_note_review_pending(tmp_path)
+
+    with pytest.raises(ValueError, match="transcript changed"):
+        finalize_reviewed_note(tmp_path)
+
+    assert (tmp_path / NOTE_REVIEW_PENDING_MARKER).exists()
+    assert (tmp_path / "frames" / "frame_001.jpg").read_bytes() == b"old"
+
+
 def test_create_zip_includes_review_reports(tmp_path) -> None:
     (tmp_path / "note.md").write_text("# Demo", encoding="utf-8")
     (tmp_path / "review").mkdir()
     (tmp_path / "review" / "quality_report.json").write_text("{}", encoding="utf-8")
     (tmp_path / "review" / "quality_report.md").write_text("# Quality Report", encoding="utf-8")
     (tmp_path / "review" / "frame_candidates.json").write_text('{"candidates":[]}', encoding="utf-8")
+    (tmp_path / "review" / "review_draft.json").write_text('{"paragraphs":[]}', encoding="utf-8")
 
     zip_path = create_zip(tmp_path)
 
@@ -161,6 +255,7 @@ def test_create_zip_includes_review_reports(tmp_path) -> None:
     assert "review/quality_report.json" in names
     assert "review/quality_report.md" in names
     assert "review/frame_candidates.json" in names
+    assert "review/review_draft.json" in names
 
 
 def test_finalize_endpoint_writes_zip_and_returns_succeeded_state(tmp_path, monkeypatch) -> None:
@@ -187,6 +282,50 @@ def test_finalize_endpoint_writes_zip_and_returns_succeeded_state(tmp_path, monk
     assert payload["status"] == "succeeded"
     assert (job_dir / "download.zip").exists()
     assert (job_dir / "review" / "quality_report.json").exists()
+    assert not (job_dir / NOTE_REVIEW_PENDING_MARKER).exists()
+
+
+def test_finalize_endpoint_can_retry_after_zip_publication_fails(tmp_path, monkeypatch) -> None:
+    outputs_root = tmp_path / "outputs"
+    job_id = "retry-finalize-job"
+    job_dir = outputs_root / job_id
+    job_dir.mkdir(parents=True)
+    seed_review_job(job_dir)
+    (job_dir / "transcript.json").write_text(
+        '{"text":"hello","segments":[{"start":0,"end":1,"text":"hello"}]}',
+        encoding="utf-8",
+    )
+    mark_note_review_pending(job_dir)
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    store.update(job_id, status=main.JobStatus.awaiting_note_review, step="等待复核笔记", progress=92)
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
+    monkeypatch.setattr(main, "store", store)
+    real_create_zip = main.create_zip
+    attempts = 0
+
+    def fail_once(job_dir):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise OSError("simulated zip failure")
+        return real_create_zip(job_dir)
+
+    monkeypatch.setattr(main, "create_zip", fail_once)
+
+    first = TestClient(app, raise_server_exceptions=False).post(f"/api/jobs/{job_id}/finalize")
+
+    assert first.status_code == 500
+    assert (job_dir / NOTE_REVIEW_PENDING_MARKER).exists()
+    assert (job_dir / FINALIZATION_MANIFEST_PATH).exists()
+
+    second = TestClient(app).post(f"/api/jobs/{job_id}/finalize")
+
+    assert second.status_code == 200
+    assert second.json()["status"] == "succeeded"
+    assert attempts == 2
+    assert not (job_dir / NOTE_REVIEW_PENDING_MARKER).exists()
+    assert (job_dir / "download.zip").exists()
 
 
 def test_finalize_endpoint_rejects_job_without_pending_review(tmp_path, monkeypatch) -> None:
@@ -314,9 +453,9 @@ def test_regenerate_note_chunk_returns_to_note_review(tmp_path, monkeypatch) -> 
     store.update(job_id, status=JobStatus.awaiting_note_review, step="等待复核笔记", progress=92)
     monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
     monkeypatch.setattr(main, "store", store)
-    monkeypatch.setattr(main, "regenerate_chunk_and_reduce", fake_regenerate_chunk_and_reduce)
-    monkeypatch.setattr(main, "create_note_version_from_draft", fake_create_note_version_from_draft)
-    monkeypatch.setattr(main, "build_frame_candidate_index", fake_build_frame_candidate_index)
+    monkeypatch.setattr(note_regeneration, "regenerate_chunk_and_reduce", fake_regenerate_chunk_and_reduce)
+    monkeypatch.setattr(note_regeneration, "create_note_version_from_draft", fake_create_note_version_from_draft)
+    monkeypatch.setattr(processor, "build_frame_candidate_index", fake_build_frame_candidate_index)
 
     response = TestClient(app).post(
         f"/api/jobs/{job_id}/note-chunks/chunk_001/regenerate",
@@ -338,3 +477,32 @@ def test_regenerate_note_chunk_returns_to_note_review(tmp_path, monkeypatch) -> 
     assert (job_dir / "review" / "quality_report.json").exists()
     assert (job_dir / "review" / "frame_candidates.json").exists()
     assert not (job_dir / "download.zip").exists()
+
+
+def test_regenerate_note_chunk_rejects_unconfirmed_subtitles(tmp_path, monkeypatch) -> None:
+    outputs_root = tmp_path / "outputs"
+    job_id = "chunk-unconfirmed-job"
+    job_dir = outputs_root / job_id
+    job_dir.mkdir(parents=True)
+    (job_dir / "subtitles.pending").write_text("1", encoding="utf-8")
+
+    store = JobStore(outputs_root)
+    store.create(job_id)
+    store.update(job_id, status=JobStatus.awaiting_subtitle_confirmation, step="等待确认字幕", progress=40)
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", outputs_root)
+    monkeypatch.setattr(main, "store", store)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        f"/api/jobs/{job_id}/note-chunks/chunk_001/regenerate",
+        data={
+            "note_api_key": "key",
+            "note_base_url": "https://api.openai.com/v1",
+            "note_model": "gpt-5.5",
+            "note_language": "zh",
+            "note_style": "detailed",
+            "frame_limit": "1",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "must be confirmed" in response.json()["detail"]

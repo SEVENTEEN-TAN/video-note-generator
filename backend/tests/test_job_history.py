@@ -6,6 +6,7 @@ import os
 from fastapi.testclient import TestClient
 
 from backend.app import main
+from backend.app.job_executor import job_executor
 from backend.app.job_store import JobStore
 from backend.app.main import app
 from backend.app.models import NoteStyle, NoteVersion, NoteVersionIndex
@@ -1649,6 +1650,25 @@ def test_delete_job_removes_disk_history(tmp_path, monkeypatch) -> None:
     assert response.json() == {"ok": True}
     assert not (tmp_path / "delete-job").exists()
     assert TestClient(app).get("/api/jobs/delete-job").status_code == 404
+
+
+def test_delete_job_returns_conflict_while_same_job_is_being_modified(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    write_history_job(
+        tmp_path,
+        "busy-delete-job",
+        created_at="2026-06-21T00:00:00+00:00",
+        title="Busy",
+        original_filename="busy.mp4",
+    )
+
+    with job_executor.acquire("busy-delete-job"):
+        response = TestClient(app).delete("/api/jobs/busy-delete-job")
+
+    assert response.status_code == 409
+    assert "already being modified" in response.json()["detail"]
+    assert (tmp_path / "busy-delete-job").exists()
 
 
 def test_delete_loaded_history_job_removes_memory_state_and_disk_files(tmp_path, monkeypatch) -> None:

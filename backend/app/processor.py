@@ -8,6 +8,7 @@ from pathlib import Path
 from threading import Lock
 from zipfile import ZIP_DEFLATED, ZipFile
 
+from .atomic_io import atomic_write_json, atomic_write_text
 from .ffmpeg_tools import (
     FFmpegError,
     PreparedAudio,
@@ -17,18 +18,29 @@ from .ffmpeg_tools import (
     probe_duration,
 )
 from .frame_candidates import build_frame_candidate_index, write_frame_candidate_index
+from .filenames import ZIP_DIRTY_MARKER
 from .job_store import JobStore
 from .llm import LLMError, generate_chunked_note_draft_with_chunks, generate_note_draft
-from .models import JobConfig, JobStage, JobStatus, TranscriptionMode
+from .models import (
+    JobInputConfig,
+    JobStage,
+    JobStatus,
+    NoteGenerationConfig,
+    NotePreferences,
+    TranscriptionConfig,
+    TranscriptionMode,
+)
 from .note_chunks import save_note_chunks
 from .note_versions import (
     create_note_version_from_draft,
+    find_source_video,
     load_note_version_index,
     note_version_index_path,
     regenerate_note_version,
     resolve_job_relative_path,
     safe_note_version_id,
 )
+from .operation_leases import assert_current_operation_lease
 from .review_finalization import NOTE_REVIEW_PENDING_MARKER, mark_note_review_pending
 from .review_quality import build_quality_report, write_quality_report
 from .subtitles import SubtitleParseError, parse_srt_file, transcript_segments_from_payload, write_subtitle_files
@@ -40,7 +52,6 @@ from .transcription import (
     resolve_local_transcription_plan,
     transcribe_audio,
 )
-from .transcription_checkpoints import atomic_write_json
 
 
 class ProcessingError(RuntimeError):
@@ -48,12 +59,12 @@ class ProcessingError(RuntimeError):
 
 
 SUBTITLES_PENDING_MARKER = "subtitles.pending"
-ZIP_DIRTY_MARKER = ".download.zip.dirty"
+DIAGNOSTICS_ZIP_FILENAME = "diagnostics.zip"
 _ZIP_LOCKS_GUARD = Lock()
 _ZIP_LOCKS: dict[str, Lock] = {}
 
 
-def _config_debug_summary(config: JobConfig) -> dict:
+def _transcription_config_debug_summary(config: TranscriptionConfig) -> dict:
     return {
         "original_filename": config.original_filename,
         "transcription_mode": config.transcription_mode.value,
@@ -63,6 +74,12 @@ def _config_debug_summary(config: JobConfig) -> dict:
         "local_whisper_compute_type": config.local_whisper_compute_type,
         "performance_mode": config.performance_mode.value,
         "transcription_language": str(config.transcription_language),
+    }
+
+
+def _note_config_debug_summary(config: NotePreferences) -> dict:
+    return {
+        "original_filename": config.original_filename,
         "note_base_url": config.note_base_url,
         "note_model": config.note_model,
         "note_language": config.note_language.value,
@@ -91,9 +108,11 @@ def write_job_metadata(
     *,
     job_id: str,
     job_dir: Path,
-    config: JobConfig,
+    input_config: JobInputConfig,
     title: str,
     duration: float | None,
+    transcription_config: TranscriptionConfig | None = None,
+    note_config: NotePreferences | None = None,
     subtitle_source: str | None = None,
     uploaded_subtitle_filename: str | None = None,
 ) -> dict:
@@ -108,25 +127,81 @@ def write_job_metadata(
         "schema_version": 1,
         "job_id": job_id,
         "created_at": str(existing.get("created_at") or datetime.now(timezone.utc).isoformat()),
-        "original_filename": config.original_filename,
-        "transcription_mode": config.transcription_mode.value,
-        "transcription_base_url": config.transcription_base_url,
-        "transcription_model": config.transcription_model,
-        "local_whisper_device": config.local_whisper_device,
-        "local_whisper_compute_type": config.local_whisper_compute_type,
-        "performance_mode": config.performance_mode.value,
-        "transcription_language": str(config.transcription_language),
-        "note_base_url": config.note_base_url,
-        "note_model": config.note_model,
-        "note_language": config.note_language.value,
-        "note_style": config.note_style.value,
-        "extras_present": bool(config.extras),
-        "extras_length": len(config.extras),
-        "frame_limit": config.frame_limit,
+        "original_filename": input_config.original_filename,
+        "transcription_mode": (
+            transcription_config.transcription_mode.value
+            if transcription_config is not None
+            else str(existing.get("transcription_mode") or "")
+        ),
+        "transcription_base_url": (
+            transcription_config.transcription_base_url
+            if transcription_config is not None
+            else str(existing.get("transcription_base_url") or "")
+        ),
+        "transcription_model": (
+            transcription_config.transcription_model
+            if transcription_config is not None
+            else str(existing.get("transcription_model") or "")
+        ),
+        "local_whisper_device": (
+            transcription_config.local_whisper_device
+            if transcription_config is not None
+            else str(existing.get("local_whisper_device") or "")
+        ),
+        "local_whisper_compute_type": (
+            transcription_config.local_whisper_compute_type
+            if transcription_config is not None
+            else str(existing.get("local_whisper_compute_type") or "")
+        ),
+        "performance_mode": (
+            transcription_config.performance_mode.value
+            if transcription_config is not None
+            else str(existing.get("performance_mode") or "")
+        ),
+        "transcription_language": (
+            str(transcription_config.transcription_language)
+            if transcription_config is not None
+            else str(existing.get("transcription_language") or "")
+        ),
+        "note_base_url": (
+            note_config.note_base_url
+            if note_config is not None
+            else str(existing.get("note_base_url") or "")
+        ),
+        "note_model": (
+            note_config.note_model
+            if note_config is not None
+            else str(existing.get("note_model") or "")
+        ),
+        "note_language": (
+            note_config.note_language.value
+            if note_config is not None
+            else str(existing.get("note_language") or "")
+        ),
+        "note_style": (
+            note_config.note_style.value
+            if note_config is not None
+            else str(existing.get("note_style") or "")
+        ),
+        "extras_present": (
+            bool(note_config.extras)
+            if note_config is not None
+            else bool(existing.get("extras_present"))
+        ),
+        "extras_length": (
+            len(note_config.extras)
+            if note_config is not None
+            else int(existing.get("extras_length") or 0)
+        ),
+        "frame_limit": (
+            note_config.frame_limit
+            if note_config is not None
+            else int(existing.get("frame_limit") or 6)
+        ),
         "subtitle_source": resolved_subtitle_source,
         "uploaded_subtitle_filename": resolved_uploaded_subtitle_filename,
         "duration_seconds": duration,
-        "title": title.strip() or config.original_filename,
+        "title": title.strip() or input_config.original_filename,
     }
     atomic_write_json(job_dir / "metadata.json", metadata)
     return metadata
@@ -136,7 +211,7 @@ def mark_zip_dirty(job_dir: Path) -> Path:
     marker = job_dir / ZIP_DIRTY_MARKER
     with _zip_lock(job_dir):
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text("1", encoding="utf-8")
+        atomic_write_text(marker, "1", encoding="utf-8")
     return marker
 
 
@@ -167,7 +242,6 @@ def _build_zip(job_dir: Path, zip_path: Path, dirty_marker: Path) -> Path:
         "subtitles.md",
         "transcript.json",
         "metadata.json",
-        "debug.log",
     ]
     try:
         with ZipFile(tmp_path, "w", compression=ZIP_DEFLATED) as archive:
@@ -183,12 +257,13 @@ def _build_zip(job_dir: Path, zip_path: Path, dirty_marker: Path) -> Path:
             version_index = load_note_version_index(job_dir)
             if version_index_path.exists() or version_index.versions:
                 archive.writestr("notes/versions.json", version_index.model_dump_json(indent=2))
-            debug_dir = job_dir / "debug"
-            if debug_dir.exists():
-                for debug_path in sorted(path for path in debug_dir.rglob("*") if path.is_file()):
-                    archive.write(debug_path, arcname=debug_path.relative_to(job_dir).as_posix())
             review_dir = job_dir / "review"
-            for review_name in ("quality_report.json", "quality_report.md", "frame_candidates.json"):
+            for review_name in (
+                "quality_report.json",
+                "quality_report.md",
+                "frame_candidates.json",
+                "review_draft.json",
+            ):
                 review_path = review_dir / review_name
                 if review_path.exists():
                     archive.write(review_path, arcname=review_path.relative_to(job_dir).as_posix())
@@ -200,19 +275,157 @@ def _build_zip(job_dir: Path, zip_path: Path, dirty_marker: Path) -> Path:
                     archive_version_id = safe_note_version_id(version.id)
                     note_path = resolve_job_relative_path(job_dir, version.note_path)
                     frame_dir = resolve_job_relative_path(job_dir, version.frame_dir)
+                    draft_path = (
+                        resolve_job_relative_path(job_dir, version.draft_path)
+                        if version.draft_path
+                        else None
+                    )
+                    evidence_path = (
+                        resolve_job_relative_path(job_dir, version.evidence_path)
+                        if version.evidence_path
+                        else None
+                    )
                 except ValueError:
                     continue
                 if note_path.exists():
                     archive.write(note_path, arcname=f"notes/{archive_version_id}/note.md")
+                if draft_path is not None and draft_path.exists():
+                    archive.write(draft_path, arcname=f"notes/{archive_version_id}/draft.json")
+                if evidence_path is not None and evidence_path.exists():
+                    archive.write(evidence_path, arcname=f"notes/{archive_version_id}/evidence.json")
+                version_review_draft = (
+                    job_dir
+                    / "note_versions"
+                    / archive_version_id
+                    / "review"
+                    / "review_draft.json"
+                )
+                if version_review_draft.exists():
+                    archive.write(
+                        version_review_draft,
+                        arcname=f"notes/{archive_version_id}/review_draft.json",
+                    )
                 if frame_dir.exists():
                     for frame_path in sorted(frame_dir.glob("*.jpg")):
                         archive.write(frame_path, arcname=f"notes/{archive_version_id}/frames/{frame_path.name}")
+        assert_current_operation_lease()
         tmp_path.replace(zip_path)
+        assert_current_operation_lease()
         dirty_marker.unlink(missing_ok=True)
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
     return zip_path
+
+
+def create_diagnostics_zip(job_dir: Path) -> Path:
+    zip_path = job_dir / DIAGNOSTICS_ZIP_FILENAME
+    tmp_path = job_dir / f"{DIAGNOSTICS_ZIP_FILENAME}.tmp"
+    include_names = (
+        "debug.log",
+        "metadata.json",
+        ".job-state.json",
+        ".operation.json",
+        ".cancelled",
+        SUBTITLES_PENDING_MARKER,
+        NOTE_REVIEW_PENDING_MARKER,
+        ZIP_DIRTY_MARKER,
+    )
+    review_names = (
+        "quality_report.json",
+        "quality_report.md",
+        "frame_candidates.json",
+        "finalization.json",
+    )
+    checkpoint_manifest = (
+        job_dir
+        / "work"
+        / "asr"
+        / "transcription_checkpoints"
+        / "manifest.json"
+    )
+    with _zip_lock(job_dir):
+        try:
+            with ZipFile(tmp_path, "w", compression=ZIP_DEFLATED) as archive:
+                for name in include_names:
+                    path = job_dir / name
+                    if path.is_file():
+                        archive.write(path, arcname=name)
+                debug_dir = job_dir / "debug"
+                if debug_dir.exists():
+                    for path in sorted(item for item in debug_dir.rglob("*") if item.is_file()):
+                        archive.write(path, arcname=path.relative_to(job_dir).as_posix())
+                review_dir = job_dir / "review"
+                for name in review_names:
+                    path = review_dir / name
+                    if path.is_file():
+                        archive.write(path, arcname=path.relative_to(job_dir).as_posix())
+                if checkpoint_manifest.is_file():
+                    archive.write(
+                        checkpoint_manifest,
+                        arcname=checkpoint_manifest.relative_to(job_dir).as_posix(),
+                    )
+            assert_current_operation_lease()
+            tmp_path.replace(zip_path)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+    return zip_path
+
+
+def discard_stale_zip(job_dir: Path) -> None:
+    assert_current_operation_lease()
+    with _zip_lock(job_dir):
+        (job_dir / "download.zip").unlink(missing_ok=True)
+        (job_dir / ZIP_DIRTY_MARKER).unlink(missing_ok=True)
+
+
+def prepare_note_review_artifacts(
+    *,
+    job_id: str,
+    job_dir: Path,
+    video_path: Path,
+    duration: float | None,
+    store: JobStore,
+    debug_log: TaskDebugLog,
+) -> bool:
+    """Rebuild every note-derived review artifact and pause at the review gate."""
+
+    if _stop_if_cancelled(job_id, store):
+        return False
+    discard_stale_zip(job_dir)
+    store.update(job_id, stage=JobStage.preparing_review, step="生成复核资料", progress=88)
+    debug_log.event("build_frame_candidates", "starting")
+    frame_candidates = build_frame_candidate_index(
+        job_dir,
+        video_path,
+        duration=duration,
+        is_cancelled=lambda: store.is_cancel_requested(job_id),
+    )
+    write_frame_candidate_index(job_dir, frame_candidates)
+    debug_log.event("build_frame_candidates", "succeeded", candidate_count=len(frame_candidates.candidates))
+
+    if _stop_if_cancelled(job_id, store):
+        return False
+    debug_log.event("build_quality_report", "starting")
+    quality_report = build_quality_report(job_dir)
+    write_quality_report(job_dir, quality_report)
+    debug_log.event("build_quality_report", "succeeded", status=quality_report.status)
+
+    if _stop_if_cancelled(job_id, store):
+        return False
+    mark_note_review_pending(job_dir)
+    store.refresh_artifacts(job_id)
+    store.update(
+        job_id,
+        status=JobStatus.awaiting_note_review,
+        stage=JobStage.awaiting_note_review,
+        step="等待复核笔记",
+        progress=92,
+    )
+    if store.is_cancel_requested(job_id):
+        store.mark_cancelled(job_id)
+        return False
+    return True
 
 
 
@@ -256,7 +469,7 @@ def process_transcription_job(
     job_id: str,
     job_dir: Path,
     video_path: Path,
-    config: JobConfig,
+    config: TranscriptionConfig,
     store: JobStore,
 ) -> None:
     debug_log = TaskDebugLog(job_dir)
@@ -267,7 +480,7 @@ def process_transcription_job(
         job_dir=str(job_dir),
         video_path=str(video_path),
         video_size_bytes=_file_size(video_path),
-        config=_config_debug_summary(config),
+        config=_transcription_config_debug_summary(config),
     )
     try:
         debug_log.event("probe_duration", "starting", video_path=str(video_path))
@@ -294,7 +507,7 @@ def process_transcription_job(
             storage_estimate = estimate_local_job_storage(
                 source_bytes=_file_size(video_path) or 0,
                 duration_seconds=float(duration or 0.0),
-                frame_limit=config.frame_limit,
+                frame_limit=int(_read_metadata(job_dir).get("frame_limit") or 6),
             )
             available_bytes = available_storage_bytes(job_dir)
             debug_log.event(
@@ -361,6 +574,7 @@ def process_transcription_job(
                 stage=JobStage.transcribing,
                 step=step,
                 progress=progress,
+                throttle_persistence=True,
             ),
             prepared_audio=prepared_audio,
             is_cancelled=lambda: store.is_cancel_requested(job_id),
@@ -368,6 +582,7 @@ def process_transcription_job(
                 job_id,
                 stage=JobStage.transcribing,
                 work_progress=work_progress,
+                throttle_persistence=True,
             ),
         )
         if _stop_if_cancelled(job_id, store):
@@ -392,13 +607,14 @@ def process_transcription_job(
         write_job_metadata(
             job_id=job_id,
             job_dir=job_dir,
-            config=config,
+            input_config=config,
+            transcription_config=config,
             title=config.original_filename,
             duration=duration,
             subtitle_source="transcribed",
             uploaded_subtitle_filename="",
         )
-        (job_dir / SUBTITLES_PENDING_MARKER).write_text("1", encoding="utf-8")
+        atomic_write_text(job_dir / SUBTITLES_PENDING_MARKER, "1", encoding="utf-8")
         store.refresh_artifacts(job_id)
         store.update(
             job_id,
@@ -431,7 +647,7 @@ def process_uploaded_subtitle_job(
     video_path: Path,
     subtitle_path: Path,
     uploaded_subtitle_filename: str,
-    config: JobConfig,
+    config: JobInputConfig,
     store: JobStore,
 ) -> None:
     debug_log = TaskDebugLog(job_dir)
@@ -445,7 +661,7 @@ def process_uploaded_subtitle_job(
         subtitle_path=str(subtitle_path),
         subtitle_size_bytes=_file_size(subtitle_path),
         uploaded_subtitle_filename=uploaded_subtitle_filename,
-        config=_config_debug_summary(config),
+        config={"original_filename": config.original_filename},
     )
     try:
         debug_log.event("probe_duration", "starting", video_path=str(video_path))
@@ -487,13 +703,13 @@ def process_uploaded_subtitle_job(
         write_job_metadata(
             job_id=job_id,
             job_dir=job_dir,
-            config=config,
+            input_config=config,
             title=config.original_filename,
             duration=duration,
             subtitle_source="uploaded",
             uploaded_subtitle_filename=uploaded_subtitle_filename,
         )
-        (job_dir / SUBTITLES_PENDING_MARKER).write_text("1", encoding="utf-8")
+        atomic_write_text(job_dir / SUBTITLES_PENDING_MARKER, "1", encoding="utf-8")
         store.refresh_artifacts(job_id)
         store.update(
             job_id,
@@ -521,7 +737,7 @@ def continue_job_to_notes(
     job_id: str,
     job_dir: Path,
     video_path: Path,
-    config: JobConfig,
+    config: NoteGenerationConfig,
     store: JobStore,
 ) -> None:
     debug_log = TaskDebugLog(job_dir)
@@ -530,12 +746,13 @@ def continue_job_to_notes(
         "started",
         job_id=job_id,
         job_dir=str(job_dir),
-        config=_config_debug_summary(config),
+        config=_note_config_debug_summary(config),
     )
     try:
         if _stop_if_cancelled(job_id, store):
             return
         if (job_dir / SUBTITLES_PENDING_MARKER).exists():
+            assert_current_operation_lease()
             (job_dir / SUBTITLES_PENDING_MARKER).unlink()
         metadata = _read_metadata(job_dir)
         duration = metadata.get("duration_seconds")
@@ -577,7 +794,8 @@ def continue_job_to_notes(
         write_job_metadata(
             job_id=job_id,
             job_dir=job_dir,
-            config=config,
+            input_config=config,
+            note_config=config,
             title=draft.title,
             duration=duration,
         )
@@ -601,40 +819,15 @@ def continue_job_to_notes(
         debug_log.event("create_note_version", "succeeded", version_id="note_001", frame_count=frame_count)
         store.refresh_artifacts(job_id)
 
-        if _stop_if_cancelled(job_id, store):
-            return
-        store.update(job_id, stage=JobStage.preparing_review, step="生成复核资料", progress=88)
-        debug_log.event("build_frame_candidates", "starting")
         duration_value = float(duration) if duration is not None else None
-        frame_candidates = build_frame_candidate_index(
-            job_dir,
-            video_path,
+        if not prepare_note_review_artifacts(
+            job_id=job_id,
+            job_dir=job_dir,
+            video_path=video_path,
             duration=duration_value,
-            is_cancelled=lambda: store.is_cancel_requested(job_id),
-        )
-        write_frame_candidate_index(job_dir, frame_candidates)
-        debug_log.event("build_frame_candidates", "succeeded", candidate_count=len(frame_candidates.candidates))
-
-        if _stop_if_cancelled(job_id, store):
-            return
-        debug_log.event("build_quality_report", "starting")
-        quality_report = build_quality_report(job_dir)
-        write_quality_report(job_dir, quality_report)
-        debug_log.event("build_quality_report", "succeeded", status=quality_report.status)
-
-        if _stop_if_cancelled(job_id, store):
-            return
-        mark_note_review_pending(job_dir)
-        store.refresh_artifacts(job_id)
-        store.update(
-            job_id,
-            status=JobStatus.awaiting_note_review,
-            stage=JobStage.awaiting_note_review,
-            step="等待复核笔记",
-            progress=92,
-        )
-        if store.is_cancel_requested(job_id):
-            store.mark_cancelled(job_id)
+            store=store,
+            debug_log=debug_log,
+        ):
             return
         debug_log.event("await_note_review", "pending")
     except (FFmpegError, LLMError, TranscriptionError, ProcessingError, Exception) as exc:
@@ -652,7 +845,7 @@ def regenerate_subtitles_job(
     job_id: str,
     job_dir: Path,
     video_path: Path,
-    config: JobConfig,
+    config: TranscriptionConfig,
     store: JobStore,
 ) -> None:
     debug_log = TaskDebugLog(job_dir)
@@ -661,7 +854,7 @@ def regenerate_subtitles_job(
         "started",
         job_id=job_id,
         job_dir=str(job_dir),
-        config=_config_debug_summary(config),
+        config=_transcription_config_debug_summary(config),
     )
     try:
         if _stop_if_cancelled(job_id, store):
@@ -697,6 +890,7 @@ def regenerate_subtitles_job(
                 stage=JobStage.transcribing,
                 step=step,
                 progress=progress,
+                throttle_persistence=True,
             ),
         )
         if _stop_if_cancelled(job_id, store):
@@ -709,11 +903,12 @@ def regenerate_subtitles_job(
             return
 
         # Only replace the existing reviewed output after the new transcript is ready.
+        assert_current_operation_lease()
         for stale in ("note.md", "download.zip", SUBTITLES_PENDING_MARKER, NOTE_REVIEW_PENDING_MARKER):
             stale_path = job_dir / stale
             if stale_path.exists():
                 stale_path.unlink()
-        for stale_dir_name in ("note_versions", "frames", "review"):
+        for stale_dir_name in ("note_versions", "note_chunks", "frames", "review"):
             stale_dir = job_dir / stale_dir_name
             if stale_dir.exists():
                 shutil.rmtree(stale_dir, ignore_errors=True)
@@ -724,13 +919,14 @@ def regenerate_subtitles_job(
         write_job_metadata(
             job_id=job_id,
             job_dir=job_dir,
-            config=config,
+            input_config=config,
+            transcription_config=config,
             title=config.original_filename,
             duration=duration,
             subtitle_source="transcribed",
             uploaded_subtitle_filename="",
         )
-        (job_dir / SUBTITLES_PENDING_MARKER).write_text("1", encoding="utf-8")
+        atomic_write_text(job_dir / SUBTITLES_PENDING_MARKER, "1", encoding="utf-8")
         store.refresh_artifacts(job_id)
         store.update(
             job_id,
@@ -757,7 +953,7 @@ def regenerate_note_job(
     *,
     job_id: str,
     job_dir: Path,
-    config: JobConfig,
+    config: NoteGenerationConfig,
     store: JobStore,
 ) -> None:
     debug_log = TaskDebugLog(job_dir)
@@ -766,7 +962,7 @@ def regenerate_note_job(
         "started",
         job_id=job_id,
         job_dir=str(job_dir),
-        config=_config_debug_summary(config),
+        config=_note_config_debug_summary(config),
     )
     try:
         if _stop_if_cancelled(job_id, store):
@@ -790,29 +986,61 @@ def regenerate_note_job(
         store.refresh_artifacts(job_id)
         if _stop_if_cancelled(job_id, store):
             return
-        store.update(job_id, stage=JobStage.finalizing, step="更新 ZIP", progress=92)
-        mark_zip_dirty(job_dir)
-        debug_log.event("create_zip", "deferred")
-        store.refresh_artifacts(job_id)
-        if _stop_if_cancelled(job_id, store):
+        metadata = _read_metadata(job_dir)
+        duration = metadata.get("duration_seconds")
+        video_path = find_source_video(job_dir)
+        if not prepare_note_review_artifacts(
+            job_id=job_id,
+            job_dir=job_dir,
+            video_path=video_path,
+            duration=float(duration) if duration is not None else None,
+            store=store,
+            debug_log=debug_log,
+        ):
             return
-        store.update(
-            job_id,
-            status=JobStatus.succeeded,
-            stage=JobStage.completed,
-            step="完成",
-            progress=100,
-        )
-        if store.is_cancel_requested(job_id):
-            store.mark_cancelled(job_id)
-            return
-        debug_log.event("regenerate_note_job", "succeeded")
+        debug_log.event("regenerate_note_job", "awaiting_review")
     except (FFmpegError, LLMError, ProcessingError, Exception) as exc:
         _fail_or_cancel(
             job_id=job_id,
             store=store,
             debug_log=debug_log,
             debug_stage="regenerate_note_job",
+            exc=exc,
+        )
+
+
+def resume_note_review_artifacts_job(
+    *,
+    job_id: str,
+    job_dir: Path,
+    video_path: Path,
+    store: JobStore,
+) -> None:
+    """Resume deterministic review preparation after note generation completed."""
+
+    debug_log = TaskDebugLog(job_dir)
+    debug_log.event("resume_note_review_artifacts_job", "started", job_id=job_id)
+    try:
+        if _stop_if_cancelled(job_id, store):
+            return
+        metadata = _read_metadata(job_dir)
+        duration = metadata.get("duration_seconds")
+        if not prepare_note_review_artifacts(
+            job_id=job_id,
+            job_dir=job_dir,
+            video_path=video_path,
+            duration=float(duration) if duration is not None else None,
+            store=store,
+            debug_log=debug_log,
+        ):
+            return
+        debug_log.event("resume_note_review_artifacts_job", "awaiting_review")
+    except (FFmpegError, ProcessingError, Exception) as exc:
+        _fail_or_cancel(
+            job_id=job_id,
+            store=store,
+            debug_log=debug_log,
+            debug_stage="resume_note_review_artifacts_job",
             exc=exc,
         )
 

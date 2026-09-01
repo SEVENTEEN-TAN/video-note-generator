@@ -2,6 +2,7 @@
 
 import json
 import os
+import errno
 
 from fastapi.testclient import TestClient
 
@@ -9,6 +10,174 @@ from backend.app import main, processor
 from backend.app.job_store import JobStore
 from backend.app.main import app
 from backend.app.models import Chapter, JobStatus, KeyMoment, NoteDraft
+from backend.app.upload_limits import InsufficientUploadStorageError, UploadLimits
+
+
+def test_create_local_job_does_not_require_note_credentials(tmp_path, monkeypatch) -> None:
+    queued: list[tuple] = []
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(main, "resolve_local_faster_whisper_model", lambda *_args, **_kwargs: "small")
+    monkeypatch.setattr(
+        main,
+        "enqueue_serialized",
+        lambda _background_tasks, task, **kwargs: queued.append((task, kwargs)),
+    )
+
+    response = TestClient(app).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "local_faster_whisper",
+            "transcription_model": "small",
+            "local_whisper_device": "cpu",
+            "note_base_url": "https://api.example.test/v1",
+            "note_model": "note-model",
+            "note_language": "zh",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 200
+    assert queued[0][0] is main.process_transcription_job
+    config = queued[0][1]["config"]
+    assert config.transcription_api_key == ""
+    assert not hasattr(config, "note_api_key")
+    metadata = json.loads((tmp_path / response.json()["job_id"] / "metadata.json").read_text(encoding="utf-8"))
+    assert "note_api_key" not in metadata
+
+
+def test_create_remote_job_does_not_require_note_credentials(tmp_path, monkeypatch) -> None:
+    queued: list[tuple] = []
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(
+        main,
+        "enqueue_serialized",
+        lambda _background_tasks, task, **kwargs: queued.append((task, kwargs)),
+    )
+
+    response = TestClient(app).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_base_url": "https://api.example.test/v1",
+            "transcription_model": "whisper-1",
+            "note_base_url": "https://api.example.test/v1",
+            "note_model": "note-model",
+            "note_language": "zh",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 200
+    assert queued[0][0] is main.process_transcription_job
+    config = queued[0][1]["config"]
+    assert config.transcription_api_key == "transcription-key"
+    assert not hasattr(config, "note_api_key")
+
+
+def test_create_job_rejects_oversized_video_before_creating_job_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(main, "get_upload_limits", lambda: UploadLimits(4, 1024, 0))
+
+    response = TestClient(app).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_base_url": "https://api.example.test/v1",
+            "transcription_model": "whisper-1",
+            "note_language": "zh",
+        },
+        files={"video": ("input.mp4", b"12345", "video/mp4")},
+    )
+
+    assert response.status_code == 413
+    assert "Video upload exceeds" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_create_job_rejects_oversized_subtitle_before_creating_job_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(main, "get_upload_limits", lambda: UploadLimits(1024, 4, 0))
+
+    response = TestClient(app).post(
+        "/api/jobs",
+        data={"note_language": "zh"},
+        files={
+            "video": ("input.mp4", b"video", "video/mp4"),
+            "subtitle": ("input.srt", b"12345", "application/x-subrip"),
+        },
+    )
+
+    assert response.status_code == 413
+    assert "Subtitle upload exceeds" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_create_job_rejects_insufficient_upload_storage_before_creating_job_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+    monkeypatch.setattr(
+        main,
+        "ensure_upload_capacity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            InsufficientUploadStorageError("Insufficient disk space for upload.")
+        ),
+    )
+
+    response = TestClient(app).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_model": "whisper-1",
+            "note_language": "zh",
+        },
+        files={"video": ("input.mp4", b"video", "video/mp4")},
+    )
+
+    assert response.status_code == 507
+    assert "Insufficient disk space" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_frame_suggestion_rejects_oversized_video_without_temp_directory(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "get_upload_limits", lambda: UploadLimits(4, 1024, 0))
+
+    response = TestClient(app).post(
+        "/api/jobs/frame-suggestion",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_model": "whisper-1",
+            "note_api_key": "note-key",
+            "note_model": "note-model",
+            "note_language": "zh",
+        },
+        files={"video": ("input.mp4", b"12345", "video/mp4")},
+    )
+
+    assert response.status_code == 413
+    assert "Video upload exceeds" in response.json()["detail"]
+    assert not (tmp_path / ".frame-suggestions").exists()
+
+
+def test_upload_content_length_is_rejected_before_form_parsing(monkeypatch) -> None:
+    monkeypatch.setattr(main, "get_upload_limits", lambda: UploadLimits(4, 4, 0))
+
+    response = TestClient(app).post(
+        "/api/jobs/frame-suggestion",
+        content=b"",
+        headers={"content-length": str(2 * 1024 * 1024)},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "Upload request exceeds the configured size limit."
 
 
 def test_create_job_rejects_missing_local_faster_whisper_model(tmp_path, monkeypatch) -> None:
@@ -87,6 +256,32 @@ def test_create_job_cleans_output_dir_when_video_copy_fails(tmp_path, monkeypatc
 
     assert response.status_code == 400
     assert "Cannot create job files" in response.json()["detail"]
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_create_job_returns_507_and_cleans_output_when_disk_fills_during_copy(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(main, "OUTPUTS_ROOT", tmp_path)
+    monkeypatch.setattr(main, "store", JobStore(tmp_path))
+
+    def fail_copy(_source, _target) -> None:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+    monkeypatch.setattr(main.shutil, "copyfileobj", fail_copy)
+
+    response = TestClient(app, raise_server_exceptions=False).post(
+        "/api/jobs",
+        data={
+            "transcription_mode": "audio_transcriptions",
+            "transcription_api_key": "transcription-key",
+            "transcription_base_url": "https://api.openai.com/v1",
+            "transcription_model": "whisper-1",
+            "note_language": "zh",
+        },
+        files={"video": ("input.mp4", b"fake video", "video/mp4")},
+    )
+
+    assert response.status_code == 507
+    assert "Insufficient disk space" in response.json()["detail"]
     assert list(tmp_path.iterdir()) == []
 
 

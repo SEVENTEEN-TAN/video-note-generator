@@ -1,211 +1,245 @@
 ﻿import {
   AlertTriangle,
-  Captions,
-  ChevronDown,
   CheckCircle2,
-  Download,
-  FileSearch,
-  FileText,
-  Image,
-  KeyRound,
   Loader2,
-  Play,
-  RefreshCw,
-  Server,
   Settings,
-  X,
-  Upload,
-  ZoomIn
+  X
 } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import type { ChangeEvent, Dispatch, SetStateAction } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type {
-  CudaDependencyInstallState,
   FrameCandidate,
   FrameCandidateIndex,
-  HealthState,
   JobState,
-  JobSummary,
-  LocalDependencyInstallState,
-  LocalWhisperComputeType,
-  LocalWhisperDevice,
-  ModelDownloadState,
-  NoteLanguage,
-  NoteStyle,
-  NoteChunkIndex,
-  NoteChunkMeta,
-  NoteVersionIndex,
-  PerformanceMode,
-  PollableTaskState,
-  PythonPackageInstallMode,
   PreviewImage,
-  QualityReport,
-  ReviewDraft,
-  ReviewDraftParagraph,
-  ReviewDraftParagraphStatus,
-  RuntimeState,
-  TranscriptCorrectionPreview,
-  TranscriptionLanguage,
-  TranscriptionMode,
-  UserSettings
 } from "./types";
-import { OPENAI_BASE_URL, QWEN_BASE_URL, noteStyleOptions, statusText } from "./constants";
+import { statusText } from "./constants";
 import {
   formatElapsedSeconds,
-  formatInstallMode,
-  formatRuntimeSource,
-  formatSecondsRange,
-  formatVersionDetails,
-  formatVersionOption
 } from "./format";
-import {
-  downloadArtifact,
-  deriveDownloadFilename,
-  finalizeJob,
-  fetchJob,
-  fetchFrameCandidates,
-  fetchJobHistory,
-  fetchNoteVersions,
-  fetchQualityReport,
-  fetchReviewDraft,
-  readResponseError,
-  updateReviewDraftParagraph
-} from "./api";
-import { extractMarkdownImages, parseMarkdown, resolvePreviewAssetUrl } from "./markdown";
+import { extractMarkdownImages } from "./markdown";
+import { FrameReviewModal } from "./FrameReviewModal";
 import { JobHistoryPanel } from "./JobHistoryPanel";
-import { WorkbenchNavigation } from "./WorkbenchNavigation";
+import { ResultWorkbench } from "./ResultWorkbench";
+import { HealthBadge } from "./RuntimeStatus";
+import { SettingsModal } from "./SettingsModal";
+import { TranscriptCorrectionModal } from "./TranscriptCorrectionModal";
+import { TaskConfigPanel } from "./TaskConfigPanel";
+import { useHealthState } from "./useHealthState";
+import { useJobCreation } from "./useJobCreation";
+import { useJobResources } from "./useJobResources";
+import { useJobLifecycle } from "./useJobLifecycle";
+import { useNoteWorkflow } from "./useNoteWorkflow";
+import { useReviewWorkflow } from "./useReviewWorkflow";
+import { useRuntimeTasks } from "./useRuntimeTasks";
+import { useSettings } from "./useSettings";
+import { useSubtitleWorkflow } from "./useSubtitleWorkflow";
 import type { WorkbenchTab } from "./WorkbenchNavigation";
 
 export function App() {
-  const [transcriptionApiKey, setTranscriptionApiKey] = useState("");
-  const [transcriptionMode, setTranscriptionMode] = useState<TranscriptionMode>("local_faster_whisper");
-  const [transcriptionBaseUrl, setTranscriptionBaseUrl] = useState(OPENAI_BASE_URL);
-  const [transcriptionModel, setTranscriptionModel] = useState("small");
-  const [transcriptionLanguage, setTranscriptionLanguage] = useState<TranscriptionLanguage>("auto");
-  const [localWhisperDevice, setLocalWhisperDevice] = useState<LocalWhisperDevice>("auto");
-  const [localWhisperComputeType, setLocalWhisperComputeType] = useState<LocalWhisperComputeType>("default");
-  const [performanceMode, setPerformanceMode] = useState<PerformanceMode>("balanced");
-  const [externalPythonPath, setExternalPythonPath] = useState("");
-  const [fasterWhisperModelDir, setFasterWhisperModelDir] = useState("");
-  const [pythonPackageInstallMode, setPythonPackageInstallMode] = useState<PythonPackageInstallMode>("default");
-  const [noteApiKey, setNoteApiKey] = useState("");
-  const [noteBaseUrl, setNoteBaseUrl] = useState(OPENAI_BASE_URL);
-  const [noteModel, setNoteModel] = useState("gpt-5.5");
-  const [noteLanguage, setNoteLanguage] = useState<NoteLanguage>("zh");
-  const [noteStyle, setNoteStyle] = useState<NoteStyle>("detailed");
-  const [extras, setExtras] = useState("");
-  const [frameLimit, setFrameLimit] = useState(6);
-  const [video, setVideo] = useState<File | null>(null);
-  const [subtitle, setSubtitle] = useState<File | null>(null);
-  const [job, setJob] = useState<JobState | null>(null);
-  const [notePreview, setNotePreview] = useState("");
-  const [subtitlePreview, setSubtitlePreview] = useState("");
-  const [health, setHealth] = useState<HealthState | null>(null);
-  const [submitError, setSubmitError] = useState("");
-  const [versionError, setVersionError] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isRegenerating, setIsRegenerating] = useState(false);
-  const [isSavingSettings, setIsSavingSettings] = useState(false);
-  const [settingsMessage, setSettingsMessage] = useState("");
-  const [modelDownload, setModelDownload] = useState<ModelDownloadState | null>(null);
-  const [modelDownloadError, setModelDownloadError] = useState("");
-  const [localDependencyInstall, setLocalDependencyInstall] = useState<LocalDependencyInstallState | null>(null);
-  const [localDependencyInstallError, setLocalDependencyInstallError] = useState("");
-  const [cudaInstall, setCudaInstall] = useState<CudaDependencyInstallState | null>(null);
-  const [cudaInstallError, setCudaInstallError] = useState("");
-  const [noteVersions, setNoteVersions] = useState<NoteVersionIndex | null>(null);
-  const [previewVersionId, setPreviewVersionId] = useState("");
-  const [jobHistory, setJobHistory] = useState<JobSummary[]>([]);
-  const [historyError, setHistoryError] = useState("");
-  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
-  const [isDeletingJobId, setIsDeletingJobId] = useState("");
+  const { health, refreshHealth } = useHealthState();
+  const {
+    clearSettings: handleClearSettings,
+    isSavingSettings,
+    saveSettings: handleSaveSettings,
+    settings,
+    settingsMessage,
+    updateSetting
+  } = useSettings(refreshHealth);
+  const {
+    external_python_path: externalPythonPath,
+    extras,
+    faster_whisper_model_dir: fasterWhisperModelDir,
+    frame_limit: frameLimit,
+    local_whisper_compute_type: localWhisperComputeType,
+    local_whisper_device: localWhisperDevice,
+    note_api_key: noteApiKey,
+    note_base_url: noteBaseUrl,
+    note_language: noteLanguage,
+    note_model: noteModel,
+    note_style: noteStyle,
+    performance_mode: performanceMode,
+    python_package_install_mode: pythonPackageInstallMode,
+    transcription_api_key: transcriptionApiKey,
+    transcription_base_url: transcriptionBaseUrl,
+    transcription_language: transcriptionLanguage,
+    transcription_mode: transcriptionMode,
+    transcription_model: transcriptionModel
+  } = settings;
+  const workspaceFormRef = useRef<HTMLFormElement>(null);
+  const resetTaskContextRef = useRef<() => void>(() => undefined);
+  const clearSelectedInputsRef = useRef<() => void>(() => undefined);
+  const {
+    cancelActiveJob: handleCancelJob,
+    deleteHistoryJob: handleDeleteHistoryJob,
+    historyError,
+    isDeletingJobId,
+    isHistoryLoading,
+    job,
+    jobHistory,
+    lifecycleError,
+    loadHistoryJob: handleLoadHistoryJob,
+    refreshJobHistory,
+    resumeActiveTranscription: handleResumeTranscription,
+    setJob,
+    setLifecycleError
+  } = useJobLifecycle({
+    onClearSelectedInputs: () => clearSelectedInputsRef.current(),
+    onResetTaskContext: () => resetTaskContextRef.current()
+  });
+  const {
+    frameCandidateError,
+    frameCandidateIndex,
+    loadManualReview,
+    noteChunks,
+    notePreview,
+    noteVersions,
+    previewVersionId,
+    qualityReport,
+    qualityReportError,
+    refreshQualityReport,
+    resetJobResources,
+    reviewDraft,
+    setFrameCandidateError,
+    setNoteVersions,
+    setPreviewVersionId,
+    setReviewDraft,
+    subtitlePreview
+  } = useJobResources(job);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeWorkbench, setActiveWorkbench] = useState<WorkbenchTab>("note");
   const [downloadMessage, setDownloadMessage] = useState("");
-  const [correctionPreview, setCorrectionPreview] = useState<TranscriptCorrectionPreview | null>(null);
-  const [correctionError, setCorrectionError] = useState("");
-  const [isCorrectingTranscript, setIsCorrectingTranscript] = useState(false);
-  const [isApplyingCorrection, setIsApplyingCorrection] = useState(false);
-  const [isConfirmingSubtitles, setIsConfirmingSubtitles] = useState(false);
-  const [isRegeneratingSubtitles, setIsRegeneratingSubtitles] = useState(false);
-  const [subtitleGateError, setSubtitleGateError] = useState("");
-  const [noteChunks, setNoteChunks] = useState<NoteChunkIndex | null>(null);
-  const [regeneratingChunkId, setRegeneratingChunkId] = useState("");
-  const [qualityReport, setQualityReport] = useState<QualityReport | null>(null);
-  const [qualityReportError, setQualityReportError] = useState("");
-  const [frameCandidateIndex, setFrameCandidateIndex] = useState<FrameCandidateIndex | null>(null);
-  const [frameCandidateError, setFrameCandidateError] = useState("");
-  const [reviewDraft, setReviewDraft] = useState<ReviewDraft | null>(null);
-  const [reviewDraftSavingId, setReviewDraftSavingId] = useState("");
-  const [isFrameReviewOpen, setIsFrameReviewOpen] = useState(false);
-  const [isFinalizingJob, setIsFinalizingJob] = useState(false);
-  const [finalizeError, setFinalizeError] = useState("");
-  const workspaceFormRef = useRef<HTMLFormElement>(null);
-  const videoInputRef = useRef<HTMLInputElement | null>(null);
-  const subtitleInputRef = useRef<HTMLInputElement | null>(null);
-
-  async function pollTaskState<T extends PollableTaskState>(
-    url: string,
-    setTask: Dispatch<SetStateAction<T | null>>,
-    setError: (message: string) => void,
-    errorMessage: string
-  ): Promise<void> {
-    try {
-      const response = await fetch(url);
-      const payload = (await response.json()) as T;
-      if (!response.ok) {
-        throw new Error((payload as { detail?: string }).detail || errorMessage);
-      }
-      setTask(payload);
-      if (payload.status === "succeeded") {
-        await refreshHealth();
-      }
-    } catch (error) {
-      setError(error instanceof Error ? error.message : errorMessage);
+  const {
+    applyTranscriptCorrection: handleApplyTranscriptCorrection,
+    closeTranscriptCorrection,
+    confirmSubtitles: handleConfirmSubtitles,
+    correctionError,
+    correctionPreview,
+    createTranscriptCorrection: handleCreateTranscriptCorrection,
+    isApplyingCorrection,
+    isConfirmingSubtitles,
+    isCorrectingTranscript,
+    isRegeneratingSubtitles,
+    isTranscriptCorrectionActive,
+    regenerateSubtitles: handleRegenerateSubtitles,
+    resetSubtitleWorkflow,
+    subtitleGateError
+  } = useSubtitleWorkflow({
+    job,
+    noteConfig: {
+      extras,
+      frame_limit: frameLimit,
+      note_api_key: noteApiKey,
+      note_base_url: noteBaseUrl,
+      note_language: noteLanguage,
+      note_model: noteModel,
+      note_style: noteStyle
+    },
+    onRefreshJobHistory: refreshJobHistory,
+    setJob,
+    transcriptionConfig: {
+      local_whisper_compute_type: localWhisperComputeType,
+      local_whisper_device: localWhisperDevice,
+      performance_mode: performanceMode,
+      transcription_api_key: transcriptionApiKey,
+      transcription_base_url: transcriptionBaseUrl,
+      transcription_language: transcriptionLanguage,
+      transcription_mode: transcriptionMode,
+      transcription_model: transcriptionModel
     }
-  }
+  });
+  const {
+    finalizeError,
+    finalizeJob: handleFinalizeJob,
+    isFinalizingJob,
+    isRegenerating,
+    isSwitchingVersion,
+    onNoteVersionChange: handleNoteVersionChange,
+    regenerateNote: handleRegenerateNote,
+    regenerateNoteChunk: handleRegenerateNoteChunk,
+    regeneratingChunkId,
+    resetNoteWorkflow,
+    versionError
+  } = useNoteWorkflow({
+    job,
+    noteChunks,
+    noteConfig: {
+      extras,
+      frame_limit: frameLimit,
+      note_api_key: noteApiKey,
+      note_base_url: noteBaseUrl,
+      note_language: noteLanguage,
+      note_model: noteModel,
+      note_style: noteStyle
+    },
+    noteVersions,
+    onRefreshJobHistory: refreshJobHistory,
+    previewVersionId,
+    setJob,
+    setNoteVersions,
+    setPreviewVersionId
+  });
+  const {
+    closeFrameReview,
+    isFrameReviewOpen,
+    openFrameReview,
+    openManualReview: handleManualReview,
+    resetReviewWorkflow,
+    reviewDraftSavingId,
+    saveReviewParagraph: handleSaveReviewParagraph
+  } = useReviewWorkflow({
+    frameCandidateIndex,
+    job,
+    loadManualReview,
+    previewVersionId,
+    refreshQualityReport,
+    reviewDraft,
+    setFrameCandidateError,
+    setJob,
+    setReviewDraft
+  });
+  const {
+    cudaInstall,
+    cudaInstallError,
+    downloadLocalModel: handleDownloadLocalModel,
+    installCudaDependencies: handleInstallCudaDependencies,
+    installLocalDependencies: handleInstallLocalDependencies,
+    localDependencyInstall,
+    localDependencyInstallError,
+    modelDownload,
+    modelDownloadError
+  } = useRuntimeTasks({
+    cudaPythonPath: health?.runtime?.faster_whisper.external_python_path ?? "",
+    localPythonPath: health?.runtime?.faster_whisper.external_python_path ?? "",
+    modelName: transcriptionModel,
+    modelRoot: health?.runtime?.local_models.root ?? "",
+    onRefreshHealth: refreshHealth
+  });
+  const {
+    clearSelectedInputs,
+    clearSubtitle: handleClearSubtitle,
+    handleSubtitleChange,
+    handleVideoChange,
+    hasUploadedSubtitle,
+    isSubmitting,
+    submitError,
+    submitJob: handleSubmit,
+    subtitle,
+    subtitleInputRef,
+    video,
+    videoInputRef
+  } = useJobCreation({
+    hasTaskContext: Boolean(job || notePreview || subtitlePreview || noteVersions),
+    health,
+    onClearLifecycleError: () => setLifecycleError(""),
+    onDownloadLocalModel: handleDownloadLocalModel,
+    onRefreshJobHistory: refreshJobHistory,
+    onResetTaskContext: () => resetTaskContextRef.current(),
+    setJob,
+    settings
+  });
+  clearSelectedInputsRef.current = clearSelectedInputs;
 
-  async function startTask<T extends PollableTaskState>({
-    request,
-    optimisticState,
-    setTask,
-    setError,
-    errorMessage
-  }: {
-    request: () => Promise<Response>;
-    optimisticState: T;
-    setTask: Dispatch<SetStateAction<T | null>>;
-    setError: (message: string) => void;
-    errorMessage: string;
-  }): Promise<void> {
-    setTask(optimisticState);
-    try {
-      const response = await request();
-      const payload = (await response.json()) as T;
-      if (!response.ok) {
-        throw new Error((payload as { detail?: string }).detail || errorMessage);
-      }
-      setTask(payload);
-      if (payload.status === "succeeded") {
-        await refreshHealth();
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : errorMessage;
-      setError(message);
-      setTask((current) =>
-        current
-          ? {
-              ...current,
-              status: "failed",
-              error: message
-            }
-          : null
-      );
-    }
-  }
-
-  const isTranscriptCorrectionActive = isCorrectingTranscript || isApplyingCorrection || Boolean(correctionPreview);
   const isBusy =
     job?.status === "pending" ||
     job?.status === "running" ||
@@ -216,24 +250,6 @@ export function App() {
     isRegeneratingSubtitles ||
     isTranscriptCorrectionActive ||
     isFinalizingJob;
-  const isLocalTranscription = transcriptionMode === "local_faster_whisper";
-  const hasUploadedSubtitle = Boolean(subtitle);
-  const runtimeLocalStatus = health?.runtime?.faster_whisper;
-  const runtimeProbeFailed = Boolean(runtimeLocalStatus?.worker_error_code);
-  const needsLocalDependencyInstall =
-    isLocalTranscription &&
-    Boolean(runtimeLocalStatus) &&
-    !runtimeLocalStatus?.internal_available &&
-    !runtimeLocalStatus?.worker_ready &&
-    !runtimeProbeFailed;
-  const selectedLocalModelAvailable =
-    !isLocalTranscription || !health?.runtime || health.runtime.local_models.models.includes(transcriptionModel);
-  const localTranscriptionReady = !isLocalTranscription || !runtimeLocalStatus || runtimeLocalStatus.ready_for_cpu;
-  const canOfferCudaInstall =
-    isLocalTranscription &&
-    Boolean(runtimeLocalStatus?.cuda_device_count) &&
-    !runtimeLocalStatus?.cuda_available &&
-    !!runtimeLocalStatus?.worker_ready;
   const images = useMemo(() => job?.artifacts.filter((artifact) => artifact.kind === "image") ?? [], [job]);
   const hasNoteArtifact = Boolean(job?.artifacts.some((artifact) => artifact.path === "note.md"));
   const previewVersion = useMemo(
@@ -276,980 +292,16 @@ export function App() {
     () => jobHistory.find((item) => item.job_id === job?.job_id) ?? null,
     [job?.job_id, jobHistory]
   );
-  const noteTitleAction = hasNoteArtifact ? (
-    <div className="note-title-actions note-title-toolbar">
-      {noteVersions && noteVersions.versions.length > 0 && (
-        <label className="version-inline compact">
-          <span>版本</span>
-          <select disabled={isBusy || isFrameReviewOpen} value={previewVersionId} onChange={handleNoteVersionChange}>
-            {noteVersions.versions.map((version) => (
-              <option key={version.id} value={version.id}>
-                {formatVersionOption(version)}
-              </option>
-            ))}
-          </select>
-          {previewVersion?.active && <span className="mini-badge ok">当前</span>}
-        </label>
-      )}
-      <button className="small-button" disabled={!job || isBusy} onClick={handleRegenerateNote} type="button">
-        {isRegenerating ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-        重新生成
-      </button>
-      {qualityReport && <QualityStatusControl report={qualityReport} />}
-      <button className="small-button manual-review-button" disabled={isBusy} onClick={handleManualReview} type="button">
-        <FileSearch size={15} />
-        手动审核
-      </button>
-    </div>
-  ) : null;
-
   function resetTaskContext() {
     setJob(null);
-    setNotePreview("");
-    setSubtitlePreview("");
-    setNoteVersions(null);
-    setPreviewVersionId("");
-    setVersionError("");
+    resetJobResources();
+    resetNoteWorkflow();
     setDownloadMessage("");
-    setCorrectionPreview(null);
-    setCorrectionError("");
-    setIsCorrectingTranscript(false);
-    setIsApplyingCorrection(false);
-    setIsRegenerating(false);
-    setQualityReport(null);
-    setQualityReportError("");
-    setFrameCandidateIndex(null);
+    resetSubtitleWorkflow();
     setFrameCandidateError("");
-    setReviewDraft(null);
-    setReviewDraftSavingId("");
-    setIsFrameReviewOpen(false);
-    setIsFinalizingJob(false);
-    setFinalizeError("");
+    resetReviewWorkflow();
   }
-
-  function clearVideoInput() {
-    if (videoInputRef.current) {
-      videoInputRef.current.value = "";
-    }
-  }
-
-  function clearSubtitleInput() {
-    if (subtitleInputRef.current) {
-      subtitleInputRef.current.value = "";
-    }
-  }
-
-  function hasTaskContext() {
-    return Boolean(job || notePreview || subtitlePreview || noteVersions);
-  }
-
-  useEffect(() => {
-    void refreshHealth();
-    void refreshJobHistory();
-    const retryTimers = [2000, 5000].map((delay) => window.setTimeout(() => void refreshHealth(), delay));
-    return () => retryTimers.forEach((timer) => window.clearTimeout(timer));
-  }, []);
-
-  useEffect(() => {
-    if (!modelDownload || (modelDownload.status !== "pending" && modelDownload.status !== "running")) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void pollTaskState(
-        `/api/models/faster-whisper/download/${encodeURIComponent(modelDownload.model_name)}`,
-        setModelDownload,
-        setModelDownloadError,
-        "模型下载状态读取失败。"
-      );
-    }, 1400);
-    return () => window.clearInterval(timer);
-  }, [modelDownload]);
-
-  useEffect(() => {
-    if (!localDependencyInstall || (localDependencyInstall.status !== "pending" && localDependencyInstall.status !== "running")) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void pollTaskState(
-        "/api/runtime/local-dependencies/install",
-        setLocalDependencyInstall,
-        setLocalDependencyInstallError,
-        "本地转写依赖安装状态读取失败。"
-      );
-    }, 1600);
-    return () => window.clearInterval(timer);
-  }, [localDependencyInstall]);
-
-  useEffect(() => {
-    if (!cudaInstall || (cudaInstall.status !== "pending" && cudaInstall.status !== "running")) {
-      return;
-    }
-    const timer = window.setInterval(() => {
-      void pollTaskState(
-        "/api/runtime/cuda-dependencies/install",
-        setCudaInstall,
-        setCudaInstallError,
-        "CUDA 依赖安装状态读取失败。"
-      );
-    }, 1800);
-    return () => window.clearInterval(timer);
-  }, [cudaInstall]);
-
-  useEffect(() => {
-    fetch("/api/settings")
-      .then((response) => (response.ok ? response.json() : null))
-      .then((settings: UserSettings | null) => {
-        if (settings) {
-          applySettings(settings);
-        }
-      })
-      .catch(() => undefined);
-  }, []);
-
-  useEffect(() => {
-    if (!job || (job.status !== "pending" && job.status !== "running" && job.status !== "cancelling")) {
-      return;
-    }
-    let cancelled = false;
-    const timer = window.setInterval(async () => {
-      const nextJob = await fetchJob(job.job_id);
-      if (!cancelled) {
-        setJob((current) => (current?.job_id === job.job_id ? nextJob : current));
-      }
-    }, 1600);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [job]);
-
-  useEffect(() => {
-    if (!job) {
-      setNoteVersions(null);
-      setPreviewVersionId("");
-      return;
-    }
-    if (job.status === "succeeded" || job.status === "failed" || job.status === "cancelled") {
-      setIsRegenerating(false);
-      setIsFinalizingJob(false);
-    }
-    if (
-      job.status === "awaiting_note_review" ||
-      job.status === "succeeded" ||
-      job.status === "failed" ||
-      job.status === "cancelled"
-    ) {
-      setRegeneratingChunkId("");
-    }
-    if (!job.artifacts.some((artifact) => artifact.path === "note.md")) {
-      setNoteVersions(null);
-      setPreviewVersionId("");
-      return;
-    }
-
-    let cancelled = false;
-    fetchNoteVersions(job.job_id)
-      .then((index) => {
-        if (cancelled) {
-          return;
-        }
-        setNoteVersions(index);
-        setPreviewVersionId((current) => {
-          if (current && index.versions.some((version) => version.id === current)) {
-            return current;
-          }
-          return index.active_version_id ?? index.versions[0]?.id ?? "";
-        });
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setNoteVersions(null);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [job]);
-
-  useEffect(() => {
-    if (job?.status === "succeeded" || job?.status === "failed" || job?.status === "cancelled") {
-      void refreshJobHistory();
-    }
-  }, [job?.job_id, job?.status]);
-
-  useEffect(() => {
-    if (!job || !job.artifacts.some((artifact) => artifact.path === "subtitles.md")) {
-      setSubtitlePreview("");
-      return;
-    }
-    let cancelled = false;
-    fetch(`/api/jobs/${job.job_id}/preview/subtitles`)
-      .then((response) => (response.ok ? response.text() : ""))
-      .then((text) => {
-        if (!cancelled) {
-          setSubtitlePreview(text);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [job]);
-
-  useEffect(() => {
-    if (!job || !job.artifacts.some((artifact) => artifact.path === "note.md")) {
-      setNotePreview("");
-      return;
-    }
-    let cancelled = false;
-    const url = previewVersionId
-      ? `/api/jobs/${job.job_id}/preview/note/${encodeURIComponent(previewVersionId)}`
-      : `/api/jobs/${job.job_id}/preview/note`;
-    fetch(url)
-      .then((response) => (response.ok ? response.text() : ""))
-      .then((text) => {
-        if (!cancelled) {
-          setNotePreview(text);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [job, previewVersionId]);
-
-  useEffect(() => {
-    const currentJobId = job?.job_id;
-    const hasNote = Boolean(job?.artifacts.some((artifact) => artifact.path === "note.md"));
-    if (!currentJobId || !hasNote) {
-      setQualityReport(null);
-      setQualityReportError("");
-      return;
-    }
-
-    let cancelled = false;
-    fetchQualityReport(currentJobId)
-      .then((report) => {
-        if (!cancelled) {
-          setQualityReport(report);
-          setQualityReportError("");
-        }
-      })
-      .catch((error: Error) => {
-        if (!cancelled) {
-          setQualityReport(null);
-          setQualityReportError(error.message);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [job]);
-
-  useEffect(() => {
-    const currentJobId = job?.job_id;
-    const hasNote = Boolean(job?.artifacts.some((artifact) => artifact.path === "note.md"));
-    if (!currentJobId || !hasNote) {
-      setFrameCandidateIndex(null);
-      setFrameCandidateError("");
-      return;
-    }
-
-    let cancelled = false;
-    fetchFrameCandidates(currentJobId)
-      .then((index) => {
-        if (!cancelled) {
-          setFrameCandidateIndex(index);
-          setFrameCandidateError("");
-        }
-      })
-      .catch((error: Error) => {
-        if (!cancelled) {
-          setFrameCandidateIndex(null);
-          setFrameCandidateError(error.message);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [job]);
-
-
-  useEffect(() => {
-    if (!job || (job.status !== "succeeded" && job.status !== "awaiting_note_review")) {
-      setNoteChunks(null);
-      return;
-    }
-    let cancelled = false;
-    fetch(`/api/jobs/${job.job_id}/note-chunks`)
-      .then((response) => (response.ok ? response.json() : null))
-      .then((payload: NoteChunkIndex | null) => {
-        if (!cancelled) {
-          setNoteChunks(payload);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setNoteChunks(null);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [job?.job_id, job?.status]);
-
-  async function handleManualReview() {
-    if (!job?.job_id) {
-      return;
-    }
-    try {
-      const nextFrameCandidateIndex = await fetchFrameCandidates(job.job_id);
-      const nextReviewDraft = await fetchReviewDraft(job.job_id, previewVersionId || undefined);
-      setFrameCandidateIndex(nextFrameCandidateIndex);
-      setReviewDraft(nextReviewDraft);
-      setFrameCandidateError("");
-      setIsFrameReviewOpen(true);
-      return;
-    } catch (error) {
-      if (frameCandidateIndex && reviewDraft) {
-        setFrameCandidateError(error instanceof Error ? error.message : "人工审核数据读取失败。");
-        setIsFrameReviewOpen(true);
-        return;
-      }
-      setFrameCandidateError(error instanceof Error ? error.message : "当前任务暂时没有可审核的人工稿数据。");
-    }
-  }
-
-  async function handleSaveReviewParagraph(
-    paragraphId: string,
-    body: string,
-    selectedFrameIds: string[],
-    status: ReviewDraftParagraphStatus
-  ) {
-    if (!job?.job_id) {
-      return;
-    }
-    setReviewDraftSavingId(paragraphId);
-    try {
-      setReviewDraft(
-        await updateReviewDraftParagraph(
-          job.job_id,
-          paragraphId,
-          {
-            body,
-            selected_frame_ids: selectedFrameIds,
-            status
-          },
-          previewVersionId || undefined
-        )
-      );
-      setFrameCandidateError("");
-    } catch (error) {
-      setFrameCandidateError(error instanceof Error ? error.message : "人工审核稿保存失败。");
-    } finally {
-      setReviewDraftSavingId("");
-    }
-  }
-
-  async function handleFinalizeJob() {
-    if (!job?.job_id) {
-      return;
-    }
-    setIsFinalizingJob(true);
-    setFinalizeError("");
-    try {
-      const nextJob = await finalizeJob(job.job_id, previewVersionId || undefined);
-      setJob(nextJob);
-      await refreshJobHistory();
-    } catch (error) {
-      setFinalizeError(error instanceof Error ? error.message : "确认定稿失败。");
-    } finally {
-      setIsFinalizingJob(false);
-    }
-  }
-
-  function handleVideoChange(event: ChangeEvent<HTMLInputElement>) {
-    const selectedVideo = event.target.files?.[0] ?? null;
-    if (!selectedVideo) {
-      return;
-    }
-
-    if (
-      hasTaskContext() &&
-      !window.confirm("当前页面已有任务内容。选择新视频会清空当前页面并准备创建新任务，历史任务仍可在左侧重新载入。是否继续？")
-    ) {
-      event.currentTarget.value = "";
-      return;
-    }
-
-    setSubmitError("");
-    resetTaskContext();
-    setVideo(selectedVideo);
-    event.currentTarget.value = "";
-  }
-
-  function handleSubtitleChange(event: ChangeEvent<HTMLInputElement>) {
-    const selectedSubtitle = event.target.files?.[0] ?? null;
-    if (!selectedSubtitle) {
-      return;
-    }
-
-    if (!selectedSubtitle.name.toLowerCase().endsWith(".srt")) {
-      setSubmitError("当前仅支持上传 .srt 字幕文件。");
-      event.currentTarget.value = "";
-      return;
-    }
-
-    if (
-      hasTaskContext() &&
-      !window.confirm("当前页面已有任务内容。选择新字幕会清空当前页面并准备创建新任务，历史任务仍可在左侧重新载入。是否继续？")
-    ) {
-      event.currentTarget.value = "";
-      return;
-    }
-
-    setSubmitError("");
-    resetTaskContext();
-    setSubtitle(selectedSubtitle);
-    event.currentTarget.value = "";
-  }
-
-  function handleClearSubtitle() {
-    setSubtitle(null);
-    clearSubtitleInput();
-  }
-
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault();
-    setSubmitError("");
-
-    if (!video) {
-      setSubmitError("请先选择视频文件。");
-      return;
-    }
-    if (!noteApiKey.trim()) {
-      setSubmitError("请填写笔记生成 API Key。");
-      return;
-    }
-    if (!noteModel.trim()) {
-      setSubmitError("笔记生成模型不能为空。");
-      return;
-    }
-    if (!hasUploadedSubtitle) {
-      if (!isLocalTranscription && !transcriptionApiKey.trim()) {
-        setSubmitError("请填写字幕转写 API Key。");
-        return;
-      }
-      if (!transcriptionModel.trim()) {
-        setSubmitError("字幕转写模型不能为空。");
-        return;
-      }
-      if (!selectedLocalModelAvailable) {
-        const shouldDownload = window.confirm(
-          `当前模型目录未发现 ${transcriptionModel}。是否现在下载到 ${health?.runtime?.local_models.root ?? "本地模型目录"}？`
-        );
-        if (shouldDownload) {
-          void handleDownloadLocalModel();
-        } else {
-          setSubmitError(`请先下载 ${transcriptionModel}，或切换远端字幕转写。`);
-        }
-        return;
-      }
-      if (!localTranscriptionReady) {
-        setSubmitError(
-          runtimeLocalStatus?.worker_probe_error ||
-            runtimeLocalStatus?.worker_error ||
-            runtimeLocalStatus?.install_hint ||
-            "本地转写环境未就绪，请检查运行环境。"
-        );
-        return;
-      }
-    }
-
-    resetTaskContext();
-
-    const formData = new FormData();
-    formData.append("video", video);
-    if (subtitle) {
-      formData.append("subtitle", subtitle);
-    }
-    formData.append("transcription_mode", transcriptionMode);
-    formData.append("transcription_language", transcriptionLanguage);
-    formData.append("transcription_api_key", isLocalTranscription ? "" : transcriptionApiKey);
-    formData.append("transcription_base_url", isLocalTranscription ? "" : transcriptionBaseUrl);
-    formData.append("transcription_model", transcriptionModel);
-    formData.append("local_whisper_device", isLocalTranscription ? localWhisperDevice : "");
-    formData.append("local_whisper_compute_type", isLocalTranscription ? localWhisperComputeType : "");
-    formData.append("performance_mode", performanceMode);
-    formData.append("note_api_key", noteApiKey);
-    formData.append("note_base_url", noteBaseUrl);
-    formData.append("note_model", noteModel);
-    formData.append("note_language", noteLanguage);
-    formData.append("note_style", noteStyle);
-    formData.append("extras", extras);
-    formData.append("frame_limit", String(frameLimit));
-
-    setIsSubmitting(true);
-    try {
-      const response = await fetch("/api/jobs", {
-        method: "POST",
-        body: formData
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "任务创建失败。");
-      }
-      setJob(await fetchJob(payload.job_id));
-      await refreshJobHistory();
-    } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "任务创建失败。");
-    } finally {
-      setIsSubmitting(false);
-    }
-  }
-
-  async function refreshHealth() {
-    try {
-      const response = await fetch("/api/health");
-      setHealth(response.ok ? await response.json() : null);
-    } catch {
-      setHealth(null);
-    }
-  }
-
-  async function refreshJobHistory() {
-    setIsHistoryLoading(true);
-    setHistoryError("");
-    try {
-      const payload = await fetchJobHistory();
-      setJobHistory(payload.jobs);
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : "历史任务读取失败。");
-    } finally {
-      setIsHistoryLoading(false);
-    }
-  }
-
-  async function handleDownloadLocalModel() {
-    setModelDownloadError("");
-    setSubmitError("");
-    await startTask({
-      request: () =>
-        fetch("/api/models/faster-whisper/download", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ model_name: transcriptionModel })
-        }),
-      optimisticState: {
-        model_name: transcriptionModel,
-        status: "pending",
-        progress: 0,
-        error: "",
-        model_root: health?.runtime?.local_models.root ?? ""
-      } as ModelDownloadState,
-      setTask: setModelDownload,
-      setError: setModelDownloadError,
-      errorMessage: "模型下载启动失败。"
-    });
-  }
-
-  async function handleInstallLocalDependencies() {
-    setLocalDependencyInstallError("");
-    setSubmitError("");
-    await startTask({
-      request: () =>
-        fetch("/api/runtime/local-dependencies/install", {
-          method: "POST"
-        }),
-      optimisticState: {
-        status: "pending",
-        progress: 0,
-        error: "",
-        python_path: runtimeLocalStatus?.external_python_path ?? ""
-      } as LocalDependencyInstallState,
-      setTask: setLocalDependencyInstall,
-      setError: setLocalDependencyInstallError,
-      errorMessage: "本地转写依赖安装启动失败。"
-    });
-  }
-
-  async function handleInstallCudaDependencies() {
-    setCudaInstallError("");
-    const shouldInstall = window.confirm(
-      "CUDA 加速依赖包含 NVIDIA cuBLAS/cuDNN，下载体积约 1GB+。是否现在安装到当前外部 Python 环境？"
-    );
-    if (!shouldInstall) {
-      return;
-    }
-    await startTask({
-      request: () =>
-        fetch("/api/runtime/cuda-dependencies/install", {
-          method: "POST"
-        }),
-      optimisticState: {
-        status: "pending",
-        progress: 0,
-        error: "",
-        python_path: health?.runtime?.faster_whisper.external_python_path ?? ""
-      } as CudaDependencyInstallState,
-      setTask: setCudaInstall,
-      setError: setCudaInstallError,
-      errorMessage: "CUDA 依赖安装启动失败。"
-    });
-  }
-
-  function collectSettings(): UserSettings {
-    return {
-      transcription_mode: transcriptionMode,
-      transcription_language: transcriptionLanguage,
-      transcription_api_key: transcriptionApiKey,
-      transcription_base_url: transcriptionBaseUrl,
-      transcription_model: transcriptionModel,
-      local_whisper_device: localWhisperDevice,
-      local_whisper_compute_type: localWhisperComputeType,
-      performance_mode: performanceMode,
-      external_python_path: externalPythonPath,
-      faster_whisper_model_dir: fasterWhisperModelDir,
-      python_package_install_mode: pythonPackageInstallMode,
-      note_api_key: noteApiKey,
-      note_base_url: noteBaseUrl,
-      note_model: noteModel,
-      note_language: noteLanguage,
-      note_style: noteStyle,
-      extras,
-      frame_limit: frameLimit
-    };
-  }
-
-  function applySettings(settings: UserSettings) {
-    setTranscriptionMode(settings.transcription_mode);
-    setTranscriptionLanguage(settings.transcription_language ?? "auto");
-    setTranscriptionApiKey(settings.transcription_api_key);
-    setTranscriptionBaseUrl(settings.transcription_base_url);
-    setTranscriptionModel(settings.transcription_model);
-    setLocalWhisperDevice(settings.local_whisper_device ?? "auto");
-    setLocalWhisperComputeType(settings.local_whisper_compute_type ?? "default");
-    setPerformanceMode(settings.performance_mode ?? "balanced");
-    setExternalPythonPath(settings.external_python_path ?? "");
-    setFasterWhisperModelDir(settings.faster_whisper_model_dir ?? "");
-    setPythonPackageInstallMode(settings.python_package_install_mode ?? "default");
-    setNoteApiKey(settings.note_api_key);
-    setNoteBaseUrl(settings.note_base_url);
-    setNoteModel(settings.note_model);
-    setNoteLanguage(settings.note_language);
-    setNoteStyle(settings.note_style);
-    setExtras(settings.extras);
-    setFrameLimit(settings.frame_limit);
-  }
-
-  async function handleSaveSettings() {
-    setIsSavingSettings(true);
-    setSettingsMessage("");
-    try {
-      const response = await fetch("/api/settings", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(collectSettings())
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "设置保存失败。");
-      }
-      applySettings(payload);
-      await refreshHealth();
-      setSettingsMessage("设置已保存到本地配置文件。");
-    } catch (error) {
-      setSettingsMessage(error instanceof Error ? error.message : "设置保存失败。");
-    } finally {
-      setIsSavingSettings(false);
-    }
-  }
-
-  async function handleClearSettings() {
-    setIsSavingSettings(true);
-    setSettingsMessage("");
-    try {
-      const response = await fetch("/api/settings", { method: "DELETE" });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "设置清除失败。");
-      }
-      applySettings(payload);
-      await refreshHealth();
-      setSettingsMessage("本地设置已清除。");
-    } catch (error) {
-      setSettingsMessage(error instanceof Error ? error.message : "设置清除失败。");
-    } finally {
-      setIsSavingSettings(false);
-    }
-  }
-
-  async function handleRegenerateNote() {
-    if (!job) {
-      return;
-    }
-    setVersionError("");
-    if (!noteApiKey.trim()) {
-      setVersionError("请填写笔记 API Key，再重新生成笔记。");
-      return;
-    }
-    if (!noteBaseUrl.trim() || !noteModel.trim()) {
-      setVersionError("笔记 Base URL 和模型不能为空。");
-      return;
-    }
-
-    const formData = new FormData();
-    formData.append("note_api_key", noteApiKey);
-    formData.append("note_base_url", noteBaseUrl);
-    formData.append("note_model", noteModel);
-    formData.append("note_language", noteLanguage);
-    formData.append("note_style", noteStyle);
-    formData.append("extras", extras);
-    formData.append("frame_limit", String(frameLimit));
-
-    setIsRegenerating(true);
-    try {
-      const response = await fetch(`/api/jobs/${job.job_id}/note-versions`, {
-        method: "POST",
-        body: formData
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "重新生成笔记失败。");
-      }
-      setJob({
-        ...job,
-        status: "pending",
-        stage: "queued",
-        step: "等待重新生成笔记",
-        progress: Math.max(job.progress, 62),
-        error: null
-      });
-    } catch (error) {
-      setVersionError(error instanceof Error ? error.message : "重新生成笔记失败。");
-      setIsRegenerating(false);
-    }
-  }
-
-  async function handleCreateTranscriptCorrection() {
-    if (!job) {
-      return;
-    }
-    const requestJobId = job.job_id;
-    setCorrectionError("");
-    if (!noteApiKey.trim()) {
-      setCorrectionError("请填写笔记 API Key，再修正字幕。");
-      return;
-    }
-    if (!noteBaseUrl.trim() || !noteModel.trim()) {
-      setCorrectionError("笔记 Base URL 和模型不能为空。");
-      return;
-    }
-    setIsCorrectingTranscript(true);
-    try {
-      const response = await fetch(`/api/jobs/${requestJobId}/transcript-corrections`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          note_api_key: noteApiKey,
-          note_base_url: noteBaseUrl,
-          note_model: noteModel,
-          instructions: extras
-        })
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "字幕修正失败。");
-      }
-      if (payload.job_id !== requestJobId) {
-        throw new Error("字幕修正结果与当前任务不匹配。");
-      }
-      setCorrectionPreview(payload);
-    } catch (error) {
-      setCorrectionError(error instanceof Error ? error.message : "字幕修正失败。");
-    } finally {
-      setIsCorrectingTranscript(false);
-    }
-  }
-
-  async function handleApplyTranscriptCorrection() {
-    if (!job || !correctionPreview) {
-      return;
-    }
-    const requestJobId = correctionPreview.job_id;
-    if (job.job_id !== requestJobId) {
-      setCorrectionError("当前任务与字幕修正结果不匹配，请重新发起修正。");
-      return;
-    }
-    setCorrectionError("");
-    setIsApplyingCorrection(true);
-    try {
-      const response = await fetch(`/api/jobs/${requestJobId}/transcript-corrections/apply`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          note_language: noteLanguage,
-          note_style: noteStyle,
-          extras,
-          note_api_key: noteApiKey,
-          note_base_url: noteBaseUrl,
-          note_model: noteModel,
-          frame_limit: frameLimit
-        })
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "采用字幕修正失败。");
-      }
-      setCorrectionPreview(null);
-      const nextJob = await fetchJob(requestJobId);
-      setJob({
-        ...nextJob,
-        status: "pending",
-        stage: "queued",
-        step: "等待重新生成笔记",
-        progress: Math.max(nextJob.progress, 62),
-        error: null
-      });
-      await refreshJobHistory();
-    } catch (error) {
-      setCorrectionError(error instanceof Error ? error.message : "采用字幕修正失败。");
-    } finally {
-      setIsApplyingCorrection(false);
-    }
-  }
-
-  async function handleRegenerateNoteChunk(chunkId: string) {
-    if (!job || !noteChunks) {
-      return;
-    }
-    const requestJobId = job.job_id;
-    setRegeneratingChunkId(chunkId);
-    try {
-      const formData = new FormData();
-      formData.append("note_api_key", noteApiKey);
-      formData.append("note_base_url", noteBaseUrl);
-      formData.append("note_model", noteModel);
-      formData.append("note_language", noteLanguage);
-      formData.append("note_style", noteStyle);
-      formData.append("extras", extras);
-      formData.append("frame_limit", String(frameLimit));
-      const response = await fetch(`/api/jobs/${requestJobId}/note-chunks/${chunkId}/regenerate`, {
-        method: "POST",
-        body: formData
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "重新生成笔记块失败。");
-      }
-      setJob({
-        ...job,
-        status: "pending",
-        stage: "queued",
-        step: "等待重新生成笔记块",
-        progress: 70,
-        error: null
-      });
-    } catch {
-      setRegeneratingChunkId("");
-    }
-  }
-
-  async function handleConfirmSubtitles() {
-    if (!job) {
-      return;
-    }
-    const requestJobId = job.job_id;
-    setSubtitleGateError("");
-    if (!noteApiKey.trim()) {
-      setSubtitleGateError("请填写笔记生成 API Key，再继续生成笔记。");
-      return;
-    }
-    if (!noteModel.trim()) {
-      setSubtitleGateError("笔记生成模型不能为空。");
-      return;
-    }
-    setIsConfirmingSubtitles(true);
-    try {
-      const formData = new FormData();
-      formData.append("note_api_key", noteApiKey);
-      formData.append("note_base_url", noteBaseUrl);
-      formData.append("note_model", noteModel);
-      formData.append("note_language", noteLanguage);
-      formData.append("note_style", noteStyle);
-      formData.append("extras", extras);
-      formData.append("frame_limit", String(frameLimit));
-      const response = await fetch(`/api/jobs/${requestJobId}/subtitles/confirm`, {
-        method: "POST",
-        body: formData
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "字幕确认失败，请重试。");
-      }
-      setJob({
-        ...job,
-        status: "pending",
-        stage: "queued",
-        step: "等待生成笔记",
-        progress: Math.max(job.progress, 60),
-        error: null
-      });
-    } catch (error) {
-      setSubtitleGateError(error instanceof Error ? error.message : "字幕确认失败，请重试。");
-    } finally {
-      setIsConfirmingSubtitles(false);
-    }
-  }
-
-  async function handleRegenerateSubtitles() {
-    if (!job) {
-      return;
-    }
-    const requestJobId = job.job_id;
-    const isLocal = transcriptionMode === "local_faster_whisper";
-    setSubtitleGateError("");
-    if (!isLocal && !transcriptionApiKey.trim()) {
-      setSubtitleGateError("请填写字幕转写 API Key，再重新生成字幕。");
-      return;
-    }
-    if (!transcriptionModel.trim()) {
-      setSubtitleGateError("字幕转写模型不能为空。");
-      return;
-    }
-    setIsRegeneratingSubtitles(true);
-    try {
-      const formData = new FormData();
-      formData.append("transcription_mode", transcriptionMode);
-      formData.append("transcription_language", transcriptionLanguage);
-      formData.append("transcription_api_key", isLocal ? "" : transcriptionApiKey);
-      formData.append("transcription_base_url", isLocal ? "" : transcriptionBaseUrl);
-      formData.append("transcription_model", transcriptionModel);
-      formData.append("local_whisper_device", isLocal ? localWhisperDevice : "");
-      formData.append("local_whisper_compute_type", isLocal ? localWhisperComputeType : "");
-      formData.append("performance_mode", performanceMode);
-      const response = await fetch(`/api/jobs/${requestJobId}/subtitles/regenerate`, {
-        method: "POST",
-        body: formData
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "重新生成字幕失败，请重试。");
-      }
-      setJob({
-        ...job,
-        status: "pending",
-        stage: "queued",
-        step: "等待重新生成字幕",
-        progress: 20,
-        error: null
-      });
-    } catch (error) {
-      setSubtitleGateError(error instanceof Error ? error.message : "重新生成字幕失败，请重试。");
-    } finally {
-      setIsRegeneratingSubtitles(false);
-    }
-  }
+  resetTaskContextRef.current = resetTaskContext;
 
   useEffect(() => {
     if (job?.stage === "awaiting_subtitle_review" || job?.status === "awaiting_subtitle_confirmation") {
@@ -1271,7 +323,7 @@ export function App() {
     function handleShortcut(event: KeyboardEvent) {
       if (event.key === "Escape") {
         setIsSettingsOpen(false);
-        setIsFrameReviewOpen(false);
+        closeFrameReview();
         return;
       }
       if (!(event.ctrlKey || event.metaKey)) {
@@ -1295,114 +347,6 @@ export function App() {
     return () => window.removeEventListener("keydown", handleShortcut);
   }, [health, isBusy, job]);
 
-  async function handleLoadHistoryJob(jobId: string) {
-    setHistoryError("");
-    setSubmitError("");
-    resetTaskContext();
-    setVideo(null);
-    setSubtitle(null);
-    clearVideoInput();
-    clearSubtitleInput();
-    try {
-      setJob(await fetchJob(jobId));
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : "历史任务载入失败。");
-    }
-  }
-
-  async function handleCancelJob() {
-    if (!job || (job.status !== "pending" && job.status !== "running")) {
-      return;
-    }
-    setSubmitError("");
-    try {
-      const response = await fetch(`/api/jobs/${job.job_id}/cancel`, { method: "POST" });
-      if (!response.ok) {
-        throw new Error(await readResponseError(response, "取消任务失败。"));
-      }
-      setJob(await response.json());
-      await refreshJobHistory();
-    } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "取消任务失败。");
-    }
-  }
-
-  async function handleResumeTranscription() {
-    if (!job || !job.work_progress?.resumable || (job.status !== "cancelled" && job.status !== "failed")) {
-      return;
-    }
-    setSubmitError("");
-    try {
-      const response = await fetch(`/api/jobs/${job.job_id}/transcription/resume`, { method: "POST" });
-      if (!response.ok) {
-        throw new Error(await readResponseError(response, "继续转写失败。"));
-      }
-      setJob(await fetchJob(job.job_id));
-      await refreshJobHistory();
-    } catch (error) {
-      setSubmitError(error instanceof Error ? error.message : "继续转写失败。");
-    }
-  }
-
-  async function handleDeleteHistoryJob(jobId: string) {
-    if (!window.confirm("删除后会移除该任务及其所有笔记版本，是否继续？")) {
-      return;
-    }
-    setIsDeletingJobId(jobId);
-    setHistoryError("");
-    try {
-      const response = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`, { method: "DELETE" });
-      if (!response.ok) {
-        throw new Error(await readResponseError(response, "历史任务删除失败。"));
-      }
-      if (job?.job_id === jobId) {
-        resetTaskContext();
-        setVideo(null);
-        setSubtitle(null);
-        clearVideoInput();
-        clearSubtitleInput();
-      }
-      await refreshJobHistory();
-    } catch (error) {
-      setHistoryError(error instanceof Error ? error.message : "历史任务删除失败。");
-    } finally {
-      setIsDeletingJobId("");
-    }
-  }
-
-  async function handleNoteVersionChange(event: ChangeEvent<HTMLSelectElement>) {
-    if (!job || !noteVersions) {
-      return;
-    }
-    const nextVersionId = event.target.value;
-    const previousVersionId = previewVersionId;
-    setPreviewVersionId(nextVersionId);
-    setVersionError("");
-    try {
-      const response = await fetch(`/api/jobs/${job.job_id}/note-versions`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          active_version_id: nextVersionId,
-          selected_version_ids: noteVersions.selected_version_ids.length
-            ? noteVersions.selected_version_ids
-            : noteVersions.versions.map((version) => version.id)
-        })
-      });
-      const payload = await response.json();
-      if (!response.ok) {
-        throw new Error(payload.detail || "笔记版本切换失败。");
-      }
-      setNoteVersions(payload);
-      setPreviewVersionId(payload.active_version_id ?? nextVersionId);
-      setJob(await fetchJob(job.job_id));
-      await refreshJobHistory();
-    } catch (error) {
-      setPreviewVersionId(previousVersionId);
-      setVersionError(error instanceof Error ? error.message : "笔记版本切换失败。");
-    }
-  }
-
   return (
     <main className="app-shell">
       <header className="topbar">
@@ -1417,7 +361,12 @@ export function App() {
           </div>
         </div>
         <div className="topbar-actions">
-          <HealthBadge health={health} />
+          <HealthBadge
+            hasUploadedSubtitle={hasUploadedSubtitle}
+            health={health}
+            localWhisperDevice={localWhisperDevice}
+            transcriptionMode={transcriptionMode}
+          />
           <button className="settings-button" onClick={() => setIsSettingsOpen(true)} title="打开设置" type="button">
             <Settings size={17} />
             <span>设置</span>
@@ -1433,120 +382,29 @@ export function App() {
           </div>
         )}
 
-        <section className="panel config-panel task-config-panel" aria-label="任务配置">
-          <PanelTitle icon={<Upload size={18} />} title="视频与笔记要求" />
-
-          <div className="config-main">
-            <div className="video-config-block">
-              <div className="upload-field">
-                <label className="drop-zone">
-                  <input
-                    accept=".mp4,.mov,.mkv,.webm,.avi,video/*"
-                    ref={videoInputRef}
-                    type="file"
-                    onChange={handleVideoChange}
-                  />
-                  <Upload size={18} />
-                  <span>{video ? `视频文件：${video.name}` : "视频文件：选择文件"}</span>
-                </label>
-              </div>
-              <div className="upload-field subtitle-upload-field">
-                <div className="subtitle-upload-row">
-                  <label className="drop-zone subtitle-drop-zone">
-                    <input
-                      accept=".srt"
-                      ref={subtitleInputRef}
-                      type="file"
-                      onChange={handleSubtitleChange}
-                    />
-                    <Captions size={18} />
-                    <span>{subtitle ? `已有字幕（可选）：${subtitle.name}` : "已有字幕（可选）：选择 SRT 字幕"}</span>
-                  </label>
-                  {subtitle && (
-                    <button className="icon-button subtitle-clear-button" onClick={handleClearSubtitle} title="移除字幕" type="button">
-                      <X size={16} />
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="quick-settings">
-              <label className="field">
-                <span className="field-label">笔记语言</span>
-                <select value={noteLanguage} onChange={(event) => setNoteLanguage(event.target.value as NoteLanguage)}>
-                  <option value="zh">中文</option>
-                  <option value="en">英文</option>
-                  <option value="follow">跟随原文</option>
-                </select>
-              </label>
-
-              <label className="field">
-                <span className="field-label">笔记风格</span>
-                <select value={noteStyle} onChange={(event) => setNoteStyle(event.target.value as NoteStyle)}>
-                  {noteStyleOptions.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="field">
-                <span className="field-label">关键帧上限</span>
-                <input
-                  max={24}
-                  min={1}
-                  type="number"
-                  value={frameLimit}
-                  onChange={(event) => setFrameLimit(Number(event.target.value))}
-                />
-              </label>
-            </div>
-
-            <label className="field extras-field">
-              <span className="field-label">额外笔记要求</span>
-              <input
-                maxLength={2000}
-                onChange={(event) => setExtras(event.target.value)}
-                placeholder="例如：突出操作步骤、保留关键术语、最后补一组行动项"
-                type="text"
-                value={extras}
-              />
-            </label>
-
-            <div className="config-submit-block">
-              {submitError && (
-                <p className="inline-error">
-                  <AlertTriangle size={15} />
-                  {submitError}
-                </p>
-              )}
-
-              <div className="primary-action-stack">
-              <button className="primary-button" disabled={isBusy || !health} title={!health ? "服务未连接，暂时无法创建任务" : undefined} type="submit">
-                {isBusy ? <Loader2 className="spin" size={18} /> : <Play size={18} />}
-                {!health ? "服务未连接" : "开始生成"}
-              </button>
-              {(job?.status === "pending" || job?.status === "running") && (
-                <button className="small-button danger cancel-job-button" onClick={() => void handleCancelJob()} type="button">
-                  <X size={15} />取消任务
-                </button>
-              )}
-              {job?.status === "cancelling" && (
-                <button className="small-button cancel-job-button" disabled type="button">
-                  <Loader2 className="spin" size={15} />正在取消
-                </button>
-              )}
-              {(job?.status === "cancelled" || job?.status === "failed") && job.work_progress?.resumable && (
-                <button className="small-button cancel-job-button" onClick={() => void handleResumeTranscription()} type="button">
-                  <RefreshCw size={15} />继续转写
-                </button>
-              )}
-            </div>
-            </div>
-          </div>
-        </section>
+        <TaskConfigPanel
+          extras={extras}
+          frameLimit={frameLimit}
+          isBusy={isBusy}
+          job={job}
+          noteLanguage={noteLanguage}
+          noteStyle={noteStyle}
+          onCancelJob={() => void handleCancelJob()}
+          onClearSubtitle={handleClearSubtitle}
+          onExtrasChange={(value) => updateSetting("extras", value)}
+          onFrameLimitChange={(value) => updateSetting("frame_limit", value)}
+          onNoteLanguageChange={(value) => updateSetting("note_language", value)}
+          onNoteStyleChange={(value) => updateSetting("note_style", value)}
+          onResumeTranscription={() => void handleResumeTranscription()}
+          onSubtitleChange={handleSubtitleChange}
+          onVideoChange={handleVideoChange}
+          serviceConnected={Boolean(health)}
+          subtitle={subtitle}
+          subtitleInputRef={subtitleInputRef}
+          submitError={submitError || lifecycleError}
+          video={video}
+          videoInputRef={videoInputRef}
+        />
 
         <div className="workspace-bottom">
           <JobHistoryPanel
@@ -1562,614 +420,113 @@ export function App() {
             onRefresh={() => void refreshJobHistory()}
           />
 
-          <section className={`panel result-panel workbench-${activeWorkbench} ${job ? "has-result" : "is-empty"}`} aria-label="结果预览">
-            <div className="panel-title result-panel-title">
-              <div className="panel-title-main">
-                <FileText size={18} />
-                <h2>结果预览</h2>
-              </div>
-              {previewVersion && <span className="result-version-summary">{formatVersionDetails(previewVersion)}</span>}
-            </div>
-            <div className="download-row">
-              <div className="download-actions">
-                <DownloadLink job={job} artifactPath="note.md" label="Markdown" onDownloadError={setDownloadMessage} />
-                <DownloadLink job={job} artifactPath="subtitles.srt" label="SRT" onDownloadError={setDownloadMessage} />
-                <DownloadLink job={job} artifactPath="audio.mp3" label="MP3" onDownloadError={setDownloadMessage} />
-                <DownloadLink job={job} artifactPath="debug.log" label="调试日志" onDownloadError={setDownloadMessage} />
-                {job?.artifacts.some((artifact) => artifact.path === "download.zip") && job && (
-                  <ArtifactDownloadButton
-                    className="small-button strong"
-                    dataDownloadZip="true"
-                    filename={job.download_filename ?? `video-note-${job.job_id}.zip`}
-                    label="ZIP"
-                    onError={setDownloadMessage}
-                    url={`/api/jobs/${job.job_id}/download.zip`}
-                  />
-                )}
-              </div>
-            </div>
-            {job && <WorkbenchNavigation active={activeWorkbench} job={job} summary={currentJobSummary} onChange={setActiveWorkbench} />}
-            {!job && (
-              <div className="result-empty-state">
-                <div className="result-empty-icon"><FileText size={26} /></div>
-                <strong>选择视频，开始生成笔记</strong>
-                <span>笔记、字幕、音频和关键帧将在这里集中审核与下载。</span>
-              </div>
-            )}
-            <div className="result-body-scroll">
-              {noteChunks && noteChunks.chunks.length > 1 && (
-                <details className="chunk-manager" aria-label="笔记分段管理">
-                  <summary>
-                    <Captions size={15} />
-                    <span>笔记分段（{noteChunks.chunks.length} 块）</span>
-                  </summary>
-                  <div className="chunk-list">
-                    {noteChunks.chunks.map((chunk: NoteChunkMeta) => (
-                      <div className={`chunk-item ${chunk.status}`} key={chunk.id}>
-                        <div className="chunk-item-info">
-                          <strong>{chunk.label}</strong>
-                          <span className="chunk-time">{formatSecondsRange(chunk.start_time, chunk.end_time)}</span>
-                          {chunk.title && <span className="chunk-title">{chunk.title}</span>}
-                          {chunk.status === "skipped" && <span className="mini-badge warn">已跳过</span>}
-                        </div>
-                        <button
-                          className="small-button"
-                          disabled={isBusy || regeneratingChunkId === chunk.id}
-                          onClick={() => void handleRegenerateNoteChunk(chunk.id)}
-                          type="button"
-                        >
-                          {regeneratingChunkId === chunk.id ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
-                          重生成
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              )}
-            {qualityReportError && (
-              <p className="inline-warning">
-                <AlertTriangle size={15} />
-                {qualityReportError}
-              </p>
-            )}
-            {frameCandidateError && (
-              <p className="inline-warning">
-                <AlertTriangle size={15} />
-                {frameCandidateError}
-              </p>
-            )}
-            {subtitleGateError && (
-              <p className="inline-error">
-                <AlertTriangle size={15} />
-                {subtitleGateError}
-              </p>
-            )}
-            {job?.status === "awaiting_note_review" && (
-              <section className="note-review-gate" aria-label="确认定稿">
-                <div>
-                  <strong>等待人工复核</strong>
-                  <span>确认覆盖、关键要点和配图后，生成最终定稿。ZIP 只是下载打包结果。</span>
-                </div>
-                <div className="review-gate-actions">
-                  {frameCandidateIndex && frameCandidateIndex.candidates.length > 0 && (
-                    <button className="small-button" disabled={!job || isBusy} onClick={() => setIsFrameReviewOpen(true)} type="button">
-                      <Image size={15} />
-                      审核配图 · {selectedFrameCandidateCount} 已选
-                    </button>
-                  )}
-                  <button className="small-button strong" disabled={isBusy} onClick={() => void handleFinalizeJob()} type="button">
-                    {isFinalizingJob ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
-                    确认定稿
-                  </button>
-                </div>
-              </section>
-            )}
-            {finalizeError && (
-              <p className="inline-error">
-                <AlertTriangle size={15} />
-                {finalizeError}
-              </p>
-            )}
-            {downloadMessage && (
-              <p className="inline-warning">
-                <AlertTriangle size={15} />
-                {downloadMessage}
-              </p>
-            )}
-            {versionError && (
-              <p className="inline-error">
-                <AlertTriangle size={15} />
-                {versionError}
-              </p>
-            )}
-            {correctionError && !correctionPreview && (
-              <p className="inline-error">
-                <AlertTriangle size={15} />
-                {correctionError}
-              </p>
-            )}
-              <div className="preview-stack">
-                <PreviewBlock
-                  assetBasePath={previewAssetBasePath}
-                  title={previewVersion ? `视频笔记 Markdown · ${previewVersion.id}` : "视频笔记 Markdown"}
-                  titleAction={noteTitleAction}
-                  text={notePreview}
-                  empty="完成后显示 note.md 预览"
-                  jobId={job?.job_id}
-                />
-                <PreviewBlock
-                  title="字幕 Markdown"
-                  titleAction={
-                    job?.status === "awaiting_subtitle_confirmation" ? (
-                      <div className="subtitle-title-actions">
-                        <button
-                          className="small-button"
-                          disabled={isRegeneratingSubtitles}
-                          onClick={() => void handleRegenerateSubtitles()}
-                          type="button"
-                        >
-                          {isRegeneratingSubtitles ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}
-                          重新生成字幕
-                        </button>
-                        <button
-                          className="small-button strong"
-                          disabled={isConfirmingSubtitles}
-                          onClick={() => void handleConfirmSubtitles()}
-                          type="button"
-                        >
-                          {isConfirmingSubtitles ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
-                          确认字幕并生成笔记
-                        </button>
-                      </div>
-                    ) : job?.artifacts.some((artifact) => artifact.path === "transcript.json") ? (
-                      <button
-                        className="small-button"
-                        disabled={isBusy || isCorrectingTranscript}
-                        onClick={() => void handleCreateTranscriptCorrection()}
-                        type="button"
-                      >
-                        {isCorrectingTranscript ? <Loader2 className="spin" size={15} /> : <Captions size={15} />}
-                        AI 修正字幕
-                      </button>
-                    ) : null
-                  }
-                  text={subtitlePreview}
-                  empty="字幕生成后显示时间戳预览"
-                  jobId={job?.job_id}
-                />
-              </div>
-
-              <CollapsibleBlock className="frame-preview-block" title="关键帧">
-                <div className={previewImages.length === 0 ? "frame-grid empty-frame-grid" : "frame-grid"} aria-label="关键帧">
-                  {previewImages.length === 0 ? (
-                    <div className="empty-frames">
-                      <Image size={20} />
-                      <span>关键帧完成后显示在这里</span>
-                    </div>
-                  ) : (
-                    previewImages.map((artifact) => (
-                      <figure key={artifact.path}>
-                        <img alt={artifact.label} src={artifact.asset_url} />
-                        <figcaption>{artifact.label}</figcaption>
-                      </figure>
-                    ))
-                  )}
-                </div>
-              </CollapsibleBlock>
-            </div>
-          </section>
+          <ResultWorkbench
+            context={{ activeWorkbench, currentJobSummary, isBusy, job, onWorkbenchChange: setActiveWorkbench }}
+            downloads={{ message: downloadMessage, onError: setDownloadMessage }}
+            frames={{
+              candidateError: frameCandidateError,
+              candidateIndex: frameCandidateIndex,
+              isReviewOpen: isFrameReviewOpen,
+              onOpenReview: openFrameReview,
+              previewImages,
+              selectedCandidateCount: selectedFrameCandidateCount
+            }}
+            note={{
+              chunks: noteChunks,
+              finalizeError,
+              hasArtifact: hasNoteArtifact,
+              isFinalizing: isFinalizingJob,
+              isRegenerating,
+              isSwitchingVersion,
+              onFinalize: () => void handleFinalizeJob(),
+              onManualReview: () => void handleManualReview(),
+              onRegenerate: () => void handleRegenerateNote(),
+              onRegenerateChunk: (chunkId) => void handleRegenerateNoteChunk(chunkId),
+              onVersionChange: handleNoteVersionChange,
+              preview: notePreview,
+              previewAssetBasePath,
+              previewVersion,
+              previewVersionId,
+              qualityReport,
+              qualityReportError,
+              regeneratingChunkId,
+              versionError,
+              versions: noteVersions
+            }}
+            subtitle={{
+              correctionError,
+              correctionPreview,
+              gateError: subtitleGateError,
+              isConfirming: isConfirmingSubtitles,
+              isCorrecting: isCorrectingTranscript,
+              isRegenerating: isRegeneratingSubtitles,
+              onConfirm: () => void handleConfirmSubtitles(),
+              onCreateCorrection: () => void handleCreateTranscriptCorrection(),
+              onRegenerate: () => void handleRegenerateSubtitles(),
+              preview: subtitlePreview
+            }}
+          />
         </div>
       </form>
 
-      {isSettingsOpen && (
-        <div className="modal-backdrop" onMouseDown={() => setIsSettingsOpen(false)}>
-          <section
-            aria-label="设置"
-            aria-modal="true"
-            className="settings-modal"
-            onMouseDown={(event) => event.stopPropagation()}
-            role="dialog"
-          >
-            <div className="modal-header">
-              <div>
-                <p className="eyebrow">Local Settings</p>
-                <h2>模型与运行环境设置</h2>
-              </div>
-              <button className="icon-button" onClick={() => setIsSettingsOpen(false)} title="关闭设置" type="button">
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="modal-body">
-              <section className="settings-strip" aria-label="本地设置">
-                <div>
-                  <strong>本地配置文件</strong>
-                  <span title={health?.runtime?.settings.path}>
-                    保存 Base URL、模型和 API Key。Key 会明文写入本机配置文件。
-                  </span>
-                </div>
-                <div className="settings-actions">
-                  <button className="small-button strong" disabled={isSavingSettings} onClick={handleSaveSettings} type="button">
-                    {isSavingSettings ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
-                    保存设置
-                  </button>
-                  <button className="small-button" disabled={isSavingSettings} onClick={handleClearSettings} type="button">
-                    清除设置
-                  </button>
-                </div>
-                {settingsMessage && <p className="settings-message">{settingsMessage}</p>}
-              </section>
-
-              <section className="api-section">
-                <div className="section-title">
-                  <Captions size={16} />
-                  <span>字幕转写配置</span>
-                </div>
-                <p className="field-help">
-                  {isLocalTranscription
-                    ? "本地 Faster Whisper 使用内置依赖或外部 Python worker；缺模型时可在这里下载。"
-                    : "远端转写使用 OpenAI-compatible API，请确认模型支持音频转写或多模态音频。"}
-                </p>
-
-                <label className="field">
-                  <span className="field-label">转写来源</span>
-                  <select
-                    value={transcriptionMode}
-                    onChange={(event) => {
-                      const nextMode = event.target.value as TranscriptionMode;
-                      setTranscriptionMode(nextMode);
-                      if (nextMode === "local_faster_whisper") {
-                        setTranscriptionModel("small");
-                      } else if (transcriptionMode === "local_faster_whisper") {
-                        setTranscriptionModel(nextMode === "chat_audio" ? "gpt-5.5" : "whisper-1");
-                      }
-                    }}
-                  >
-                    <option value="local_faster_whisper">本地 Faster Whisper</option>
-                    <option value="audio_transcriptions">Audio Transcriptions 端点</option>
-                    <option value="chat_audio">Chat 多模态音频兜底</option>
-                  </select>
-                </label>
-
-                <label className="field">
-                  <span className="field-label">字幕语言</span>
-                  <select value={transcriptionLanguage} onChange={(event) => setTranscriptionLanguage(event.target.value as TranscriptionLanguage)}>
-                    <option value="auto">自动检测</option>
-                    <option value="zh">中文</option>
-                    <option value="en">English</option>
-                  </select>
-                </label>
-
-                {isLocalTranscription ? (
-                  <>
-                    <label className="field">
-                      <span className="field-label">性能档位</span>
-                      <select value={performanceMode} onChange={(event) => setPerformanceMode(event.target.value as PerformanceMode)}>
-                        <option value="fast">快速（更低延迟）</option>
-                        <option value="balanced">均衡（默认）</option>
-                        <option value="accurate">准确（更高质量）</option>
-                      </select>
-                      <span className="field-help">自动调整解码强度；长视频会分块并保存断点。</span>
-                    </label>
-                    <label className="field">
-                      <span className="field-label">本地模型</span>
-                      <select value={transcriptionModel} onChange={(event) => setTranscriptionModel(event.target.value)}>
-                        <option value="small">small（默认，速度/准确率均衡）</option>
-                        <option value="medium">medium（更准，更慢）</option>
-                        <option value="large-v3">large-v3（质量优先）</option>
-                        <option value="base">base（更快，准确率较低）</option>
-                      </select>
-                    </label>
-                    <div className="two-col">
-                      <label className="field">
-                        <span className="field-label">运行设备</span>
-                        <select
-                          value={localWhisperDevice}
-                          onChange={(event) => {
-                            const nextDevice = event.target.value as LocalWhisperDevice;
-                            setLocalWhisperDevice(nextDevice);
-                            if (nextDevice === "cuda" && localWhisperComputeType === "int8") {
-                              setLocalWhisperComputeType("float16");
-                            }
-                            if (nextDevice === "cpu" && localWhisperComputeType === "float16") {
-                              setLocalWhisperComputeType("int8");
-                            }
-                          }}
-                        >
-                          <option value="cpu">CPU（兼容优先）</option>
-                          <option value="cuda">CUDA GPU（NVIDIA）</option>
-                          <option value="auto">Auto（由 CTranslate2 判断）</option>
-                        </select>
-                      </label>
-
-                      <label className="field">
-                        <span className="field-label">计算精度</span>
-                        <select
-                          value={localWhisperComputeType}
-                          onChange={(event) => setLocalWhisperComputeType(event.target.value as LocalWhisperComputeType)}
-                        >
-                          <option value="int8">int8（CPU 推荐）</option>
-                          <option value="float16">float16（CUDA 推荐）</option>
-                          <option value="int8_float16">int8_float16（CUDA 省显存）</option>
-                          <option value="float32">float32（兼容调试）</option>
-                          <option value="default">default（库默认）</option>
-                        </select>
-                      </label>
-                    </div>
-                    <div className="advanced-path-box">
-                      <div>
-                        <strong>高级本地路径</strong>
-                        <span>环境变量优先于这里保存的值；留空时使用默认自动检测。</span>
-                      </div>
-                      <label className="field">
-                        <span className="field-label">外部 Python 路径</span>
-                        <input
-                          placeholder="例如 C:\\Users\\me\\AppData\\Local\\Programs\\Python\\Python310\\python.exe"
-                          value={externalPythonPath}
-                          onChange={(event) => setExternalPythonPath(event.target.value)}
-                        />
-                      </label>
-                      <label className="field">
-                        <span className="field-label">Faster Whisper 模型目录</span>
-                        <input
-                          placeholder="例如 D:\\models\\faster-whisper"
-                          value={fasterWhisperModelDir}
-                          onChange={(event) => setFasterWhisperModelDir(event.target.value)}
-                        />
-                      </label>
-                      <label className="field">
-                        <span className="field-label">pip 安装模式</span>
-                        <select
-                          value={pythonPackageInstallMode}
-                          onChange={(event) => setPythonPackageInstallMode(event.target.value as PythonPackageInstallMode)}
-                        >
-                          <option value="default">默认 pip 安装</option>
-                          <option value="user">用户目录 (--user)</option>
-                        </select>
-                      </label>
-                      {health?.runtime && (
-                        <p className="field-help">
-                          当前 Python：{health.runtime.faster_whisper.external_python_path || "未找到"} · 来源：
-                          {formatRuntimeSource(health.runtime.faster_whisper.external_python_source)} · pip：
-                          {formatInstallMode(health.runtime.faster_whisper.python_package_install_mode)}
-                        </p>
-                      )}
-                      {health?.runtime?.faster_whisper.external_python_error && (
-                        <p className="inline-warning">
-                          <AlertTriangle size={15} />
-                          {health.runtime.faster_whisper.external_python_error}
-                        </p>
-                      )}
-                      {health?.runtime && (
-                        <p className="field-help">
-                          当前模型目录：{health.runtime.local_models.root} · 来源：
-                          {formatRuntimeSource(health.runtime.local_models.root_source)}
-                        </p>
-                      )}
-                    </div>
-                    <p className={localWhisperDevice === "cuda" && !health?.runtime?.faster_whisper.cuda_available ? "inline-warning" : "field-help"}>
-                      {localWhisperDevice === "cuda"
-                        ? health?.runtime?.faster_whisper.ready_for_cuda
-                          ? `检测到 ${health.runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备；当前可直接使用 CUDA + ${localWhisperComputeType}。`
-                          : health?.runtime?.faster_whisper.cuda_error
-                            ? `CUDA 不可用：${health.runtime.faster_whisper.cuda_error}`
-                            : "当前后端未检测到可用 CUDA 推理环境；可先切换到 CPU 模式继续使用本地转写。"
-                        : health?.runtime?.faster_whisper.ready_for_cpu
-                          ? "当前本地转写 CPU 环境已就绪，可直接使用。"
-                          : health?.runtime?.faster_whisper.install_hint || "当前本地转写依赖未就绪，请先补齐外部 Python 环境。"}
-                    </p>
-                    {needsLocalDependencyInstall && (
-                      <div className="model-download-box">
-                        <p className="inline-warning">
-                          <AlertTriangle size={15} />
-                          {health?.runtime?.faster_whisper.install_hint || "外部 Python 缺少本地转写依赖。"}
-                        </p>
-                        <button
-                          className="small-button strong"
-                          disabled={
-                            Boolean(health?.runtime?.faster_whisper.external_python_error) ||
-                            localDependencyInstall?.status === "pending" ||
-                            localDependencyInstall?.status === "running"
-                          }
-                          onClick={handleInstallLocalDependencies}
-                          type="button"
-                        >
-                          {localDependencyInstall?.status === "pending" || localDependencyInstall?.status === "running" ? (
-                            <Loader2 className="spin" size={15} />
-                          ) : (
-                            <Download size={15} />
-                          )}
-                          安装本地转写依赖
-                        </button>
-                        {localDependencyInstall && (
-                          <p className="settings-message">
-                            {localDependencyInstall.status === "pending" && "准备安装本地转写依赖..."}
-                            {localDependencyInstall.status === "running" && `正在安装到 ${localDependencyInstall.python_path || "外部 Python"}，请保持网络连接...`}
-                            {localDependencyInstall.status === "succeeded" && "本地转写依赖安装完成，正在刷新检测结果。"}
-                            {localDependencyInstall.status === "failed" && `安装失败：${localDependencyInstall.error || localDependencyInstallError}`}
-                          </p>
-                        )}
-                        {localDependencyInstallError && <p className="inline-error">{localDependencyInstallError}</p>}
-                      </div>
-                    )}
-                    {isLocalTranscription && runtimeProbeFailed && !runtimeLocalStatus?.internal_available && (
-                      <div className="model-download-box">
-                        <p className="inline-warning">
-                          <AlertTriangle size={15} />
-                          运行环境检测失败：{runtimeLocalStatus?.worker_probe_error || "外部转写进程无法验证。"}
-                        </p>
-                        <button className="small-button" onClick={() => void refreshHealth()} type="button">
-                          <RefreshCw size={15} />
-                          重新检测
-                        </button>
-                      </div>
-                    )}
-                    {canOfferCudaInstall && (
-                      <div className="model-download-box">
-                        <p className="inline-warning">
-                          <AlertTriangle size={15} />
-                          检测到 CUDA 设备，但缺少 cuBLAS/cuDNN 推理运行库。
-                        </p>
-                        <button
-                          className="small-button strong"
-                          disabled={
-                            Boolean(health?.runtime?.faster_whisper.external_python_error) ||
-                            cudaInstall?.status === "pending" ||
-                            cudaInstall?.status === "running"
-                          }
-                          onClick={handleInstallCudaDependencies}
-                          type="button"
-                        >
-                          {cudaInstall?.status === "pending" || cudaInstall?.status === "running" ? (
-                            <Loader2 className="spin" size={15} />
-                          ) : (
-                            <Download size={15} />
-                          )}
-                          安装 CUDA 加速依赖
-                        </button>
-                        {cudaInstall && (
-                          <p className="settings-message">
-                            {cudaInstall.status === "pending" && "准备安装 CUDA 依赖..."}
-                            {cudaInstall.status === "running" && `正在安装到 ${cudaInstall.python_path || "外部 Python"}，请保持网络连接...`}
-                            {cudaInstall.status === "succeeded" && "CUDA 依赖安装完成，正在刷新检测结果。"}
-                            {cudaInstall.status === "failed" && `安装失败：${cudaInstall.error || cudaInstallError}`}
-                          </p>
-                        )}
-                        {cudaInstallError && <p className="inline-error">{cudaInstallError}</p>}
-                      </div>
-                    )}
-                    {!selectedLocalModelAvailable && (
-                      <div className="model-download-box">
-                        <p className="inline-warning">
-                          <AlertTriangle size={15} />
-                          当前模型目录未发现 {transcriptionModel}：{health?.runtime?.local_models.root}
-                        </p>
-                        <button
-                          className="small-button strong"
-                          disabled={modelDownload?.status === "pending" || modelDownload?.status === "running"}
-                          onClick={handleDownloadLocalModel}
-                          type="button"
-                        >
-                          {modelDownload?.status === "pending" || modelDownload?.status === "running" ? (
-                            <Loader2 className="spin" size={15} />
-                          ) : (
-                            <Download size={15} />
-                          )}
-                          下载 {transcriptionModel}
-                        </button>
-                        {modelDownload && modelDownload.model_name === transcriptionModel && (
-                          <p className="settings-message">
-                            {modelDownload.status === "pending" && "准备下载模型..."}
-                            {modelDownload.status === "running" && "正在下载模型，完成前请保持网络连接..."}
-                            {modelDownload.status === "succeeded" && "模型已下载完成，可以开始生成。"}
-                            {modelDownload.status === "failed" && `下载失败：${modelDownload.error || modelDownloadError}`}
-                          </p>
-                        )}
-                        {modelDownloadError && <p className="inline-error">{modelDownloadError}</p>}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <label className="field">
-                      <span className="field-label">Base URL</span>
-                      <input value={transcriptionBaseUrl} onChange={(event) => setTranscriptionBaseUrl(event.target.value)} />
-                    </label>
-
-                    <label className="field">
-                      <span className="field-label">转写模型</span>
-                      <input value={transcriptionModel} onChange={(event) => setTranscriptionModel(event.target.value)} />
-                    </label>
-
-                    <label className="field">
-                      <span className="field-label">
-                        <KeyRound size={15} />
-                        转写 API Key
-                      </span>
-                      <input
-                        autoComplete="off"
-                        placeholder="可保存到本地设置"
-                        type="password"
-                        value={transcriptionApiKey}
-                        onChange={(event) => setTranscriptionApiKey(event.target.value)}
-                      />
-                    </label>
-                  </>
-                )}
-              </section>
-
-              <section className="api-section">
-                <div className="section-title">
-                  <FileText size={16} />
-                  <span>笔记生成 API</span>
-                </div>
-                <p className="field-help">用于把字幕整理为结构化笔记。可填 OpenAI、Qwen 或其他 OpenAI-compatible Chat API。</p>
-
-                <div className="preset-row" aria-label="常用 Base URL">
-                  <button type="button" onClick={() => setNoteBaseUrl(OPENAI_BASE_URL)}>
-                    OpenAI
-                  </button>
-                  <button type="button" onClick={() => setNoteBaseUrl(QWEN_BASE_URL)}>
-                    Qwen
-                  </button>
-                </div>
-
-                <label className="field">
-                  <span className="field-label">Base URL</span>
-                  <input value={noteBaseUrl} onChange={(event) => setNoteBaseUrl(event.target.value)} />
-                </label>
-
-                <label className="field">
-                  <span className="field-label">笔记模型</span>
-                  <input value={noteModel} onChange={(event) => setNoteModel(event.target.value)} />
-                </label>
-
-                <label className="field">
-                  <span className="field-label">
-                    <KeyRound size={15} />
-                    笔记 API Key
-                  </span>
-                  <input
-                    autoComplete="off"
-                    placeholder="可保存到本地设置"
-                    type="password"
-                    value={noteApiKey}
-                    onChange={(event) => setNoteApiKey(event.target.value)}
-                  />
-                </label>
-              </section>
-
-              <section className="api-section">
-                <div className="section-title">
-                  <Server size={16} />
-                  <span>运行环境</span>
-                </div>
-                <RuntimeStatusCard runtime={health?.runtime ?? null} />
-              </section>
-            </div>
-
-            <div className="modal-footer">
-              <button className="small-button" onClick={() => setIsSettingsOpen(false)} type="button">
-                关闭
-              </button>
-              <button className="small-button strong" disabled={isSavingSettings} onClick={handleSaveSettings} type="button">
-                {isSavingSettings ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
-                保存设置
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      <SettingsModal
+        health={health}
+        modal={{
+          isOpen: isSettingsOpen,
+          isSaving: isSavingSettings,
+          message: settingsMessage,
+          onClear: () => void handleClearSettings(),
+          onClose: () => setIsSettingsOpen(false),
+          onSave: () => void handleSaveSettings()
+        }}
+        note={{
+          apiKey: noteApiKey,
+          baseUrl: noteBaseUrl,
+          model: noteModel,
+          onApiKeyChange: (value) => updateSetting("note_api_key", value),
+          onBaseUrlChange: (value) => updateSetting("note_base_url", value),
+          onModelChange: (value) => updateSetting("note_model", value)
+        }}
+        transcription={{
+          cudaInstall,
+          cudaInstallError,
+          externalPythonPath,
+          fasterWhisperModelDir,
+          localDependencyInstall,
+          localDependencyInstallError,
+          localWhisperComputeType,
+          localWhisperDevice,
+          modelDownload,
+          modelDownloadError,
+          onDownloadLocalModel: () => void handleDownloadLocalModel(),
+          onExternalPythonPathChange: (value) => updateSetting("external_python_path", value),
+          onFasterWhisperModelDirChange: (value) => updateSetting("faster_whisper_model_dir", value),
+          onInstallCudaDependencies: () => void handleInstallCudaDependencies(),
+          onInstallLocalDependencies: () => void handleInstallLocalDependencies(),
+          onLocalWhisperComputeTypeChange: (value) => updateSetting("local_whisper_compute_type", value),
+          onLocalWhisperDeviceChange: (value) => updateSetting("local_whisper_device", value),
+          onPerformanceModeChange: (value) => updateSetting("performance_mode", value),
+          onPythonPackageInstallModeChange: (value) => updateSetting("python_package_install_mode", value),
+          onRefreshHealth: () => void refreshHealth(),
+          onTranscriptionApiKeyChange: (value) => updateSetting("transcription_api_key", value),
+          onTranscriptionBaseUrlChange: (value) => updateSetting("transcription_base_url", value),
+          onTranscriptionLanguageChange: (value) => updateSetting("transcription_language", value),
+          onTranscriptionModeChange: (value) => updateSetting("transcription_mode", value),
+          onTranscriptionModelChange: (value) => updateSetting("transcription_model", value),
+          performanceMode,
+          pythonPackageInstallMode,
+          transcriptionApiKey,
+          transcriptionBaseUrl,
+          transcriptionLanguage,
+          transcriptionMode,
+          transcriptionModel
+        }}
+      />
       <TranscriptCorrectionModal
         error={correctionError}
         isApplying={isApplyingCorrection}
         onApply={() => void handleApplyTranscriptCorrection()}
-        onClose={() => {
-          if (!isApplyingCorrection) {
-            setCorrectionPreview(null);
-            setCorrectionError("");
-          }
-        }}
+        onClose={closeTranscriptCorrection}
         preview={correctionPreview}
       />
       {isFrameReviewOpen && job && frameCandidateIndex && reviewDraft && (
@@ -2184,7 +541,7 @@ export function App() {
           }
           onRegenerateNote={() => void handleRegenerateNote()}
           onRegenerateChunk={(chunkId) => void handleRegenerateNoteChunk(chunkId)}
-          onClose={() => setIsFrameReviewOpen(false)}
+          onClose={closeFrameReview}
           regeneratingChunkId={regeneratingChunkId}
           reviewDraft={reviewDraft}
           savingParagraphId={reviewDraftSavingId}
@@ -2195,114 +552,6 @@ export function App() {
   );
 }
 
-
-function RuntimeStatusCard({ runtime }: { runtime: RuntimeState | null }) {
-  if (!runtime) {
-    return (
-      <section className="runtime-card">
-        <div className="runtime-item muted">
-          <Server size={16} />
-          <div>
-            <strong>运行环境</strong>
-            <span>等待后端状态</span>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
-  const fasterWhisperDetail = runtime.faster_whisper.internal_available
-    ? "内置 Faster Whisper 可用"
-    : !runtime.faster_whisper.python_available
-      ? runtime.faster_whisper.install_hint
-      : runtime.faster_whisper.worker_ready
-        ? `外部 Python worker：${runtime.faster_whisper.external_python_path ?? "已发现"} · ${formatRuntimeSource(runtime.faster_whisper.external_python_source)}`
-        : runtime.faster_whisper.worker_probe_error || runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint;
-  const cudaDetail = runtime.faster_whisper.cuda_available
-    ? `CTranslate2 检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备 · ${runtime.faster_whisper.cuda_source ?? "runtime"}`
-    : runtime.faster_whisper.cuda_error
-      ? `检测到 ${runtime.faster_whisper.cuda_device_count ?? 0} 个 CUDA 设备，但 CUDA 推理运行库不可用：${runtime.faster_whisper.cuda_error}`
-      : runtime.faster_whisper.cuda_runtime_hint || "未检测到 CUDA 设备；CPU 模式仍可使用";
-  const pythonSource = formatRuntimeSource(runtime.faster_whisper.external_python_source);
-  const modelSource = formatRuntimeSource(runtime.local_models.root_source);
-  const pythonDetail = runtime.faster_whisper.external_python_error
-    ? runtime.faster_whisper.external_python_error
-    : !runtime.faster_whisper.python_available
-      ? "未检测到外部 Python 3.10+，本地转写无法启用"
-      : runtime.faster_whisper.worker_ready
-        ? `${runtime.faster_whisper.external_python_path ?? "外部 Python"} · ${pythonSource} · ${formatInstallMode(runtime.faster_whisper.python_package_install_mode)}`
-        : `${runtime.faster_whisper.worker_probe_error || runtime.faster_whisper.worker_error || runtime.faster_whisper.install_hint} · ${pythonSource}`;
-  const modelDetail = runtime.faster_whisper.model_available
-    ? `${runtime.local_models.models.join(", ")} · ${runtime.local_models.root} · ${modelSource}`
-    : `未发现已缓存模型 · ${runtime.local_models.root} · ${modelSource}`;
-
-  return (
-    <section className="runtime-card" aria-label="运行环境检测">
-      <RuntimeItem
-        ok={runtime.ffmpeg.available}
-        title="FFmpeg"
-        detail={runtime.ffmpeg.available ? runtime.ffmpeg.path || "可用" : runtime.ffmpeg.install_hint}
-      />
-      <RuntimeItem ok={runtime.faster_whisper.available} title="本地转写引擎" detail={fasterWhisperDetail} />
-      <RuntimeItem ok={runtime.faster_whisper.python_available && runtime.faster_whisper.worker_ready} title="外部 Python 环境" detail={pythonDetail} />
-      <RuntimeItem
-        ok={runtime.faster_whisper.cuda_available}
-        soft
-        title="CUDA 加速"
-        detail={cudaDetail}
-      />
-      <RuntimeItem
-        ok={runtime.faster_whisper.model_available}
-        soft
-        title="本地模型目录"
-        detail={modelDetail}
-      />
-      <RuntimeItem soft ok title="配置文件" detail={runtime.settings.path} />
-    </section>
-  );
-}
-
-function RuntimeItem({ detail, ok, soft, title }: { detail: string; ok: boolean; soft?: boolean; title: string }) {
-  return (
-    <div className={`runtime-item ${ok ? "ok" : soft ? "soft" : "warn"}`} title={detail}>
-      {ok ? <CheckCircle2 size={16} /> : <AlertTriangle size={16} />}
-      <div>
-        <strong>{title}</strong>
-        <span>{detail}</span>
-      </div>
-    </div>
-  );
-}
-
-function HealthBadge({ health }: { health: HealthState | null }) {
-  if (!health) {
-    return <span className="badge muted">后端未连接</span>;
-  }
-  if (health.runtime) {
-    const runtimeOk =
-      health.runtime.ffmpeg.available &&
-      (health.runtime.faster_whisper.internal_available || health.runtime.faster_whisper.worker_ready);
-    return (
-      <span className={runtimeOk ? "badge ok" : "badge warn"} title={health.runtime.settings.path}>
-        {runtimeOk ? "运行环境可用" : "依赖待处理"}
-      </span>
-    );
-  }
-  return (
-    <span className={health.ffmpeg_available ? "badge ok" : "badge warn"} title={health.ffmpeg_path ?? undefined}>
-      {health.ffmpeg_available ? "FFmpeg 可用" : "缺少 FFmpeg"}
-    </span>
-  );
-}
-
-function PanelTitle({ icon, title }: { icon: React.ReactNode; title: string }) {
-  return (
-    <div className="panel-title">
-      {icon}
-      <h2>{title}</h2>
-    </div>
-  );
-}
 
 function StepList({ job }: { job: JobState | null }) {
   const steps = [
@@ -2368,637 +617,4 @@ function StepProgress({ job }: { job: JobState | null }) {
       )}
     </>
   );
-}
-
-function formatQualityScore(value: number) {
-  return `${Math.round(value * 100)}%`;
-}
-
-function formatQualityStatus(status: QualityReport["status"]) {
-  if (status === "ready") {
-    return "可交付";
-  }
-  if (status === "needs_attention") {
-    return "需要处理";
-  }
-  return "建议复核";
-}
-
-function formatQualityIssueType(type: string) {
-  const labels: Record<string, string> = {
-    low_chapter_coverage: "章节覆盖偏薄",
-    missing_chapter_frame: "章节缺少配图",
-    missing_timestamp_reference: "缺少引用时间",
-    duplicate_frame_reference: "重复配图",
-    generation_instability: "生成不稳定"
-  };
-  return labels[type] ?? type;
-}
-
-function formatCandidateTime(value: number) {
-  const seconds = Math.max(0, Math.floor(value));
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const remainingSeconds = seconds % 60;
-  return [hours, minutes, remainingSeconds].map((part) => String(part).padStart(2, "0")).join(":");
-}
-
-function formatCandidateSource(source: FrameCandidate["source"]) {
-  return source === "note_key_moment" ? "笔记关键点" : "兜底推荐";
-}
-
-function findChunkForChapterContext(
-  context: FrameCandidateIndex["chapter_contexts"][number] | undefined,
-  chunks: NoteChunkMeta[]
-) {
-  if (!context || chunks.length === 0) {
-    return null;
-  }
-  const midpoint = (context.start_time + context.end_time) / 2;
-  return (
-    chunks.find((chunk) => rangesOverlap(context.start_time, context.end_time, chunk.start_time, chunk.end_time)) ??
-    chunks.find((chunk) => chunk.start_time <= midpoint && midpoint <= chunk.end_time) ??
-    null
-  );
-}
-
-function rangesOverlap(leftStart: number, leftEnd: number, rightStart: number, rightEnd: number) {
-  return Math.max(leftStart, rightStart) <= Math.min(leftEnd, rightEnd);
-}
-
-function FrameReviewModal({
-  contextByChapter,
-  groups,
-  isBusy,
-  jobId,
-  noteChunks,
-  onClose,
-  onRegenerateNote,
-  onRegenerateChunk,
-  onSaveParagraph,
-  regeneratingChunkId,
-  reviewDraft,
-  savingParagraphId,
-  selectedCount
-}: {
-  contextByChapter: Map<number, FrameCandidateIndex["chapter_contexts"][number]>;
-  groups: [number, FrameCandidate[]][];
-  isBusy: boolean;
-  jobId: string;
-  noteChunks: NoteChunkIndex | null;
-  onClose: () => void;
-  onRegenerateNote: () => void;
-  onRegenerateChunk: (chunkId: string) => void;
-  onSaveParagraph: (
-    paragraphId: string,
-    body: string,
-    selectedFrameIds: string[],
-    status: ReviewDraftParagraphStatus
-  ) => void;
-  regeneratingChunkId: string;
-  reviewDraft: ReviewDraft;
-  savingParagraphId: string;
-  selectedCount: number;
-}) {
-  const chunks = noteChunks?.chunks ?? [];
-  const candidatesByChapter = new Map(groups);
-  const draftSelectedCount = reviewDraft.paragraphs.reduce(
-    (total, paragraph) => total + paragraph.selected_frame_ids.length,
-    0
-  );
-  const [previewCandidate, setPreviewCandidate] = useState<FrameCandidate | null>(null);
-  return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <section
-        aria-label="手动审核"
-        aria-modal="true"
-        className="frame-review-modal"
-        onMouseDown={(event) => event.stopPropagation()}
-        role="dialog"
-      >
-        <div className="modal-header">
-          <div>
-            <p className="eyebrow">Manual Review</p>
-            <h2>手动审核</h2>
-          </div>
-          <div className="frame-review-header-actions">
-            <span className="mini-badge ok">{draftSelectedCount || selectedCount} 已选</span>
-            <button className="icon-button" onClick={onClose} title="关闭配图审核" type="button">
-              <X size={18} />
-            </button>
-          </div>
-        </div>
-
-        <div className="modal-body frame-review-body">
-          <p className="frame-review-summary">
-            按段落核对最终文案、字幕依据和配图。这里保存的人工审核稿会作为确认定稿的来源。
-          </p>
-          <div className="frame-candidate-groups">
-            {reviewDraft.paragraphs.map((paragraph) => {
-              const candidates = candidatesByChapter.get(paragraph.chapter_index) ?? [];
-              const context = contextByChapter.get(paragraph.chapter_index);
-              const chunk =
-                chunks.find((item) => rangesOverlap(paragraph.start_time, paragraph.end_time, item.start_time, item.end_time)) ??
-                findChunkForChapterContext(context, chunks);
-              const isRegeneratingThisChunk = Boolean(chunk ? regeneratingChunkId === chunk.id : isBusy);
-              return (
-                <ReviewParagraphEditor
-                  candidates={candidates}
-                  isBusy={isBusy}
-                  isRegenerating={isRegeneratingThisChunk}
-                  isSaving={savingParagraphId === paragraph.id}
-                  jobId={jobId}
-                  key={paragraph.id}
-                  onPreviewCandidate={setPreviewCandidate}
-                  onRegenerate={() => {
-                    chunk ? onRegenerateChunk(chunk.id) : onRegenerateNote();
-                  }}
-                  onSave={onSaveParagraph}
-                  paragraph={paragraph}
-                />
-              );
-            })}
-          </div>
-        </div>
-
-        <div className="modal-footer">
-          <button className="small-button strong" onClick={onClose} type="button">
-            完成
-          </button>
-        </div>
-      </section>
-      {previewCandidate && (
-        <div className="frame-image-preview-backdrop" onMouseDown={(event) => event.stopPropagation()}>
-          <section aria-label="候选配图预览" className="frame-image-preview" role="dialog">
-            <div className="frame-image-preview-head">
-              <div>
-                <strong>{formatCandidateTime(previewCandidate.time)}</strong>
-                <span>{previewCandidate.reason}</span>
-              </div>
-              <button className="icon-button" onClick={() => setPreviewCandidate(null)} title="关闭预览" type="button">
-                <X size={18} />
-              </button>
-            </div>
-            <div className="frame-image-preview-body">
-              <img alt={previewCandidate.reason} src={`/api/jobs/${jobId}/assets/${previewCandidate.path}`} />
-              <div className="frame-image-preview-reference">
-                <div>
-                  <strong>笔记依据</strong>
-                  <p>{previewCandidate.note_excerpt || previewCandidate.reason || "暂无笔记依据。"}</p>
-                </div>
-                <div>
-                  <strong>附近字幕</strong>
-                  <p>{previewCandidate.subtitle_excerpt || "暂无该时间点附近字幕。"}</p>
-                </div>
-              </div>
-            </div>
-          </section>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ReviewParagraphEditor({
-  candidates,
-  isBusy,
-  isRegenerating,
-  isSaving,
-  jobId,
-  onPreviewCandidate,
-  onRegenerate,
-  onSave,
-  paragraph
-}: {
-  candidates: FrameCandidate[];
-  isBusy: boolean;
-  isRegenerating: boolean;
-  isSaving: boolean;
-  jobId: string;
-  onPreviewCandidate: (candidate: FrameCandidate) => void;
-  onRegenerate: () => void;
-  onSave: (paragraphId: string, body: string, selectedFrameIds: string[], status: ReviewDraftParagraphStatus) => void;
-  paragraph: ReviewDraftParagraph;
-}) {
-  const [body, setBody] = useState(paragraph.body);
-  const [selectedFrameIds, setSelectedFrameIds] = useState(paragraph.selected_frame_ids);
-  useEffect(() => {
-    setBody(paragraph.body);
-    setSelectedFrameIds(paragraph.selected_frame_ids);
-  }, [paragraph.body, paragraph.id, paragraph.selected_frame_ids]);
-  const selectedSet = new Set(selectedFrameIds);
-  const hasChanges =
-    body.trim() !== paragraph.body.trim() ||
-    selectedFrameIds.join("|") !== paragraph.selected_frame_ids.join("|");
-
-  function toggleFrame(candidateId: string) {
-    setSelectedFrameIds((current) =>
-      current.includes(candidateId) ? current.filter((id) => id !== candidateId) : [...current, candidateId]
-    );
-  }
-
-  return (
-    <section className="frame-candidate-group review-paragraph-group">
-      <div className="frame-candidate-group-head">
-        <div className="frame-candidate-title-line">
-          <strong>{paragraph.title || `第 ${paragraph.chapter_index + 1} 段`}</strong>
-          <span>{formatSecondsRange(paragraph.start_time, paragraph.end_time)}</span>
-          <span className={`mini-badge ${paragraph.status === "approved" ? "ok" : ""}`}>
-            {formatReviewParagraphStatus(paragraph.status)}
-          </span>
-        </div>
-        <div className="frame-candidate-group-actions">
-          <button className="small-button" disabled={isBusy || isRegenerating} onClick={onRegenerate} type="button">
-            {isRegenerating ? <Loader2 className="spin" size={14} /> : <RefreshCw size={14} />}
-            重新生成本段文字
-          </button>
-          <button
-            className="small-button strong"
-            disabled={isBusy || isSaving || (!hasChanges && paragraph.status === "approved")}
-            onClick={() => onSave(paragraph.id, body, selectedFrameIds, hasChanges ? "edited" : "approved")}
-            type="button"
-          >
-            {isSaving ? <Loader2 className="spin" size={14} /> : <CheckCircle2 size={14} />}
-            保存本段
-          </button>
-          <span>{candidates.length} 个候选</span>
-        </div>
-      </div>
-
-      <div className="review-paragraph-layout" aria-label="段落审稿">
-        <label className="frame-candidate-reference-panel review-paragraph-editor">
-          <strong>文案编辑</strong>
-          <textarea value={body} onChange={(event) => setBody(event.target.value)} />
-        </label>
-        <div className="frame-candidate-reference-panel review-subtitle-evidence">
-          <strong>字幕依据</strong>
-          <textarea
-            aria-label="字幕依据内容"
-            className="review-subtitle-textarea"
-            readOnly
-            value={formatReviewSubtitleEvidence(paragraph.subtitle_segments)}
-          />
-        </div>
-
-        <div className="review-frame-column">
-          <strong>配图</strong>
-          {candidates.length === 0 ? (
-            <p className="frame-candidate-empty">本段暂无候选配图。</p>
-          ) : (
-            <div className="frame-candidate-strip review-frame-list">
-              {candidates.map((candidate) => {
-                const isSelected = selectedSet.has(candidate.id);
-                const isDuplicate = candidate.risk_flags.includes("duplicate_frame");
-                return (
-                  <article
-                    className={`frame-candidate-card ${isSelected ? "selected" : ""} ${candidate.rejected ? "rejected" : ""}`}
-                    key={candidate.id}
-                  >
-                    <div className="frame-image-wrap">
-                      <label className="frame-candidate-check">
-                        <input
-                          checked={isSelected}
-                          disabled={isBusy || isSaving}
-                          onChange={() => toggleFrame(candidate.id)}
-                          type="checkbox"
-                        />
-                      </label>
-                      <img alt={candidate.reason} src={`/api/jobs/${jobId}/assets/${candidate.path}`} />
-                      <button
-                        aria-label={`放大预览 ${formatCandidateTime(candidate.time)}`}
-                        className="frame-candidate-zoom"
-                        onClick={() => onPreviewCandidate(candidate)}
-                        title="放大预览"
-                        type="button"
-                      >
-                        <ZoomIn size={15} />
-                      </button>
-                    </div>
-                    <div className="frame-candidate-body">
-                      <div className="frame-candidate-meta">
-                        <span>{formatCandidateTime(candidate.time)}</span>
-                        <span className="mini-badge">{formatCandidateSource(candidate.source)}</span>
-                        {candidate.similarity > 0 && <span className="mini-badge">相似度 {Math.round(candidate.similarity * 100)}%</span>}
-                        {isSelected && <span className="mini-badge ok">已选</span>}
-                        {candidate.rejected && <span className="mini-badge warn">已拒绝</span>}
-                        {isDuplicate && <span className="mini-badge warn">重复风险</span>}
-                      </div>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          )}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function formatReviewParagraphStatus(status: ReviewDraftParagraphStatus) {
-  if (status === "approved") {
-    return "已确认";
-  }
-  if (status === "edited") {
-    return "已修改";
-  }
-  return "待审核";
-}
-
-function formatReviewSubtitleEvidence(segments: ReviewDraftParagraph["subtitle_segments"]) {
-  if (segments.length === 0) {
-    return "暂无可用字幕片段。";
-  }
-  return segments.map((segment) => `${formatSecondsRange(segment.start, segment.end)}  ${segment.text}`).join("\n");
-}
-
-function DownloadLink({
-  job,
-  artifactPath,
-  label,
-  onDownloadError
-}: {
-  job: JobState | null;
-  artifactPath: string;
-  label: string;
-  onDownloadError: (message: string) => void;
-}) {
-  const artifact = job?.artifacts.find((item) => item.path === artifactPath);
-  if (!artifact) {
-    return (
-      <button className="small-button" disabled type="button">
-        <Download size={15} />
-        {label}
-      </button>
-    );
-  }
-  return (
-    <ArtifactDownloadButton
-      filename={deriveDownloadFilename(artifact.path, `${label}.txt`)}
-      label={label}
-      onError={onDownloadError}
-      url={artifact.asset_url}
-    />
-  );
-}
-
-function ArtifactDownloadButton({
-  className = "small-button",
-  dataDownloadZip,
-  filename,
-  label,
-  onError,
-  url
-}: {
-  className?: string;
-  dataDownloadZip?: string;
-  filename: string;
-  label: string;
-  onError: (message: string) => void;
-  url: string;
-}) {
-  async function handleClick() {
-    onError("");
-    try {
-      const result = await downloadArtifact(url, filename);
-      if (!result.ok && result.reason !== "cancelled") {
-        onError("下载失败，请稍后重试。");
-      }
-    } catch (error) {
-      onError(error instanceof Error ? error.message : "下载失败，请稍后重试。");
-    }
-  }
-
-  return (
-    <button className={className} data-download-zip={dataDownloadZip} onClick={handleClick} type="button">
-      <Download size={15} />
-      {label}
-    </button>
-  );
-}
-
-function QualityStatusControl({ report }: { report: QualityReport }) {
-  const visibleIssues = report.issues.slice(0, 4);
-  return (
-    <div className="quality-status-control">
-      <button className={`quality-status ${report.status}`} type="button">
-        {formatQualityStatus(report.status)}
-      </button>
-      <div className="quality-popover" role="tooltip">
-        <div className="quality-popover-head">
-          <strong>质量复核</strong>
-          <span>覆盖、结构、配图、稳定性</span>
-        </div>
-        <div className="quality-score-grid">
-          <div>
-            <span>覆盖</span>
-            <strong>{formatQualityScore(report.scores.coverage)}</strong>
-          </div>
-          <div>
-            <span>结构</span>
-            <strong>{formatQualityScore(report.scores.structure)}</strong>
-          </div>
-          <div>
-            <span>配图</span>
-            <strong>{formatQualityScore(report.scores.frames)}</strong>
-          </div>
-          <div>
-            <span>稳定性</span>
-            <strong>{formatQualityScore(report.scores.stability)}</strong>
-          </div>
-        </div>
-        {visibleIssues.length > 0 ? (
-          <div className="quality-issues">
-            {visibleIssues.map((issue, index) => (
-              <div className={`quality-issue ${issue.severity}`} key={`${issue.type}-${issue.chapter_index ?? "global"}-${index}`}>
-                <AlertTriangle size={14} />
-                <span>
-                  {issue.chapter_index !== null && issue.chapter_index !== undefined ? `第 ${issue.chapter_index + 1} 章 · ` : ""}
-                  {formatQualityIssueType(issue.type)}：{issue.message}
-                </span>
-              </div>
-            ))}
-            {report.issues.length > visibleIssues.length && (
-              <span className="quality-more">还有 {report.issues.length - visibleIssues.length} 个风险项</span>
-            )}
-          </div>
-        ) : (
-          <p className="quality-empty">没有发现可测量的覆盖或配图风险。</p>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function CollapsibleBlock({
-  children,
-  className = "",
-  defaultCollapsed = false,
-  title,
-  titleAction
-}: {
-  children: React.ReactNode;
-  className?: string;
-  defaultCollapsed?: boolean;
-  title: string;
-  titleAction?: React.ReactNode;
-}) {
-  const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
-  const sectionClassName = className ? `collapsible-block ${className}` : "collapsible-block";
-  return (
-    <section className={sectionClassName}>
-      <div className="preview-title-row">
-        <h3>
-          <button
-            aria-expanded={!isCollapsed}
-            className="collapse-toggle"
-            onClick={() => setIsCollapsed((current) => !current)}
-            type="button"
-          >
-            <ChevronDown className={isCollapsed ? "collapsed" : ""} size={16} />
-            <span>{title}</span>
-          </button>
-        </h3>
-        {titleAction}
-      </div>
-      {!isCollapsed && <div className="collapsible-content">{children}</div>}
-    </section>
-  );
-}
-
-function PreviewBlock({
-  assetBasePath,
-  defaultCollapsed,
-  title,
-  titleAction,
-  text,
-  empty,
-  jobId
-}: {
-  assetBasePath?: string;
-  defaultCollapsed?: boolean;
-  title: string;
-  titleAction?: React.ReactNode;
-  text: string;
-  empty: string;
-  jobId?: string;
-}) {
-  return (
-    <CollapsibleBlock className="preview-block" defaultCollapsed={defaultCollapsed} title={title} titleAction={titleAction}>
-      {text ? <MarkdownPreview assetBasePath={assetBasePath} markdown={text} jobId={jobId} /> : <p className="preview-empty">{empty}</p>}
-    </CollapsibleBlock>
-  );
-}
-
-function TranscriptCorrectionModal({
-  error,
-  isApplying,
-  onApply,
-  onClose,
-  preview
-}: {
-  error: string;
-  isApplying: boolean;
-  onApply: () => void;
-  onClose: () => void;
-  preview: TranscriptCorrectionPreview | null;
-}) {
-  if (!preview) {
-    return null;
-  }
-  return (
-    <div className="modal-backdrop" onMouseDown={onClose}>
-      <section className="settings-modal correction-modal" aria-label="AI 字幕修正对比" onMouseDown={(event) => event.stopPropagation()}>
-        <div className="modal-header">
-          <div>
-            <p className="eyebrow">Transcript correction</p>
-            <h2>AI 字幕修正对比</h2>
-          </div>
-          <button className="icon-button" disabled={isApplying} onClick={onClose} type="button">
-            <X size={18} />
-          </button>
-        </div>
-
-        <div className="modal-body correction-body">
-          <p className="correction-summary">
-            共 {preview.segments.length} 段，AI 建议修改 {preview.changed_count} 段。采用后会重写字幕文件，并基于修正版生成新的笔记版本。
-          </p>
-          {error && (
-            <p className="inline-error">
-              <AlertTriangle size={15} />
-              {error}
-            </p>
-          )}
-          <div className="correction-diff-grid">
-            <div className="correction-column-title">原始字幕</div>
-            <div className="correction-column-title">AI 修正版</div>
-            {preview.segments.map((segment) => (
-              <div className="correction-row-pair" key={segment.index}>
-                <div className={segment.changed ? "correction-row changed" : "correction-row"}>
-                  <strong>{formatSecondsRange(segment.start, segment.end)}</strong>
-                  <span>{segment.original_text}</span>
-                </div>
-                <div className={segment.changed ? "correction-row changed" : "correction-row"}>
-                  <strong>{formatSecondsRange(segment.start, segment.end)}</strong>
-                  <span>{segment.corrected_text}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="modal-footer">
-          <button className="small-button" disabled={isApplying} onClick={onClose} type="button">
-            取消
-          </button>
-          <button className="small-button strong" disabled={isApplying} onClick={onApply} type="button">
-            {isApplying ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}
-            采用修正版并重新生成笔记
-          </button>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function MarkdownPreview({ assetBasePath, markdown, jobId }: { assetBasePath?: string; markdown: string; jobId?: string }) {
-  return (
-    <div className="markdown-preview">
-      {parseMarkdown(markdown).map((block, index) => {
-        if (block.type === "heading") {
-          return <MarkdownHeading key={index} level={block.level} text={block.text} />;
-        }
-        if (block.type === "list") {
-          const items = block.items.map((item, itemIndex) => <li key={itemIndex}>{item}</li>);
-          return block.ordered ? <ol key={index}>{items}</ol> : <ul key={index}>{items}</ul>;
-        }
-        if (block.type === "image") {
-          const src = resolvePreviewAssetUrl(block.src, jobId, assetBasePath);
-          if (!src) {
-            return (
-              <p className="markdown-unsupported" key={index}>
-                {block.alt || block.src}
-              </p>
-            );
-          }
-          return (
-            <figure className="markdown-image" key={index}>
-              <img alt={block.alt} src={src} />
-              {block.alt && <figcaption>{block.alt}</figcaption>}
-            </figure>
-          );
-        }
-        return <p key={index}>{block.text}</p>;
-      })}
-    </div>
-  );
-}
-
-function MarkdownHeading({ level, text }: { level: number; text: string }) {
-  if (level === 1) return <h1>{text}</h1>;
-  if (level === 2) return <h2>{text}</h2>;
-  if (level === 3) return <h3>{text}</h3>;
-  if (level === 4) return <h4>{text}</h4>;
-  if (level === 5) return <h5>{text}</h5>;
-  return <h6>{text}</h6>;
 }

@@ -21,7 +21,13 @@ from openai import OpenAI
 
 from . import local_whisper_worker
 from .ffmpeg_tools import PreparedAudio, probe_duration, split_audio
-from .models import JobConfig, TranscriptPayload, TranscriptSegment, TranscriptionMode, TranscriptionWorkProgress
+from .models import (
+    TranscriptPayload,
+    TranscriptSegment,
+    TranscriptionConfig,
+    TranscriptionMode,
+    TranscriptionWorkProgress,
+)
 from .runtime_config import get_configured_external_python, get_configured_model_root
 from .runtime_paths import get_bundle_root
 from .resource_scheduler import ProcessingResource, ResourceWaitCancelled, processing_resources
@@ -85,7 +91,7 @@ def dump_openai_model(value: object) -> dict:
 
 def transcribe_audio(
     audio_path: Path,
-    config: JobConfig,
+    config: TranscriptionConfig,
     work_dir: Path,
     progress_callback: ProgressCallback | None = None,
     *,
@@ -114,7 +120,7 @@ def transcribe_audio(
 
 def transcribe_with_faster_whisper(
     audio_path: Path,
-    config: JobConfig,
+    config: TranscriptionConfig,
     work_dir: Path,
     progress_callback: ProgressCallback | None = None,
     *,
@@ -299,7 +305,7 @@ def _transcribe_chunk_with_model(
     model: object,
     chunk: ChunkSpec,
     plan: TranscriptionExecutionPlan,
-    config: JobConfig,
+    config: TranscriptionConfig,
     *,
     total_duration: float,
     is_cancelled: CancellationCallback,
@@ -366,7 +372,7 @@ def _local_chunk_specs(
     return chunks
 
 
-def _default_hardware_profile(config: JobConfig) -> HardwareProfile:
+def _default_hardware_profile(config: TranscriptionConfig) -> HardwareProfile:
     configured = str(config.local_whisper_device or "").strip()
     cuda_available = configured == "cuda"
     if configured in {"", "auto"}:
@@ -385,7 +391,7 @@ def _default_hardware_profile(config: JobConfig) -> HardwareProfile:
 
 
 def resolve_local_transcription_plan(
-    config: JobConfig,
+    config: TranscriptionConfig,
     duration_seconds: float,
     hardware_profile: HardwareProfile | None = None,
 ) -> TranscriptionExecutionPlan:
@@ -441,7 +447,7 @@ def _asr_processing_resource(plan: TranscriptionExecutionPlan) -> ProcessingReso
     return ProcessingResource.gpu_asr if plan.device == "cuda" else ProcessingResource.cpu_asr
 
 
-def _config_with_runtime_overrides(config: JobConfig) -> JobConfig:
+def _config_with_runtime_overrides(config: TranscriptionConfig) -> TranscriptionConfig:
     configured_device = str(config.local_whisper_device or "").strip()
     configured_compute_type = str(config.local_whisper_compute_type or "").strip()
     if configured_device and configured_compute_type:
@@ -541,7 +547,7 @@ def get_faster_whisper_model_root() -> Path:
 
 def transcribe_with_external_faster_whisper(
     audio_path: Path,
-    config: JobConfig,
+    config: TranscriptionConfig,
     model_root: Path,
     *,
     work_dir: Path | None = None,
@@ -581,7 +587,7 @@ def transcribe_with_external_faster_whisper(
 
 def _transcribe_prepared_with_external_faster_whisper(
     audio_path: Path,
-    config: JobConfig,
+    config: TranscriptionConfig,
     model_root: Path,
     work_dir: Path,
     prepared_audio: PreparedAudio,
@@ -1034,7 +1040,7 @@ def _register_unreaped_external_worker(worker_key: str, process: subprocess.Pope
 
 def _transcribe_single_external_chunk(
     chunk_path: Path,
-    config: JobConfig,
+    config: TranscriptionConfig,
     model_root: Path,
     *,
     python_path: str | None = None,
@@ -1111,7 +1117,7 @@ def get_local_whisper_worker_path() -> Path:
     return candidates[0]
 
 
-def resolve_local_whisper_runtime(config: JobConfig) -> tuple[str, str]:
+def resolve_local_whisper_runtime(config: TranscriptionConfig) -> tuple[str, str]:
     configured_device = str(config.local_whisper_device or "").strip()
     configured_compute_type = str(config.local_whisper_compute_type or "").strip()
     device = configured_device or os.getenv("FASTER_WHISPER_DEVICE", "cpu").strip() or "cpu"
@@ -1126,7 +1132,7 @@ def configure_internal_cuda_dll_paths(device: str) -> None:
         local_whisper_worker.configure_cuda_dll_paths()
 
 
-def resolve_transcription_language(config: JobConfig) -> str:
+def resolve_transcription_language(config: TranscriptionConfig) -> str:
     value = str(config.transcription_language or "").strip()
     return "" if value in {"", "auto"} else value
 
@@ -1234,7 +1240,7 @@ def faster_whisper_segments_to_payload(
 
 def transcribe_with_audio_endpoint(
     audio_path: Path,
-    config: JobConfig,
+    config: TranscriptionConfig,
     work_dir: Path,
     progress_callback: ProgressCallback | None = None,
 ) -> TranscriptPayload:
@@ -1265,7 +1271,7 @@ def transcribe_with_audio_endpoint(
     )
 
 
-def call_audio_endpoint(audio_path: Path, config: JobConfig) -> dict:
+def call_audio_endpoint(audio_path: Path, config: TranscriptionConfig) -> dict:
     client = make_client(config.transcription_api_key, config.transcription_base_url)
     with audio_path.open("rb") as audio_file:
         language = resolve_transcription_language(config)
@@ -1283,7 +1289,7 @@ def call_audio_endpoint(audio_path: Path, config: JobConfig) -> dict:
 
 def transcribe_with_chat_audio(
     audio_path: Path,
-    config: JobConfig,
+    config: TranscriptionConfig,
     work_dir: Path,
     progress_callback: ProgressCallback | None = None,
 ) -> TranscriptPayload:
@@ -1311,7 +1317,7 @@ def call_chat_audio_transcription(
     chunk_path: Path,
     model: str,
     offset_seconds: float,
-    config: JobConfig,
+    config: TranscriptionConfig,
 ) -> TranscriptPayload:
     audio_b64 = base64.b64encode(chunk_path.read_bytes()).decode("ascii")
     transcription_language = resolve_transcription_language(config)

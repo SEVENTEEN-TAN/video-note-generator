@@ -1,11 +1,20 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 
 from openai import BadRequestError, OpenAI, OpenAIError
 
-from .models import Chapter, JobConfig, KeyMoment, NoteDraft, NoteLanguage, NoteStyle, TranscriptSegment
+from .models import (
+    Chapter,
+    KeyMoment,
+    NoteDraft,
+    NoteGenerationConfig,
+    NoteLanguage,
+    NoteStyle,
+    TranscriptSegment,
+)
 from .task_debug_log import TaskDebugLog
 from .time_utils import seconds_to_hhmmss
 
@@ -85,13 +94,20 @@ Return only valid JSON with this shape:
       "title": "chapter title",
       "start_time": 0.0,
       "end_time": 42.0,
+      "start_segment_id": "SEG_000000000_000005000_a1b2c3d4",
+      "end_segment_id": "SEG_000037000_000042000_e5f6a7b8",
       "bullets": ["point"],
       "detail": "short explanatory paragraph",
       "quote_times": ["00:00:03 - 00:00:08"]
     }
   ],
   "key_moments": [
-    {"time": 12.0, "reason": "why this frame illustrates the note", "chapter_index": 0}
+    {
+      "time": 12.0,
+      "segment_id": "SEG_000010000_000015000_1a2b3c4d",
+      "reason": "why this frame illustrates the note",
+      "chapter_index": 0
+    }
   ],
   "recommended_frame_count": 6,
   "key_takeaways": ["takeaway"],
@@ -102,7 +118,9 @@ Return only valid JSON with this shape:
 
 TIMESTAMP_FIELD_INSTRUCTION = (
     "JSON timestamp fields start_time, end_time, and time must be numeric seconds from video start, "
-    'for example 9419.0, not "02:36:59". Use display ranges like "00:00:03 - 00:00:08" only in quote_times.'
+    'for example 9419.0, not "02:36:59". Use display ranges like "00:00:03 - 00:00:08" only in quote_times. '
+    "Copy start_segment_id, end_segment_id, and segment_id exactly from the transcript segment labels. "
+    "Segment IDs are authoritative; timestamps are compatibility hints."
 )
 
 
@@ -157,10 +175,7 @@ def build_transcript_prompt(
     }[note_language]
     duration_text = seconds_to_hhmmss(duration or 0) if duration else "unknown"
     style_guidance = build_style_guidance(note_style, extras)
-    transcript_lines = [
-        f"[{seconds_to_hhmmss(segment.start)} - {seconds_to_hhmmss(segment.end)}] {segment.text}"
-        for segment in segments
-    ]
+    transcript_lines = render_transcript_lines(segments)
     return f"""
 Video filename: {original_filename}
 Video duration: {duration_text}
@@ -182,10 +197,148 @@ Keep key_moments length <= {frame_limit}.
 
 
 def render_transcript_lines(segments: list[TranscriptSegment]) -> list[str]:
-    return [
+    return [render_transcript_line(segment) for segment in segments]
+
+
+def render_transcript_line(segment: TranscriptSegment) -> str:
+    return (
+        f"[{transcript_segment_id(segment)}]"
         f"[{seconds_to_hhmmss(segment.start)} - {seconds_to_hhmmss(segment.end)}] {segment.text}"
-        for segment in segments
-    ]
+    )
+
+
+def transcript_segment_id(segment: TranscriptSegment) -> str:
+    start_ms = max(0, round(segment.start * 1000))
+    end_ms = max(start_ms, round(segment.end * 1000))
+    normalized_text = " ".join(segment.text.split())
+    text_hash = hashlib.blake2s(normalized_text.encode("utf-8"), digest_size=4).hexdigest()
+    return f"SEG_{start_ms:09d}_{end_ms:09d}_{text_hash}"
+
+
+def anchor_note_draft_to_segments(
+    draft: NoteDraft,
+    segments: list[TranscriptSegment],
+    duration: float | None,
+) -> NoteDraft:
+    """Resolve model-provided times against the authoritative transcript timeline."""
+
+    ordered_segments = sorted(segments, key=lambda segment: (segment.start, segment.end))
+    if not ordered_segments:
+        return draft
+    segment_by_id = {transcript_segment_id(segment): segment for segment in ordered_segments}
+    transcript_end = max(segment.end for segment in ordered_segments)
+    timeline_end = float(duration) if duration is not None and duration > 0 else transcript_end
+    timeline_end = max(0.0, timeline_end)
+
+    anchored_chapters: list[tuple[int, Chapter]] = []
+    for original_index, chapter in enumerate(draft.chapters):
+        start_segment = segment_by_id.get(str(chapter.start_segment_id or ""))
+        if start_segment is None:
+            start_segment = _nearest_transcript_segment(ordered_segments, chapter.start_time)
+        end_segment = segment_by_id.get(str(chapter.end_segment_id or ""))
+        if end_segment is None:
+            end_segment = _nearest_transcript_segment(ordered_segments, chapter.end_time)
+        if (end_segment.start, end_segment.end) < (start_segment.start, start_segment.end):
+            start_segment, end_segment = end_segment, start_segment
+
+        start_time = _clamp_timeline_time(start_segment.start, timeline_end)
+        end_time = _clamp_timeline_time(end_segment.end, timeline_end)
+        if end_time < start_time:
+            end_time = _clamp_timeline_time(max(start_time, start_segment.end), timeline_end)
+        anchored_chapters.append(
+            (
+                original_index,
+                chapter.model_copy(
+                    update={
+                        "start_time": start_time,
+                        "end_time": end_time,
+                        "start_segment_id": transcript_segment_id(start_segment),
+                        "end_segment_id": transcript_segment_id(end_segment),
+                    }
+                ),
+            )
+        )
+
+    anchored_chapters.sort(key=lambda item: (item[1].start_time, item[1].end_time, item[0]))
+    chapter_index_map = {
+        original_index: anchored_index
+        for anchored_index, (original_index, _chapter) in enumerate(anchored_chapters)
+    }
+    chapters = [chapter for _original_index, chapter in anchored_chapters]
+
+    moments: list[KeyMoment] = []
+    for moment in draft.key_moments:
+        segment = segment_by_id.get(str(moment.segment_id or ""))
+        if segment is not None:
+            timestamp = (
+                moment.time
+                if segment.start <= moment.time <= segment.end
+                else segment.start + ((segment.end - segment.start) / 2)
+            )
+        else:
+            segment = _segment_for_model_time(ordered_segments, moment.time)
+            if segment.start <= moment.time <= segment.end:
+                timestamp = moment.time
+            else:
+                timestamp = segment.start + ((segment.end - segment.start) / 2)
+        timestamp = _clamp_timeline_time(timestamp, timeline_end)
+
+        chapter_index = chapter_index_map.get(moment.chapter_index) if moment.chapter_index is not None else None
+        containing_chapter = next(
+            (
+                index
+                for index, chapter in enumerate(chapters)
+                if chapter.start_time <= timestamp <= chapter.end_time
+            ),
+            None,
+        )
+        if containing_chapter is not None:
+            chapter_index = containing_chapter
+        elif chapter_index is not None and not (0 <= chapter_index < len(chapters)):
+            chapter_index = None
+
+        moments.append(
+            moment.model_copy(
+                update={
+                    "time": timestamp,
+                    "segment_id": transcript_segment_id(segment),
+                    "chapter_index": chapter_index,
+                }
+            )
+        )
+
+    return draft.model_copy(update={"chapters": chapters, "key_moments": moments})
+
+
+def _nearest_transcript_segment(
+    segments: list[TranscriptSegment],
+    timestamp: float,
+) -> TranscriptSegment:
+    return min(
+        segments,
+        key=lambda segment: min(
+            abs(timestamp - segment.start),
+            abs(timestamp - segment.end),
+            abs(timestamp - ((segment.start + segment.end) / 2)),
+        ),
+    )
+
+
+def _segment_for_model_time(
+    segments: list[TranscriptSegment],
+    timestamp: float,
+) -> TranscriptSegment:
+    containing = next(
+        (segment for segment in segments if segment.start <= timestamp <= segment.end),
+        None,
+    )
+    return containing or _nearest_transcript_segment(segments, timestamp)
+
+
+def _clamp_timeline_time(timestamp: float, timeline_end: float) -> float:
+    if timeline_end <= 0:
+        return max(0.0, timestamp)
+    return max(0.0, min(timeline_end, timestamp))
 
 
 def chunk_segments(segments: list[TranscriptSegment], max_chars: int = MAX_CHUNK_TRANSCRIPT_CHARS) -> list[list[TranscriptSegment]]:
@@ -193,7 +346,7 @@ def chunk_segments(segments: list[TranscriptSegment], max_chars: int = MAX_CHUNK
     current: list[TranscriptSegment] = []
     current_chars = 0
     for segment in segments:
-        line_chars = len(segment.text) + 32
+        line_chars = len(render_transcript_line(segment)) + 1
         has_large_gap = bool(current and segment.start - current[-1].end >= LARGE_TRANSCRIPT_GAP_SECONDS)
         would_exceed = bool(current and current_chars + line_chars > max_chars)
         if has_large_gap or would_exceed:
@@ -380,7 +533,7 @@ def _json_retry_instruction(text: str, exc: BaseException) -> str:
 
 
 def call_note_model(
-    config: JobConfig,
+    config: NoteGenerationConfig,
     messages: list[dict],
     max_tokens: int = 3000,
     debug_log: TaskDebugLog | None = None,
@@ -481,7 +634,7 @@ def call_note_model(
     raise LLMError(str(last_error) if last_error else "The model did not return a valid note draft.")
 
 
-def call_json_model(config: JobConfig, messages: list[dict], max_tokens: int = 3000) -> dict:
+def call_json_model(config: NoteGenerationConfig, messages: list[dict], max_tokens: int = 3000) -> dict:
     client = make_client(config.note_api_key, config.note_base_url)
     request_kwargs = {
         "model": config.note_model,
@@ -505,7 +658,7 @@ def call_json_model(config: JobConfig, messages: list[dict], max_tokens: int = 3
 
 
 def generate_note_draft(
-    config: JobConfig,
+    config: NoteGenerationConfig,
     duration: float | None,
     segments: list[TranscriptSegment],
     debug_log: TaskDebugLog | None = None,
@@ -534,12 +687,14 @@ def generate_note_draft(
         {"role": "user", "content": user_prompt},
     ]
     if debug_log:
-        return call_note_model(config, messages, debug_log=debug_log, debug_context="note")
-    return call_note_model(config, messages)
+        draft = call_note_model(config, messages, debug_log=debug_log, debug_context="note")
+    else:
+        draft = call_note_model(config, messages)
+    return anchor_note_draft_to_segments(draft, segments, duration)
 
 
 def generate_chunked_note_draft(
-    config: JobConfig,
+    config: NoteGenerationConfig,
     duration: float | None,
     segments: list[TranscriptSegment],
     system_prompt: str,
@@ -562,13 +717,15 @@ def generate_chunked_note_draft(
             )
         )
     if debug_log:
-        return reduce_note_drafts(config, duration, chunk_drafts, system_prompt, debug_log=debug_log)
-    return reduce_note_drafts(config, duration, chunk_drafts, system_prompt)
+        reduced = reduce_note_drafts(config, duration, chunk_drafts, system_prompt, debug_log=debug_log)
+    else:
+        reduced = reduce_note_drafts(config, duration, chunk_drafts, system_prompt)
+    return anchor_note_draft_to_segments(reduced, segments, duration)
 
 
 
 def generate_chunked_note_draft_with_chunks(
-    config: JobConfig,
+    config: NoteGenerationConfig,
     duration: float | None,
     segments: list[TranscriptSegment],
     system_prompt: str,
@@ -595,7 +752,7 @@ def generate_chunked_note_draft_with_chunks(
         reduced = reduce_note_drafts(config, duration, chunk_drafts, system_prompt, debug_log=debug_log)
     else:
         reduced = reduce_note_drafts(config, duration, chunk_drafts, system_prompt)
-    return reduced, chunks, chunk_drafts
+    return anchor_note_draft_to_segments(reduced, segments, duration), chunks, chunk_drafts
 
 
 def _build_prior_context(completed_drafts: list[NoteDraft]) -> str:
@@ -631,7 +788,7 @@ def _build_prior_context(completed_drafts: list[NoteDraft]) -> str:
 
 def _transcribe_note_chunk_with_retry(
     *,
-    config: JobConfig,
+    config: NoteGenerationConfig,
     duration: float | None,
     system_prompt: str,
     chunk: list[TranscriptSegment],
@@ -799,7 +956,7 @@ def _fallback_transcript_excerpt(segments: list[TranscriptSegment], *, use_chine
 
 
 def reduce_note_drafts(
-    config: JobConfig,
+    config: NoteGenerationConfig,
     duration: float | None,
     partials: list[NoteDraft],
     system_prompt: str,
@@ -832,7 +989,7 @@ def reduce_note_drafts(
         return merge_partial_note_drafts(config, partials)
 
 
-def merge_partial_note_drafts(config: JobConfig, partials: list[NoteDraft]) -> NoteDraft:
+def merge_partial_note_drafts(config: NoteGenerationConfig, partials: list[NoteDraft]) -> NoteDraft:
     frame_limit = max(1, min(config.frame_limit, 24))
     if not partials:
         return NoteDraft(
@@ -948,7 +1105,7 @@ Transcript with timestamps:
 
 
 def build_reduce_prompt(
-    config: JobConfig,
+    config: NoteGenerationConfig,
     duration: float | None,
     chunk_drafts: list[NoteDraft],
     compact: bool = False,
@@ -986,6 +1143,8 @@ def compact_note_draft(draft: NoteDraft) -> dict:
                 "title": chapter.title[:120],
                 "start_time": chapter.start_time,
                 "end_time": chapter.end_time,
+                "start_segment_id": chapter.start_segment_id,
+                "end_segment_id": chapter.end_segment_id,
                 "bullets": [bullet[:220] for bullet in chapter.bullets[:5]],
                 "detail": chapter.detail[:500],
                 "quote_times": [quote_time[:80] for quote_time in chapter.quote_times[:3]],
@@ -995,6 +1154,7 @@ def compact_note_draft(draft: NoteDraft) -> dict:
         "key_moments": [
             {
                 "time": moment.time,
+                "segment_id": moment.segment_id,
                 "reason": moment.reason[:160],
                 "chapter_index": moment.chapter_index,
             }

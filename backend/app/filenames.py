@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 
+ZIP_DIRTY_MARKER = ".download.zip.dirty"
+
+
 def normalize_uploaded_filename(filename: str | None, fallback: str = "video") -> str:
     value = (filename or fallback).strip() or fallback
     value = value.replace("\\", "/").rsplit("/", 1)[-1] or fallback

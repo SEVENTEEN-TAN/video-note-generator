@@ -26,7 +26,7 @@ def test_chunk_segments_prefers_large_time_gap() -> None:
         TranscriptSegment(start=120, end=125, text="c" * 80),
     ]
 
-    chunks = chunk_segments(segments, max_chars=240)
+    chunks = chunk_segments(segments, max_chars=300)
 
     assert len(chunks) == 2
     assert [segment.text[0] for segment in chunks[0]] == ["a", "b"]
@@ -72,6 +72,210 @@ def test_note_style_and_extras_are_injected_into_prompts() -> None:
     assert "JSON timestamp fields start_time, end_time, and time must be numeric seconds" in transcript_prompt
     assert "JSON timestamp fields start_time, end_time, and time must be numeric seconds" in chunk_prompt
     assert "Return only valid JSON with this shape:" in transcript_prompt
+
+
+def test_transcript_prompts_expose_stable_segment_ids() -> None:
+    segments = [
+        TranscriptSegment(start=1.25, end=3.5, text="Segment anchored content."),
+    ]
+
+    prompt = build_transcript_prompt("lesson.mp4", 4.0, "en", 3, segments)
+
+    segment_id = llm.transcript_segment_id(segments[0])
+    assert f"[{segment_id}]" in prompt
+    assert '"start_segment_id"' in prompt
+    assert '"segment_id"' in prompt
+    assert "Segment IDs are authoritative" in prompt
+
+
+def test_segment_ids_disambiguate_equal_timestamps_with_different_text() -> None:
+    first = TranscriptSegment(start=1.25, end=3.5, text="First interpretation.")
+    second = TranscriptSegment(start=1.25, end=3.5, text="Second interpretation.")
+
+    assert llm.transcript_segment_id(first) != llm.transcript_segment_id(second)
+    assert llm.transcript_segment_id(first) == llm.transcript_segment_id(first.model_copy())
+
+
+def test_chunk_segments_budgets_rendered_transcript_lines() -> None:
+    segments = [
+        TranscriptSegment(start=index, end=index + 1, text="内容" * 20)
+        for index in range(5)
+    ]
+    max_chars = 240
+
+    chunks = chunk_segments(segments, max_chars=max_chars)
+
+    assert [segment for chunk in chunks for segment in chunk] == segments
+    assert all(
+        sum(len(llm.render_transcript_line(segment)) + 1 for segment in chunk) <= max_chars
+        for chunk in chunks
+    )
+
+
+def test_anchor_note_draft_uses_segment_ids_and_remaps_chapter_indexes() -> None:
+    segments = [
+        TranscriptSegment(start=0, end=5, text="Opening"),
+        TranscriptSegment(start=10, end=15, text="Middle"),
+        TranscriptSegment(start=20, end=25, text="Closing"),
+    ]
+    opening_id = llm.transcript_segment_id(segments[0])
+    middle_id = llm.transcript_segment_id(segments[1])
+    draft = NoteDraft(
+        title="Anchored",
+        chapters=[
+            Chapter(
+                title="Middle",
+                start_time=999,
+                end_time=999,
+                start_segment_id=middle_id,
+                end_segment_id=middle_id,
+            ),
+            Chapter(
+                title="Opening",
+                start_time=999,
+                end_time=999,
+                start_segment_id=opening_id,
+                end_segment_id=opening_id,
+            ),
+        ],
+        key_moments=[
+            KeyMoment(
+                time=999,
+                segment_id=middle_id,
+                reason="Middle frame",
+                chapter_index=0,
+            )
+        ],
+    )
+
+    anchored = llm.anchor_note_draft_to_segments(draft, segments, duration=25)
+
+    assert [chapter.title for chapter in anchored.chapters] == ["Opening", "Middle"]
+    assert anchored.chapters[0].start_time == 0
+    assert anchored.chapters[0].end_time == 5
+    assert anchored.chapters[1].start_time == 10
+    assert anchored.chapters[1].end_time == 15
+    assert anchored.key_moments[0].time == 12.5
+    assert anchored.key_moments[0].segment_id == middle_id
+    assert anchored.key_moments[0].chapter_index == 1
+
+
+def test_anchor_note_draft_snaps_gap_times_to_nearest_segment() -> None:
+    segments = [
+        TranscriptSegment(start=0, end=5, text="Opening"),
+        TranscriptSegment(start=10, end=14, text="Next"),
+    ]
+    draft = NoteDraft(
+        title="Snapped",
+        chapters=[Chapter(title="Next", start_time=8, end_time=9)],
+        key_moments=[KeyMoment(time=8, reason="Gap frame", chapter_index=0)],
+    )
+
+    anchored = llm.anchor_note_draft_to_segments(draft, segments, duration=14)
+
+    assert anchored.chapters[0].start_time == 10
+    assert anchored.chapters[0].end_time == 14
+    assert anchored.key_moments[0].time == 12
+    assert anchored.key_moments[0].segment_id == llm.transcript_segment_id(segments[1])
+    assert anchored.key_moments[0].chapter_index == 0
+
+
+def test_anchor_note_draft_orders_reversed_segment_references_consistently() -> None:
+    segments = [
+        TranscriptSegment(start=0, end=5, text="Opening"),
+        TranscriptSegment(start=10, end=15, text="Closing"),
+    ]
+    opening_id = llm.transcript_segment_id(segments[0])
+    closing_id = llm.transcript_segment_id(segments[1])
+    draft = NoteDraft(
+        title="Reversed",
+        chapters=[
+            Chapter(
+                title="Whole chapter",
+                start_time=10,
+                end_time=5,
+                start_segment_id=closing_id,
+                end_segment_id=opening_id,
+            )
+        ],
+    )
+
+    anchored = llm.anchor_note_draft_to_segments(draft, segments, duration=15)
+
+    chapter = anchored.chapters[0]
+    assert chapter.start_time == 0
+    assert chapter.end_time == 15
+    assert chapter.start_segment_id == opening_id
+    assert chapter.end_segment_id == closing_id
+
+
+def test_anchor_note_draft_preserves_valid_time_inside_explicit_segment() -> None:
+    segment = TranscriptSegment(start=10, end=20, text="Demonstration")
+    segment_id = llm.transcript_segment_id(segment)
+    draft = NoteDraft(
+        title="Precise frame",
+        key_moments=[KeyMoment(time=11.25, segment_id=segment_id, reason="Exact moment")],
+    )
+
+    anchored = llm.anchor_note_draft_to_segments(draft, [segment], duration=20)
+
+    assert anchored.key_moments[0].time == 11.25
+
+
+def test_generate_note_draft_anchors_model_output_to_transcript_segments(monkeypatch) -> None:
+    segments = [
+        TranscriptSegment(start=2, end=6, text="Opening statement"),
+        TranscriptSegment(start=12, end=18, text="Main demonstration"),
+    ]
+    opening_id = llm.transcript_segment_id(segments[0])
+    demonstration_id = llm.transcript_segment_id(segments[1])
+
+    def fake_call_note_model(_config, _messages, **_kwargs):
+        return NoteDraft(
+            title="Anchored generation",
+            chapters=[
+                Chapter(
+                    title="Demonstration",
+                    start_time=999,
+                    end_time=999,
+                    start_segment_id=demonstration_id,
+                    end_segment_id=demonstration_id,
+                ),
+                Chapter(
+                    title="Opening",
+                    start_time=999,
+                    end_time=999,
+                    start_segment_id=opening_id,
+                    end_segment_id=opening_id,
+                ),
+            ],
+            key_moments=[
+                KeyMoment(
+                    time=999,
+                    segment_id=demonstration_id,
+                    reason="Show the demonstration",
+                    chapter_index=0,
+                )
+            ],
+        )
+
+    monkeypatch.setattr(llm, "call_note_model", fake_call_note_model)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        note_api_key="note-key",
+        note_language=NoteLanguage.en,
+        original_filename="lesson.mp4",
+    )
+
+    draft = llm.generate_note_draft(config, duration=20, segments=segments)
+
+    assert [chapter.title for chapter in draft.chapters] == ["Opening", "Demonstration"]
+    assert draft.chapters[0].start_time == 2
+    assert draft.chapters[0].end_time == 6
+    assert draft.chapters[1].start_time == 12
+    assert draft.chapters[1].end_time == 18
+    assert draft.key_moments[0].time == 15
+    assert draft.key_moments[0].chapter_index == 1
 
 
 def test_chunk_prompt_can_include_adjacent_context_for_targeted_regeneration() -> None:

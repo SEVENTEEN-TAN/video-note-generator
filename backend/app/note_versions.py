@@ -9,11 +9,14 @@ from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
+from .atomic_io import atomic_write_text
 from .ffmpeg_tools import extract_frame
 from .frame_selection import select_key_frame_moments
 from .llm import generate_note_draft
 from .markdown import render_note_markdown
-from .models import JobConfig, NoteDraft, NoteStyle, NoteVersion, NoteVersionIndex
+from .models import NoteDraft, NoteGenerationConfig, NoteStyle, NoteVersion, NoteVersionIndex
+from .note_evidence import EVIDENCE_FILENAME, build_note_evidence_index
+from .operation_leases import assert_current_operation_lease
 from .subtitles import transcript_segments_from_payload
 from .task_debug_log import TaskDebugLog
 from .transcript_corrections import load_preferred_transcript_payload
@@ -48,19 +51,13 @@ def is_safe_note_version(job_dir: Path, version: NoteVersion) -> bool:
         safe_note_version_id(version.id)
         resolve_job_relative_path(job_dir, version.note_path)
         resolve_job_relative_path(job_dir, version.frame_dir)
+        if version.draft_path:
+            resolve_job_relative_path(job_dir, version.draft_path)
+        if version.evidence_path:
+            resolve_job_relative_path(job_dir, version.evidence_path)
     except ValueError:
         return False
     return True
-
-
-def atomic_write_text(path: Path, text: str, *, encoding: str = "utf-8") -> None:
-    tmp_path = path.with_name(f"{path.name}.tmp")
-    try:
-        tmp_path.write_text(text, encoding=encoding)
-        tmp_path.replace(path)
-    finally:
-        if tmp_path.exists():
-            tmp_path.unlink()
 
 
 def note_version_index_path(job_dir: Path) -> Path:
@@ -187,6 +184,7 @@ def set_note_version_selection(
 
 
 def activate_note_version(job_dir: Path, version_id: str) -> NoteVersionIndex:
+    assert_current_operation_lease()
     current_index = load_note_version_index(job_dir)
     version = get_note_version(current_index, version_id)
     if not version:
@@ -223,6 +221,7 @@ def activate_note_version(job_dir: Path, version_id: str) -> NoteVersionIndex:
     try:
         shutil.copyfile(source_note, temporary_note)
         shutil.copytree(source_frames, temporary_frames)
+        assert_current_operation_lease()
         if root_note.exists():
             root_note.replace(backup_note)
         if root_frames.exists():
@@ -250,15 +249,18 @@ def activate_note_version(job_dir: Path, version_id: str) -> NoteVersionIndex:
 
 
 def invalidate_review_artifacts(job_dir: Path) -> None:
+    assert_current_operation_lease()
     review_dir = job_dir / "review"
     for filename in (
         "frame_candidates.json",
         "frame_candidates.cache.json",
         "quality_report.json",
         "quality_report.md",
+        "finalization.json",
     ):
         (review_dir / filename).unlink(missing_ok=True)
     shutil.rmtree(review_dir / "frame_candidates", ignore_errors=True)
+    shutil.rmtree(review_dir / "finalization_staging", ignore_errors=True)
 
 
 def ensure_root_note_has_version(job_dir: Path) -> NoteVersionIndex:
@@ -282,6 +284,7 @@ def ensure_root_note_has_version(job_dir: Path) -> NoteVersionIndex:
 
 
 def snapshot_root_note_as_manual_version(job_dir: Path) -> NoteVersionIndex:
+    assert_current_operation_lease()
     version_id = next_manual_version_id(job_dir)
     version_dir = job_dir / NOTE_VERSIONS_DIR / version_id
     frames_dir = version_dir / "frames"
@@ -332,10 +335,11 @@ def create_note_version_from_draft(
     video_path: Path,
     draft: NoteDraft,
     duration: float | None,
-    config: JobConfig,
+    config: NoteGenerationConfig,
     version_id: str | None = None,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> NoteVersion:
+    assert_current_operation_lease()
     version_id = safe_note_version_id(version_id or next_note_version_id(job_dir))
     version_dir = job_dir / NOTE_VERSIONS_DIR / version_id
     if version_dir.exists():
@@ -370,7 +374,19 @@ def create_note_version_from_draft(
         version_draft.key_moments = selected_moments
 
         note_path = temporary_dir / "note.md"
-        note_path.write_text(render_note_markdown(version_draft), encoding="utf-8-sig")
+        atomic_write_text(note_path, render_note_markdown(version_draft), encoding="utf-8-sig")
+        atomic_write_text(
+            temporary_dir / "draft.json",
+            version_draft.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        evidence = build_note_evidence_index(job_dir, version_draft)
+        atomic_write_text(
+            temporary_dir / EVIDENCE_FILENAME,
+            evidence.model_dump_json(indent=2),
+            encoding="utf-8",
+        )
+        assert_current_operation_lease()
         temporary_dir.replace(version_dir)
     finally:
         if temporary_dir.exists():
@@ -385,6 +401,8 @@ def create_note_version_from_draft(
         frame_limit=config.frame_limit,
         note_path=f"{NOTE_VERSIONS_DIR}/{version_id}/note.md",
         frame_dir=f"{NOTE_VERSIONS_DIR}/{version_id}/frames",
+        draft_path=f"{NOTE_VERSIONS_DIR}/{version_id}/draft.json",
+        evidence_path=f"{NOTE_VERSIONS_DIR}/{version_id}/{EVIDENCE_FILENAME}",
         selected=True,
         active=True,
         extras_present=bool(config.extras),
@@ -393,6 +411,27 @@ def create_note_version_from_draft(
     add_note_version(job_dir, version)
     activate_note_version(job_dir, version.id)
     return version
+
+
+def load_note_version_draft(job_dir: Path, version_id: str | None = None) -> NoteDraft | None:
+    index = load_note_version_index(job_dir)
+    resolved_id = version_id or index.active_version_id
+    if not resolved_id:
+        return None
+    version = get_note_version(index, resolved_id)
+    if version is None:
+        return None
+    relative_path = version.draft_path or f"{NOTE_VERSIONS_DIR}/{resolved_id}/draft.json"
+    try:
+        path = resolve_job_relative_path(job_dir, relative_path)
+    except ValueError:
+        return None
+    if not path.exists():
+        return None
+    try:
+        return NoteDraft.model_validate_json(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
 
 
 def _existing_version_frames(job_dir: Path) -> dict[int, Path]:
@@ -445,7 +484,7 @@ def _extract_frame_with_cancellation(
 
 def regenerate_note_version(
     job_dir: Path,
-    config: JobConfig,
+    config: NoteGenerationConfig,
     debug_log: TaskDebugLog | None = None,
     *,
     is_cancelled: Callable[[], bool] | None = None,

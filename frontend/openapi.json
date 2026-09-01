@@ -1,0 +1,4921 @@
+{
+  "components": {
+    "schemas": {
+      "Artifact": {
+        "properties": {
+          "asset_url": {
+            "title": "Asset Url",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "audio",
+              "subtitle",
+              "markdown",
+              "image",
+              "json",
+              "zip",
+              "log"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "path",
+          "kind",
+          "asset_url"
+        ],
+        "title": "Artifact",
+        "type": "object"
+      },
+      "Body_confirm_subtitles_api_jobs__job_id__subtitles_confirm_post": {
+        "properties": {
+          "extras": {
+            "default": "",
+            "title": "Extras",
+            "type": "string"
+          },
+          "frame_limit": {
+            "default": 6,
+            "title": "Frame Limit",
+            "type": "integer"
+          },
+          "note_api_key": {
+            "default": "",
+            "title": "Note Api Key",
+            "type": "string"
+          },
+          "note_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Note Base Url",
+            "type": "string"
+          },
+          "note_language": {
+            "$ref": "#/components/schemas/NoteLanguage"
+          },
+          "note_model": {
+            "default": "gpt-5.5",
+            "title": "Note Model",
+            "type": "string"
+          },
+          "note_style": {
+            "$ref": "#/components/schemas/NoteStyle",
+            "default": "detailed"
+          }
+        },
+        "required": [
+          "note_language"
+        ],
+        "title": "Body_confirm_subtitles_api_jobs__job_id__subtitles_confirm_post",
+        "type": "object"
+      },
+      "Body_create_job_api_jobs_post": {
+        "properties": {
+          "extras": {
+            "default": "",
+            "title": "Extras",
+            "type": "string"
+          },
+          "frame_limit": {
+            "default": 6,
+            "title": "Frame Limit",
+            "type": "integer"
+          },
+          "local_whisper_compute_type": {
+            "default": "",
+            "title": "Local Whisper Compute Type",
+            "type": "string"
+          },
+          "local_whisper_device": {
+            "default": "",
+            "title": "Local Whisper Device",
+            "type": "string"
+          },
+          "note_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Note Base Url",
+            "type": "string"
+          },
+          "note_language": {
+            "$ref": "#/components/schemas/NoteLanguage"
+          },
+          "note_model": {
+            "default": "gpt-5.5",
+            "title": "Note Model",
+            "type": "string"
+          },
+          "note_style": {
+            "$ref": "#/components/schemas/NoteStyle",
+            "default": "detailed"
+          },
+          "performance_mode": {
+            "$ref": "#/components/schemas/PerformanceMode",
+            "default": "balanced"
+          },
+          "subtitle": {
+            "anyOf": [
+              {
+                "format": "binary",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Subtitle"
+          },
+          "transcription_api_key": {
+            "default": "",
+            "title": "Transcription Api Key",
+            "type": "string"
+          },
+          "transcription_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Transcription Base Url",
+            "type": "string"
+          },
+          "transcription_language": {
+            "$ref": "#/components/schemas/TranscriptionLanguage",
+            "default": "auto"
+          },
+          "transcription_mode": {
+            "$ref": "#/components/schemas/TranscriptionMode",
+            "default": "audio_transcriptions"
+          },
+          "transcription_model": {
+            "default": "whisper-1",
+            "title": "Transcription Model",
+            "type": "string"
+          },
+          "video": {
+            "format": "binary",
+            "title": "Video",
+            "type": "string"
+          }
+        },
+        "required": [
+          "video",
+          "note_language"
+        ],
+        "title": "Body_create_job_api_jobs_post",
+        "type": "object"
+      },
+      "Body_regenerate_note_chunk_api_jobs__job_id__note_chunks__chunk_id__regenerate_post": {
+        "properties": {
+          "extras": {
+            "default": "",
+            "title": "Extras",
+            "type": "string"
+          },
+          "frame_limit": {
+            "default": 6,
+            "title": "Frame Limit",
+            "type": "integer"
+          },
+          "note_api_key": {
+            "title": "Note Api Key",
+            "type": "string"
+          },
+          "note_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Note Base Url",
+            "type": "string"
+          },
+          "note_language": {
+            "$ref": "#/components/schemas/NoteLanguage",
+            "default": "zh"
+          },
+          "note_model": {
+            "default": "gpt-5.5",
+            "title": "Note Model",
+            "type": "string"
+          },
+          "note_style": {
+            "$ref": "#/components/schemas/NoteStyle",
+            "default": "detailed"
+          }
+        },
+        "required": [
+          "note_api_key"
+        ],
+        "title": "Body_regenerate_note_chunk_api_jobs__job_id__note_chunks__chunk_id__regenerate_post",
+        "type": "object"
+      },
+      "Body_regenerate_note_version_endpoint_api_jobs__job_id__note_versions_post": {
+        "properties": {
+          "extras": {
+            "default": "",
+            "title": "Extras",
+            "type": "string"
+          },
+          "frame_limit": {
+            "default": 6,
+            "title": "Frame Limit",
+            "type": "integer"
+          },
+          "note_api_key": {
+            "default": "",
+            "title": "Note Api Key",
+            "type": "string"
+          },
+          "note_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Note Base Url",
+            "type": "string"
+          },
+          "note_language": {
+            "$ref": "#/components/schemas/NoteLanguage"
+          },
+          "note_model": {
+            "default": "gpt-5.5",
+            "title": "Note Model",
+            "type": "string"
+          },
+          "note_style": {
+            "$ref": "#/components/schemas/NoteStyle",
+            "default": "detailed"
+          }
+        },
+        "required": [
+          "note_language"
+        ],
+        "title": "Body_regenerate_note_version_endpoint_api_jobs__job_id__note_versions_post",
+        "type": "object"
+      },
+      "Body_regenerate_subtitles_api_jobs__job_id__subtitles_regenerate_post": {
+        "properties": {
+          "local_whisper_compute_type": {
+            "default": "",
+            "title": "Local Whisper Compute Type",
+            "type": "string"
+          },
+          "local_whisper_device": {
+            "default": "",
+            "title": "Local Whisper Device",
+            "type": "string"
+          },
+          "performance_mode": {
+            "$ref": "#/components/schemas/PerformanceMode",
+            "default": "balanced"
+          },
+          "transcription_api_key": {
+            "default": "",
+            "title": "Transcription Api Key",
+            "type": "string"
+          },
+          "transcription_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Transcription Base Url",
+            "type": "string"
+          },
+          "transcription_language": {
+            "$ref": "#/components/schemas/TranscriptionLanguage",
+            "default": "auto"
+          },
+          "transcription_mode": {
+            "$ref": "#/components/schemas/TranscriptionMode",
+            "default": "audio_transcriptions"
+          },
+          "transcription_model": {
+            "default": "whisper-1",
+            "title": "Transcription Model",
+            "type": "string"
+          }
+        },
+        "title": "Body_regenerate_subtitles_api_jobs__job_id__subtitles_regenerate_post",
+        "type": "object"
+      },
+      "Body_suggest_frame_count_api_jobs_frame_suggestion_post": {
+        "properties": {
+          "extras": {
+            "default": "",
+            "title": "Extras",
+            "type": "string"
+          },
+          "local_whisper_compute_type": {
+            "default": "",
+            "title": "Local Whisper Compute Type",
+            "type": "string"
+          },
+          "local_whisper_device": {
+            "default": "",
+            "title": "Local Whisper Device",
+            "type": "string"
+          },
+          "note_api_key": {
+            "default": "",
+            "title": "Note Api Key",
+            "type": "string"
+          },
+          "note_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Note Base Url",
+            "type": "string"
+          },
+          "note_language": {
+            "$ref": "#/components/schemas/NoteLanguage"
+          },
+          "note_model": {
+            "default": "gpt-5.5",
+            "title": "Note Model",
+            "type": "string"
+          },
+          "note_style": {
+            "$ref": "#/components/schemas/NoteStyle",
+            "default": "detailed"
+          },
+          "performance_mode": {
+            "$ref": "#/components/schemas/PerformanceMode",
+            "default": "balanced"
+          },
+          "transcription_api_key": {
+            "default": "",
+            "title": "Transcription Api Key",
+            "type": "string"
+          },
+          "transcription_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Transcription Base Url",
+            "type": "string"
+          },
+          "transcription_language": {
+            "$ref": "#/components/schemas/TranscriptionLanguage",
+            "default": "auto"
+          },
+          "transcription_mode": {
+            "$ref": "#/components/schemas/TranscriptionMode",
+            "default": "audio_transcriptions"
+          },
+          "transcription_model": {
+            "default": "whisper-1",
+            "title": "Transcription Model",
+            "type": "string"
+          },
+          "video": {
+            "format": "binary",
+            "title": "Video",
+            "type": "string"
+          }
+        },
+        "required": [
+          "video",
+          "note_language"
+        ],
+        "title": "Body_suggest_frame_count_api_jobs_frame_suggestion_post",
+        "type": "object"
+      },
+      "ChapterQualityReport": {
+        "properties": {
+          "chapter_index": {
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "end_time": {
+            "title": "End Time",
+            "type": "number"
+          },
+          "issues": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "note_chars": {
+            "title": "Note Chars",
+            "type": "integer"
+          },
+          "selected_frame_count": {
+            "title": "Selected Frame Count",
+            "type": "integer"
+          },
+          "start_time": {
+            "title": "Start Time",
+            "type": "number"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "transcript_chars": {
+            "title": "Transcript Chars",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "chapter_index",
+          "title",
+          "start_time",
+          "end_time",
+          "transcript_chars",
+          "note_chars",
+          "selected_frame_count"
+        ],
+        "title": "ChapterQualityReport",
+        "type": "object"
+      },
+      "CudaDependencyInstallState": {
+        "properties": {
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "progress": {
+            "default": 0,
+            "title": "Progress",
+            "type": "integer"
+          },
+          "python_path": {
+            "default": "",
+            "title": "Python Path",
+            "type": "string"
+          },
+          "status": {
+            "default": "idle",
+            "enum": [
+              "idle",
+              "pending",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "CudaDependencyInstallState",
+        "type": "object"
+      },
+      "FFmpegRuntimeStatus": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "install_hint": {
+            "title": "Install Hint",
+            "type": "string"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
+          }
+        },
+        "required": [
+          "available",
+          "install_hint"
+        ],
+        "title": "FFmpegRuntimeStatus",
+        "type": "object"
+      },
+      "FailureContext": {
+        "properties": {
+          "attempt": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Attempt"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Context"
+          },
+          "error_code": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error Code"
+          },
+          "finish_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finish Reason"
+          },
+          "flagged_categories": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Flagged Categories",
+            "type": "array"
+          },
+          "max_tokens": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Max Tokens"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "message_chars": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message Chars"
+          },
+          "note_base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Base Url"
+          },
+          "note_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Model"
+          },
+          "response_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response File"
+          },
+          "response_length": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Length"
+          },
+          "stage": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stage"
+          },
+          "status_code": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status Code"
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Summary"
+          },
+          "ts": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ts"
+          }
+        },
+        "title": "FailureContext",
+        "type": "object"
+      },
+      "FasterWhisperRuntimeStatus": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "ctranslate2_available": {
+            "title": "Ctranslate2 Available",
+            "type": "boolean"
+          },
+          "ctranslate2_version": {
+            "title": "Ctranslate2 Version",
+            "type": "string"
+          },
+          "cuda_available": {
+            "title": "Cuda Available",
+            "type": "boolean"
+          },
+          "cuda_device_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cuda Device Count"
+          },
+          "cuda_dll_dirs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cuda Dll Dirs",
+            "type": "array"
+          },
+          "cuda_error": {
+            "title": "Cuda Error",
+            "type": "string"
+          },
+          "cuda_runtime_available": {
+            "title": "Cuda Runtime Available",
+            "type": "boolean"
+          },
+          "cuda_runtime_hint": {
+            "title": "Cuda Runtime Hint",
+            "type": "string"
+          },
+          "cuda_source": {
+            "enum": [
+              "internal",
+              "external"
+            ],
+            "title": "Cuda Source",
+            "type": "string"
+          },
+          "external_python_error": {
+            "title": "External Python Error",
+            "type": "string"
+          },
+          "external_python_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Python Path"
+          },
+          "external_python_source": {
+            "enum": [
+              "environment",
+              "settings",
+              "default",
+              "missing"
+            ],
+            "title": "External Python Source",
+            "type": "string"
+          },
+          "external_worker_available": {
+            "title": "External Worker Available",
+            "type": "boolean"
+          },
+          "external_worker_path": {
+            "title": "External Worker Path",
+            "type": "string"
+          },
+          "import_error": {
+            "title": "Import Error",
+            "type": "string"
+          },
+          "install_hint": {
+            "title": "Install Hint",
+            "type": "string"
+          },
+          "internal_available": {
+            "title": "Internal Available",
+            "type": "boolean"
+          },
+          "internal_import_error": {
+            "title": "Internal Import Error",
+            "type": "string"
+          },
+          "model_available": {
+            "title": "Model Available",
+            "type": "boolean"
+          },
+          "python_available": {
+            "title": "Python Available",
+            "type": "boolean"
+          },
+          "python_package_install_mode": {
+            "enum": [
+              "default",
+              "user"
+            ],
+            "title": "Python Package Install Mode",
+            "type": "string"
+          },
+          "ready_for_cpu": {
+            "title": "Ready For Cpu",
+            "type": "boolean"
+          },
+          "ready_for_cuda": {
+            "title": "Ready For Cuda",
+            "type": "boolean"
+          },
+          "worker_error": {
+            "title": "Worker Error",
+            "type": "string"
+          },
+          "worker_error_code": {
+            "title": "Worker Error Code",
+            "type": "string"
+          },
+          "worker_probe_error": {
+            "title": "Worker Probe Error",
+            "type": "string"
+          },
+          "worker_ready": {
+            "title": "Worker Ready",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "available",
+          "internal_available",
+          "internal_import_error",
+          "python_available",
+          "external_python_source",
+          "external_python_error",
+          "python_package_install_mode",
+          "external_worker_path",
+          "external_worker_available",
+          "worker_ready",
+          "worker_error",
+          "worker_error_code",
+          "worker_probe_error",
+          "ctranslate2_available",
+          "ctranslate2_version",
+          "cuda_available",
+          "cuda_runtime_available",
+          "cuda_error",
+          "cuda_source",
+          "cuda_runtime_hint",
+          "import_error",
+          "install_hint",
+          "model_available",
+          "ready_for_cpu",
+          "ready_for_cuda"
+        ],
+        "title": "FasterWhisperRuntimeStatus",
+        "type": "object"
+      },
+      "FrameCandidate": {
+        "properties": {
+          "anchor_time": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Anchor Time"
+          },
+          "bright_ratio": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Bright Ratio"
+          },
+          "brightness": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Brightness"
+          },
+          "chapter_index": {
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "contrast": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Contrast"
+          },
+          "dark_ratio": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Dark Ratio"
+          },
+          "duplicate_of": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duplicate Of"
+          },
+          "hash": {
+            "title": "Hash",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "note_excerpt": {
+            "default": "",
+            "title": "Note Excerpt",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "quality_score": {
+            "default": 0.5,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Quality Score",
+            "type": "number"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "rejected": {
+            "default": false,
+            "title": "Rejected",
+            "type": "boolean"
+          },
+          "risk_flags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Risk Flags",
+            "type": "array"
+          },
+          "scene_sample_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Scene Sample Count",
+            "type": "integer"
+          },
+          "selected": {
+            "default": false,
+            "title": "Selected",
+            "type": "boolean"
+          },
+          "sharpness": {
+            "anyOf": [
+              {
+                "maximum": 1.0,
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sharpness"
+          },
+          "similarity": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Similarity",
+            "type": "number"
+          },
+          "source": {
+            "enum": [
+              "note_key_moment",
+              "chapter_fallback"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "stability_score": {
+            "default": 0.5,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Stability Score",
+            "type": "number"
+          },
+          "subtitle_excerpt": {
+            "default": "",
+            "title": "Subtitle Excerpt",
+            "type": "string"
+          },
+          "time": {
+            "title": "Time",
+            "type": "number"
+          },
+          "time_offset": {
+            "default": 0,
+            "title": "Time Offset",
+            "type": "number"
+          },
+          "transition_score": {
+            "default": 0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Transition Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "chapter_index",
+          "time",
+          "path",
+          "reason",
+          "source",
+          "hash",
+          "similarity"
+        ],
+        "title": "FrameCandidate",
+        "type": "object"
+      },
+      "FrameCandidateChapterContext": {
+        "properties": {
+          "chapter_index": {
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "end_time": {
+            "title": "End Time",
+            "type": "number"
+          },
+          "note_excerpt": {
+            "default": "",
+            "title": "Note Excerpt",
+            "type": "string"
+          },
+          "start_time": {
+            "title": "Start Time",
+            "type": "number"
+          },
+          "subtitle_excerpt": {
+            "default": "",
+            "title": "Subtitle Excerpt",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "chapter_index",
+          "title",
+          "start_time",
+          "end_time"
+        ],
+        "title": "FrameCandidateChapterContext",
+        "type": "object"
+      },
+      "FrameCandidateIndex": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/FrameCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "chapter_contexts": {
+            "items": {
+              "$ref": "#/components/schemas/FrameCandidateChapterContext"
+            },
+            "title": "Chapter Contexts",
+            "type": "array"
+          }
+        },
+        "title": "FrameCandidateIndex",
+        "type": "object"
+      },
+      "FrameSuggestion": {
+        "properties": {
+          "candidate_count": {
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "recommended_frame_count": {
+            "title": "Recommended Frame Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "recommended_frame_count",
+          "candidate_count"
+        ],
+        "title": "FrameSuggestion",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthState": {
+        "properties": {
+          "ffmpeg_available": {
+            "title": "Ffmpeg Available",
+            "type": "boolean"
+          },
+          "ffmpeg_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ffmpeg Path"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "runtime": {
+            "$ref": "#/components/schemas/RuntimeState"
+          },
+          "runtime_ok": {
+            "title": "Runtime Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "runtime_ok",
+          "ffmpeg_available",
+          "runtime"
+        ],
+        "title": "HealthState",
+        "type": "object"
+      },
+      "JobHistory": {
+        "properties": {
+          "jobs": {
+            "items": {
+              "$ref": "#/components/schemas/JobSummary"
+            },
+            "title": "Jobs",
+            "type": "array"
+          }
+        },
+        "title": "JobHistory",
+        "type": "object"
+      },
+      "JobPublicState": {
+        "properties": {
+          "artifact_revision": {
+            "default": "",
+            "title": "Artifact Revision",
+            "type": "string"
+          },
+          "artifacts": {
+            "items": {
+              "$ref": "#/components/schemas/Artifact"
+            },
+            "title": "Artifacts",
+            "type": "array"
+          },
+          "download_filename": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Download Filename"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "failure_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FailureContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "integer"
+          },
+          "stage": {
+            "$ref": "#/components/schemas/JobStage",
+            "default": "queued"
+          },
+          "stage_elapsed_seconds": {
+            "default": 0,
+            "title": "Stage Elapsed Seconds",
+            "type": "number"
+          },
+          "state_revision": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "State Revision",
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "step": {
+            "title": "Step",
+            "type": "string"
+          },
+          "step_started_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Started At"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "work_progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptionWorkProgress"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "job_id",
+          "status",
+          "step",
+          "progress"
+        ],
+        "title": "JobPublicState",
+        "type": "object"
+      },
+      "JobStage": {
+        "enum": [
+          "queued",
+          "analyzing_video",
+          "extracting_audio",
+          "transcribing",
+          "awaiting_subtitle_review",
+          "generating_note",
+          "generating_frames",
+          "preparing_review",
+          "awaiting_note_review",
+          "finalizing",
+          "completed",
+          "failed",
+          "cancelling",
+          "cancelled"
+        ],
+        "title": "JobStage",
+        "type": "string"
+      },
+      "JobStatus": {
+        "enum": [
+          "pending",
+          "running",
+          "cancelling",
+          "awaiting_subtitle_confirmation",
+          "awaiting_note_review",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ],
+        "title": "JobStatus",
+        "type": "string"
+      },
+      "JobSummary": {
+        "properties": {
+          "active_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Version Id"
+          },
+          "artifact_count": {
+            "default": 0,
+            "title": "Artifact Count",
+            "type": "integer"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "duration_seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Seconds"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "failure_context": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FailureContext"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "note_version_count": {
+            "default": 0,
+            "title": "Note Version Count",
+            "type": "integer"
+          },
+          "original_filename": {
+            "title": "Original Filename",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/JobStatus"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "job_id",
+          "title",
+          "original_filename",
+          "status"
+        ],
+        "title": "JobSummary",
+        "type": "object"
+      },
+      "LocalModelsRuntimeStatus": {
+        "properties": {
+          "hint": {
+            "title": "Hint",
+            "type": "string"
+          },
+          "models": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Models",
+            "type": "array"
+          },
+          "root": {
+            "title": "Root",
+            "type": "string"
+          },
+          "root_source": {
+            "enum": [
+              "environment",
+              "settings",
+              "default",
+              "missing"
+            ],
+            "title": "Root Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "root",
+          "root_source",
+          "hint"
+        ],
+        "title": "LocalModelsRuntimeStatus",
+        "type": "object"
+      },
+      "LocalTranscriptionDependencyInstallState": {
+        "properties": {
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "progress": {
+            "default": 0,
+            "title": "Progress",
+            "type": "integer"
+          },
+          "python_path": {
+            "default": "",
+            "title": "Python Path",
+            "type": "string"
+          },
+          "status": {
+            "default": "idle",
+            "enum": [
+              "idle",
+              "pending",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "title": "LocalTranscriptionDependencyInstallState",
+        "type": "object"
+      },
+      "LocalWhisperComputeType": {
+        "enum": [
+          "default",
+          "int8",
+          "int8_float16",
+          "float16",
+          "float32"
+        ],
+        "title": "LocalWhisperComputeType",
+        "type": "string"
+      },
+      "LocalWhisperDevice": {
+        "enum": [
+          "auto",
+          "cpu",
+          "cuda"
+        ],
+        "title": "LocalWhisperDevice",
+        "type": "string"
+      },
+      "ModelDownloadRequest": {
+        "properties": {
+          "model_name": {
+            "default": "small",
+            "title": "Model Name",
+            "type": "string"
+          }
+        },
+        "title": "ModelDownloadRequest",
+        "type": "object"
+      },
+      "ModelDownloadState": {
+        "properties": {
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "model_name": {
+            "title": "Model Name",
+            "type": "string"
+          },
+          "model_root": {
+            "title": "Model Root",
+            "type": "string"
+          },
+          "progress": {
+            "default": 0,
+            "title": "Progress",
+            "type": "integer"
+          },
+          "status": {
+            "default": "pending",
+            "enum": [
+              "idle",
+              "pending",
+              "running",
+              "succeeded",
+              "failed"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "model_name",
+          "model_root"
+        ],
+        "title": "ModelDownloadState",
+        "type": "object"
+      },
+      "NoteChunkIndex": {
+        "properties": {
+          "chunks": {
+            "items": {
+              "$ref": "#/components/schemas/NoteChunkMeta"
+            },
+            "title": "Chunks",
+            "type": "array"
+          },
+          "total_segments": {
+            "default": 0,
+            "title": "Total Segments",
+            "type": "integer"
+          }
+        },
+        "title": "NoteChunkIndex",
+        "type": "object"
+      },
+      "NoteChunkMeta": {
+        "properties": {
+          "end_time": {
+            "title": "End Time",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "segment_end": {
+            "title": "Segment End",
+            "type": "integer"
+          },
+          "segment_start": {
+            "title": "Segment Start",
+            "type": "integer"
+          },
+          "start_time": {
+            "title": "Start Time",
+            "type": "number"
+          },
+          "status": {
+            "default": "succeeded",
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "index",
+          "total",
+          "label",
+          "start_time",
+          "end_time",
+          "segment_start",
+          "segment_end"
+        ],
+        "title": "NoteChunkMeta",
+        "type": "object"
+      },
+      "NoteLanguage": {
+        "enum": [
+          "zh",
+          "en",
+          "follow"
+        ],
+        "title": "NoteLanguage",
+        "type": "string"
+      },
+      "NoteStyle": {
+        "enum": [
+          "minimal",
+          "detailed",
+          "tutorial",
+          "academic",
+          "task_oriented",
+          "meeting_minutes"
+        ],
+        "title": "NoteStyle",
+        "type": "string"
+      },
+      "NoteVersion": {
+        "properties": {
+          "active": {
+            "default": false,
+            "title": "Active",
+            "type": "boolean"
+          },
+          "created_at": {
+            "title": "Created At",
+            "type": "string"
+          },
+          "draft_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Draft Path"
+          },
+          "evidence_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Evidence Path"
+          },
+          "extras_length": {
+            "default": 0,
+            "title": "Extras Length",
+            "type": "integer"
+          },
+          "extras_present": {
+            "default": false,
+            "title": "Extras Present",
+            "type": "boolean"
+          },
+          "frame_dir": {
+            "title": "Frame Dir",
+            "type": "string"
+          },
+          "frame_limit": {
+            "title": "Frame Limit",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "note_base_url": {
+            "title": "Note Base Url",
+            "type": "string"
+          },
+          "note_language": {
+            "title": "Note Language",
+            "type": "string"
+          },
+          "note_model": {
+            "title": "Note Model",
+            "type": "string"
+          },
+          "note_path": {
+            "title": "Note Path",
+            "type": "string"
+          },
+          "note_style": {
+            "$ref": "#/components/schemas/NoteStyle"
+          },
+          "selected": {
+            "default": true,
+            "title": "Selected",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "note_style",
+          "note_language",
+          "note_model",
+          "note_base_url",
+          "frame_limit",
+          "note_path",
+          "frame_dir"
+        ],
+        "title": "NoteVersion",
+        "type": "object"
+      },
+      "NoteVersionIndex": {
+        "properties": {
+          "active_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Version Id"
+          },
+          "selected_version_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Version Ids",
+            "type": "array"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/NoteVersion"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "title": "NoteVersionIndex",
+        "type": "object"
+      },
+      "NoteVersionSelection": {
+        "properties": {
+          "active_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Version Id"
+          },
+          "selected_version_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Version Ids",
+            "type": "array"
+          }
+        },
+        "title": "NoteVersionSelection",
+        "type": "object"
+      },
+      "PerformanceMode": {
+        "enum": [
+          "fast",
+          "balanced",
+          "accurate"
+        ],
+        "title": "PerformanceMode",
+        "type": "string"
+      },
+      "QualityIssue": {
+        "properties": {
+          "chapter_index": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chapter Index"
+          },
+          "frame_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Frame Ids",
+            "type": "array"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "warning",
+              "error"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "severity",
+          "type",
+          "message"
+        ],
+        "title": "QualityIssue",
+        "type": "object"
+      },
+      "QualityReport": {
+        "properties": {
+          "chapter_reports": {
+            "items": {
+              "$ref": "#/components/schemas/ChapterQualityReport"
+            },
+            "title": "Chapter Reports",
+            "type": "array"
+          },
+          "issues": {
+            "items": {
+              "$ref": "#/components/schemas/QualityIssue"
+            },
+            "title": "Issues",
+            "type": "array"
+          },
+          "scores": {
+            "$ref": "#/components/schemas/QualityScores"
+          },
+          "status": {
+            "enum": [
+              "ready",
+              "review_recommended",
+              "needs_attention"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "scores"
+        ],
+        "title": "QualityReport",
+        "type": "object"
+      },
+      "QualityScores": {
+        "properties": {
+          "coverage": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Coverage",
+            "type": "number"
+          },
+          "evidence": {
+            "default": 1.0,
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Evidence",
+            "type": "number"
+          },
+          "frames": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Frames",
+            "type": "number"
+          },
+          "stability": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Stability",
+            "type": "number"
+          },
+          "structure": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Structure",
+            "type": "number"
+          }
+        },
+        "required": [
+          "coverage",
+          "structure",
+          "frames",
+          "stability"
+        ],
+        "title": "QualityScores",
+        "type": "object"
+      },
+      "ReviewAssets": {
+        "properties": {
+          "frame_candidates": {
+            "$ref": "#/components/schemas/FrameCandidateIndex"
+          },
+          "quality_report": {
+            "$ref": "#/components/schemas/QualityReport"
+          },
+          "review_draft": {
+            "$ref": "#/components/schemas/ReviewDraft"
+          }
+        },
+        "required": [
+          "frame_candidates",
+          "quality_report",
+          "review_draft"
+        ],
+        "title": "ReviewAssets",
+        "type": "object"
+      },
+      "ReviewDraft": {
+        "properties": {
+          "finalized_note_sha256": {
+            "default": "",
+            "title": "Finalized Note Sha256",
+            "type": "string"
+          },
+          "note_version_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Version Id"
+          },
+          "paragraphs": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewDraftParagraph"
+            },
+            "title": "Paragraphs",
+            "type": "array"
+          },
+          "schema_version": {
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "source_note_sha256": {
+            "default": "",
+            "title": "Source Note Sha256",
+            "type": "string"
+          },
+          "source_transcript_sha256": {
+            "default": "",
+            "title": "Source Transcript Sha256",
+            "type": "string"
+          },
+          "title": {
+            "default": "",
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "title": "ReviewDraft",
+        "type": "object"
+      },
+      "ReviewDraftParagraph": {
+        "properties": {
+          "body": {
+            "default": "",
+            "title": "Body",
+            "type": "string"
+          },
+          "chapter_index": {
+            "title": "Chapter Index",
+            "type": "integer"
+          },
+          "end_time": {
+            "title": "End Time",
+            "type": "number"
+          },
+          "evidence_reference_valid": {
+            "default": false,
+            "title": "Evidence Reference Valid",
+            "type": "boolean"
+          },
+          "evidence_segment_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Segment Ids",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "selected_frame_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Frame Ids",
+            "type": "array"
+          },
+          "start_time": {
+            "title": "Start Time",
+            "type": "number"
+          },
+          "status": {
+            "default": "needs_review",
+            "enum": [
+              "needs_review",
+              "edited",
+              "approved"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "subtitle_segments": {
+            "items": {
+              "$ref": "#/components/schemas/ReviewSubtitleSegment"
+            },
+            "title": "Subtitle Segments",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "unsupported_numeric_claims": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unsupported Numeric Claims",
+            "type": "array"
+          },
+          "unsupported_technical_identifiers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unsupported Technical Identifiers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "chapter_index",
+          "title",
+          "start_time",
+          "end_time"
+        ],
+        "title": "ReviewDraftParagraph",
+        "type": "object"
+      },
+      "ReviewDraftParagraphUpdate": {
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "selected_frame_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Selected Frame Ids",
+            "type": "array"
+          },
+          "status": {
+            "default": "edited",
+            "enum": [
+              "needs_review",
+              "edited",
+              "approved"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "body"
+        ],
+        "title": "ReviewDraftParagraphUpdate",
+        "type": "object"
+      },
+      "ReviewSubtitleSegment": {
+        "properties": {
+          "end": {
+            "title": "End",
+            "type": "number"
+          },
+          "segment_id": {
+            "default": "",
+            "title": "Segment Id",
+            "type": "string"
+          },
+          "start": {
+            "title": "Start",
+            "type": "number"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "start",
+          "end",
+          "text"
+        ],
+        "title": "ReviewSubtitleSegment",
+        "type": "object"
+      },
+      "RuntimeCapabilities": {
+        "properties": {
+          "audio_transcriptions": {
+            "$ref": "#/components/schemas/RuntimeCapability"
+          },
+          "chat_audio": {
+            "$ref": "#/components/schemas/RuntimeCapability"
+          },
+          "local_transcription_cpu": {
+            "$ref": "#/components/schemas/RuntimeCapability"
+          },
+          "local_transcription_cuda": {
+            "$ref": "#/components/schemas/RuntimeCapability"
+          },
+          "note_generation": {
+            "$ref": "#/components/schemas/RuntimeCapability"
+          },
+          "uploaded_subtitle": {
+            "$ref": "#/components/schemas/RuntimeCapability"
+          },
+          "video_processing": {
+            "$ref": "#/components/schemas/RuntimeCapability"
+          }
+        },
+        "required": [
+          "video_processing",
+          "uploaded_subtitle",
+          "local_transcription_cpu",
+          "local_transcription_cuda",
+          "audio_transcriptions",
+          "chat_audio",
+          "note_generation"
+        ],
+        "title": "RuntimeCapabilities",
+        "type": "object"
+      },
+      "RuntimeCapability": {
+        "properties": {
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "requires_credentials": {
+            "default": false,
+            "title": "Requires Credentials",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "available",
+          "reason"
+        ],
+        "title": "RuntimeCapability",
+        "type": "object"
+      },
+      "RuntimeState": {
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/RuntimeCapabilities"
+          },
+          "faster_whisper": {
+            "$ref": "#/components/schemas/FasterWhisperRuntimeStatus"
+          },
+          "ffmpeg": {
+            "$ref": "#/components/schemas/FFmpegRuntimeStatus"
+          },
+          "local_models": {
+            "$ref": "#/components/schemas/LocalModelsRuntimeStatus"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "settings": {
+            "$ref": "#/components/schemas/SettingsStorageStatus"
+          }
+        },
+        "required": [
+          "ok",
+          "capabilities",
+          "ffmpeg",
+          "faster_whisper",
+          "local_models",
+          "settings"
+        ],
+        "title": "RuntimeState",
+        "type": "object"
+      },
+      "SettingsStorageStatus": {
+        "properties": {
+          "error": {
+            "default": "",
+            "title": "Error",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "schema_version": {
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "secret_provider": {
+            "title": "Secret Provider",
+            "type": "string"
+          },
+          "secrets_encrypted": {
+            "title": "Secrets Encrypted",
+            "type": "boolean"
+          },
+          "warning": {
+            "title": "Warning",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "schema_version",
+          "secret_provider",
+          "secrets_encrypted",
+          "warning"
+        ],
+        "title": "SettingsStorageStatus",
+        "type": "object"
+      },
+      "TranscriptCorrectionApplyRequest": {
+        "properties": {
+          "extras": {
+            "default": "",
+            "title": "Extras",
+            "type": "string"
+          },
+          "frame_limit": {
+            "default": 6,
+            "maximum": 24.0,
+            "minimum": 1.0,
+            "title": "Frame Limit",
+            "type": "integer"
+          },
+          "note_api_key": {
+            "title": "Note Api Key",
+            "type": "string"
+          },
+          "note_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Note Base Url",
+            "type": "string"
+          },
+          "note_language": {
+            "$ref": "#/components/schemas/NoteLanguage"
+          },
+          "note_model": {
+            "default": "gpt-5.5",
+            "title": "Note Model",
+            "type": "string"
+          },
+          "note_style": {
+            "$ref": "#/components/schemas/NoteStyle",
+            "default": "detailed"
+          }
+        },
+        "required": [
+          "note_language",
+          "note_api_key"
+        ],
+        "title": "TranscriptCorrectionApplyRequest",
+        "type": "object"
+      },
+      "TranscriptCorrectionPreview": {
+        "properties": {
+          "changed_count": {
+            "title": "Changed Count",
+            "type": "integer"
+          },
+          "job_id": {
+            "default": "",
+            "title": "Job Id",
+            "type": "string"
+          },
+          "segments": {
+            "items": {
+              "$ref": "#/components/schemas/TranscriptCorrectionSegment"
+            },
+            "title": "Segments",
+            "type": "array"
+          }
+        },
+        "required": [
+          "changed_count"
+        ],
+        "title": "TranscriptCorrectionPreview",
+        "type": "object"
+      },
+      "TranscriptCorrectionRequest": {
+        "properties": {
+          "instructions": {
+            "default": "",
+            "title": "Instructions",
+            "type": "string"
+          },
+          "note_api_key": {
+            "title": "Note Api Key",
+            "type": "string"
+          },
+          "note_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Note Base Url",
+            "type": "string"
+          },
+          "note_model": {
+            "default": "gpt-5.5",
+            "title": "Note Model",
+            "type": "string"
+          }
+        },
+        "required": [
+          "note_api_key"
+        ],
+        "title": "TranscriptCorrectionRequest",
+        "type": "object"
+      },
+      "TranscriptCorrectionSegment": {
+        "properties": {
+          "changed": {
+            "default": false,
+            "title": "Changed",
+            "type": "boolean"
+          },
+          "corrected_text": {
+            "title": "Corrected Text",
+            "type": "string"
+          },
+          "end": {
+            "title": "End",
+            "type": "number"
+          },
+          "index": {
+            "title": "Index",
+            "type": "integer"
+          },
+          "original_text": {
+            "title": "Original Text",
+            "type": "string"
+          },
+          "start": {
+            "title": "Start",
+            "type": "number"
+          }
+        },
+        "required": [
+          "index",
+          "start",
+          "end",
+          "original_text",
+          "corrected_text"
+        ],
+        "title": "TranscriptCorrectionSegment",
+        "type": "object"
+      },
+      "TranscriptionLanguage": {
+        "enum": [
+          "auto",
+          "zh",
+          "en"
+        ],
+        "title": "TranscriptionLanguage",
+        "type": "string"
+      },
+      "TranscriptionMode": {
+        "enum": [
+          "audio_transcriptions",
+          "chat_audio",
+          "local_faster_whisper"
+        ],
+        "title": "TranscriptionMode",
+        "type": "string"
+      },
+      "TranscriptionWorkProgress": {
+        "properties": {
+          "cache_hits": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Cache Hits",
+            "type": "integer"
+          },
+          "completed_chunks": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Completed Chunks",
+            "type": "integer"
+          },
+          "completed_seconds": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Completed Seconds",
+            "type": "number"
+          },
+          "compute_type": {
+            "default": "",
+            "title": "Compute Type",
+            "type": "string"
+          },
+          "current_chunk": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Current Chunk"
+          },
+          "device": {
+            "default": "",
+            "title": "Device",
+            "type": "string"
+          },
+          "eta_seconds": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eta Seconds"
+          },
+          "realtime_factor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Realtime Factor"
+          },
+          "resumable": {
+            "default": false,
+            "title": "Resumable",
+            "type": "boolean"
+          },
+          "total_chunks": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total Chunks",
+            "type": "integer"
+          },
+          "total_seconds": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Total Seconds",
+            "type": "number"
+          }
+        },
+        "title": "TranscriptionWorkProgress",
+        "type": "object"
+      },
+      "UserSettings": {
+        "properties": {
+          "external_python_path": {
+            "default": "",
+            "title": "External Python Path",
+            "type": "string"
+          },
+          "extras": {
+            "default": "",
+            "title": "Extras",
+            "type": "string"
+          },
+          "faster_whisper_model_dir": {
+            "default": "",
+            "title": "Faster Whisper Model Dir",
+            "type": "string"
+          },
+          "frame_limit": {
+            "default": 6,
+            "maximum": 24.0,
+            "minimum": 1.0,
+            "title": "Frame Limit",
+            "type": "integer"
+          },
+          "local_whisper_compute_type": {
+            "$ref": "#/components/schemas/LocalWhisperComputeType",
+            "default": "default"
+          },
+          "local_whisper_device": {
+            "$ref": "#/components/schemas/LocalWhisperDevice",
+            "default": "auto"
+          },
+          "note_api_key": {
+            "default": "",
+            "title": "Note Api Key",
+            "type": "string"
+          },
+          "note_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Note Base Url",
+            "type": "string"
+          },
+          "note_language": {
+            "$ref": "#/components/schemas/NoteLanguage",
+            "default": "zh"
+          },
+          "note_model": {
+            "default": "gpt-5.5",
+            "title": "Note Model",
+            "type": "string"
+          },
+          "note_style": {
+            "$ref": "#/components/schemas/NoteStyle",
+            "default": "detailed"
+          },
+          "performance_mode": {
+            "$ref": "#/components/schemas/PerformanceMode",
+            "default": "balanced"
+          },
+          "python_package_install_mode": {
+            "default": "default",
+            "enum": [
+              "default",
+              "user"
+            ],
+            "title": "Python Package Install Mode",
+            "type": "string"
+          },
+          "transcription_api_key": {
+            "default": "",
+            "title": "Transcription Api Key",
+            "type": "string"
+          },
+          "transcription_base_url": {
+            "default": "https://api.openai.com/v1",
+            "title": "Transcription Base Url",
+            "type": "string"
+          },
+          "transcription_language": {
+            "$ref": "#/components/schemas/TranscriptionLanguage",
+            "default": "auto"
+          },
+          "transcription_mode": {
+            "$ref": "#/components/schemas/TranscriptionMode",
+            "default": "local_faster_whisper"
+          },
+          "transcription_model": {
+            "default": "small",
+            "title": "Transcription Model",
+            "type": "string"
+          }
+        },
+        "title": "UserSettings",
+        "type": "object"
+      },
+      "UserSettingsUpdate": {
+        "properties": {
+          "external_python_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "External Python Path"
+          },
+          "extras": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Extras"
+          },
+          "faster_whisper_model_dir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Faster Whisper Model Dir"
+          },
+          "frame_limit": {
+            "anyOf": [
+              {
+                "maximum": 24.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Frame Limit"
+          },
+          "local_whisper_compute_type": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalWhisperComputeType"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "local_whisper_device": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LocalWhisperDevice"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note_api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Api Key"
+          },
+          "note_base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Base Url"
+          },
+          "note_language": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NoteLanguage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "note_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Model"
+          },
+          "note_style": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NoteStyle"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "performance_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PerformanceMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "python_package_install_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "default",
+                  "user"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Python Package Install Mode"
+          },
+          "transcription_api_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcription Api Key"
+          },
+          "transcription_base_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcription Base Url"
+          },
+          "transcription_language": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptionLanguage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transcription_mode": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TranscriptionMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transcription_model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Transcription Model"
+          }
+        },
+        "title": "UserSettingsUpdate",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Video Note Generator MVP",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/health": {
+      "get": {
+        "operationId": "health_api_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/jobs": {
+      "get": {
+        "operationId": "list_jobs_api_jobs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobHistory"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Jobs",
+        "tags": [
+          "jobs"
+        ]
+      },
+      "post": {
+        "operationId": "create_job_api_jobs_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_create_job_api_jobs_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Create Job Api Jobs Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/frame-suggestion": {
+      "post": {
+        "operationId": "suggest_frame_count_api_jobs_frame_suggestion_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_suggest_frame_count_api_jobs_frame_suggestion_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrameSuggestion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Suggest Frame Count",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}": {
+      "delete": {
+        "operationId": "delete_job_api_jobs__job_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Job Api Jobs  Job Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Job",
+        "tags": [
+          "jobs"
+        ]
+      },
+      "get": {
+        "operationId": "get_job_api_jobs__job_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobPublicState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/assets/{asset_path}": {
+      "get": {
+        "operationId": "get_asset_api_jobs__job_id__assets__asset_path__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "asset_path",
+            "required": true,
+            "schema": {
+              "title": "Asset Path",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Asset",
+        "tags": [
+          "downloads"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/cancel": {
+      "post": {
+        "operationId": "cancel_job_api_jobs__job_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobPublicState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/diagnostics.zip": {
+      "get": {
+        "operationId": "download_diagnostics_zip_api_jobs__job_id__diagnostics_zip_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Diagnostics Zip",
+        "tags": [
+          "downloads"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/download.zip": {
+      "get": {
+        "operationId": "download_zip_api_jobs__job_id__download_zip_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Zip",
+        "tags": [
+          "downloads"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/finalize": {
+      "post": {
+        "operationId": "finalize_job_api_jobs__job_id__finalize_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_state_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected State Revision"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_artifact_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Artifact Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobPublicState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Finalize Job",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/frame-candidates": {
+      "get": {
+        "operationId": "get_frame_candidates_api_jobs__job_id__frame_candidates_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrameCandidateIndex"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Frame Candidates",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/frame-candidates/{candidate_id}/reject": {
+      "post": {
+        "operationId": "reject_job_frame_candidate_api_jobs__job_id__frame_candidates__candidate_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_state_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected State Revision"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_artifact_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Artifact Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrameCandidateIndex"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Job Frame Candidate",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/frame-candidates/{candidate_id}/select": {
+      "post": {
+        "operationId": "select_job_frame_candidate_api_jobs__job_id__frame_candidates__candidate_id__select_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "candidate_id",
+            "required": true,
+            "schema": {
+              "title": "Candidate Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_state_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected State Revision"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_artifact_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Artifact Revision"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FrameCandidateIndex"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Select Job Frame Candidate",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/note-chunks": {
+      "get": {
+        "operationId": "list_note_chunks_api_jobs__job_id__note_chunks_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteChunkIndex"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Note Chunks",
+        "tags": [
+          "notes"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/note-chunks/{chunk_id}/regenerate": {
+      "post": {
+        "operationId": "regenerate_note_chunk_api_jobs__job_id__note_chunks__chunk_id__regenerate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "chunk_id",
+            "required": true,
+            "schema": {
+              "title": "Chunk Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_regenerate_note_chunk_api_jobs__job_id__note_chunks__chunk_id__regenerate_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Regenerate Note Chunk Api Jobs  Job Id  Note Chunks  Chunk Id  Regenerate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Regenerate Note Chunk",
+        "tags": [
+          "notes"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/note-versions": {
+      "get": {
+        "operationId": "list_note_versions_api_jobs__job_id__note_versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteVersionIndex"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Note Versions",
+        "tags": [
+          "notes"
+        ]
+      },
+      "patch": {
+        "operationId": "update_note_version_selection_api_jobs__job_id__note_versions_patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_state_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected State Revision"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_artifact_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Artifact Revision"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/NoteVersionSelection"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NoteVersionIndex"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Note Version Selection",
+        "tags": [
+          "notes"
+        ]
+      },
+      "post": {
+        "operationId": "regenerate_note_version_endpoint_api_jobs__job_id__note_versions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_regenerate_note_version_endpoint_api_jobs__job_id__note_versions_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Regenerate Note Version Endpoint Api Jobs  Job Id  Note Versions Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Regenerate Note Version Endpoint",
+        "tags": [
+          "notes"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/preview/note": {
+      "get": {
+        "operationId": "preview_note_api_jobs__job_id__preview_note_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Note",
+        "tags": [
+          "downloads"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/preview/note/{version_id}": {
+      "get": {
+        "operationId": "preview_note_version_api_jobs__job_id__preview_note__version_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Note Version",
+        "tags": [
+          "downloads"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/preview/subtitles": {
+      "get": {
+        "operationId": "preview_subtitles_api_jobs__job_id__preview_subtitles_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Preview Subtitles",
+        "tags": [
+          "downloads"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/quality-report": {
+      "get": {
+        "operationId": "get_quality_report_api_jobs__job_id__quality_report_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QualityReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Quality Report",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/review-assets/prepare": {
+      "post": {
+        "operationId": "prepare_job_review_assets_api_jobs__job_id__review_assets_prepare_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewAssets"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Prepare Job Review Assets",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/review-draft": {
+      "get": {
+        "operationId": "get_job_review_draft_api_jobs__job_id__review_draft_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job Review Draft",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/review-draft/paragraphs/{paragraph_id}": {
+      "patch": {
+        "operationId": "update_job_review_draft_paragraph_api_jobs__job_id__review_draft_paragraphs__paragraph_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "paragraph_id",
+            "required": true,
+            "schema": {
+              "title": "Paragraph Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "version_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Version Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_state_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected State Revision"
+            }
+          },
+          {
+            "in": "query",
+            "name": "expected_artifact_revision",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Expected Artifact Revision"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReviewDraftParagraphUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Job Review Draft Paragraph",
+        "tags": [
+          "review"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/storage": {
+      "get": {
+        "operationId": "get_job_storage_api_jobs__job_id__storage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Job Storage Api Jobs  Job Id  Storage Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job Storage",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/subtitles/confirm": {
+      "post": {
+        "operationId": "confirm_subtitles_api_jobs__job_id__subtitles_confirm_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_confirm_subtitles_api_jobs__job_id__subtitles_confirm_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Confirm Subtitles Api Jobs  Job Id  Subtitles Confirm Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Confirm Subtitles",
+        "tags": [
+          "subtitles"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/subtitles/regenerate": {
+      "post": {
+        "operationId": "regenerate_subtitles_api_jobs__job_id__subtitles_regenerate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_regenerate_subtitles_api_jobs__job_id__subtitles_regenerate_post"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Regenerate Subtitles Api Jobs  Job Id  Subtitles Regenerate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Regenerate Subtitles",
+        "tags": [
+          "subtitles"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/transcript-corrections": {
+      "post": {
+        "operationId": "create_transcript_correction_endpoint_api_jobs__job_id__transcript_corrections_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptCorrectionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TranscriptCorrectionPreview"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Transcript Correction Endpoint",
+        "tags": [
+          "subtitles"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/transcript-corrections/apply": {
+      "post": {
+        "operationId": "apply_transcript_correction_endpoint_api_jobs__job_id__transcript_corrections_apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TranscriptCorrectionApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Apply Transcript Correction Endpoint Api Jobs  Job Id  Transcript Corrections Apply Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Transcript Correction Endpoint",
+        "tags": [
+          "subtitles"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/transcription/cache": {
+      "delete": {
+        "operationId": "delete_transcription_cache_api_jobs__job_id__transcription_cache_delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Delete Transcription Cache Api Jobs  Job Id  Transcription Cache Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Transcription Cache",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/transcription/resume": {
+      "post": {
+        "operationId": "resume_transcription_api_jobs__job_id__transcription_resume_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Resume Transcription Api Jobs  Job Id  Transcription Resume Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resume Transcription",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/models/faster-whisper/download": {
+      "post": {
+        "operationId": "download_faster_whisper_model_endpoint_api_models_faster_whisper_download_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ModelDownloadRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDownloadState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Download Faster Whisper Model Endpoint",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/models/faster-whisper/download/{model_name}": {
+      "get": {
+        "operationId": "get_faster_whisper_model_download_api_models_faster_whisper_download__model_name__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "model_name",
+            "required": true,
+            "schema": {
+              "title": "Model Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelDownloadState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Faster Whisper Model Download",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/ready": {
+      "get": {
+        "operationId": "ready_api_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Ready Api Ready Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ready",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/runtime": {
+      "get": {
+        "operationId": "runtime_api_runtime_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RuntimeState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Runtime",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/runtime/cuda-dependencies/install": {
+      "get": {
+        "operationId": "get_cuda_dependency_install_api_runtime_cuda_dependencies_install_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CudaDependencyInstallState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Cuda Dependency Install",
+        "tags": [
+          "runtime"
+        ]
+      },
+      "post": {
+        "operationId": "install_cuda_dependencies_api_runtime_cuda_dependencies_install_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CudaDependencyInstallState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Install Cuda Dependencies",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/runtime/faster-whisper/cache/clear": {
+      "post": {
+        "operationId": "clear_faster_whisper_cache_api_runtime_faster_whisper_cache_clear_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Clear Faster Whisper Cache Api Runtime Faster Whisper Cache Clear Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Clear Faster Whisper Cache",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/runtime/local-dependencies/install": {
+      "get": {
+        "operationId": "get_local_dependency_install_api_runtime_local_dependencies_install_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocalTranscriptionDependencyInstallState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Local Dependency Install",
+        "tags": [
+          "runtime"
+        ]
+      },
+      "post": {
+        "operationId": "install_local_dependencies_api_runtime_local_dependencies_install_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LocalTranscriptionDependencyInstallState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Install Local Dependencies",
+        "tags": [
+          "runtime"
+        ]
+      }
+    },
+    "/api/settings": {
+      "delete": {
+        "operationId": "delete_settings_api_settings_delete",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Delete Settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "get": {
+        "operationId": "get_settings_api_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "patch": {
+        "operationId": "update_settings_api_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UserSettingsUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    }
+  }
+}

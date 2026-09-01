@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from .atomic_io import atomic_write_text
 from .models import TranscriptSegment
 from .time_utils import seconds_to_hhmmss, seconds_to_srt, seconds_to_vtt
 
@@ -132,6 +133,10 @@ def render_subtitle_markdown(segments: list[TranscriptSegment]) -> str:
 
 
 def write_subtitle_files(segments: list[TranscriptSegment], output_dir: Path) -> None:
-    (output_dir / "subtitles.srt").write_text(render_srt(segments), encoding="utf-8-sig")
-    (output_dir / "subtitles.vtt").write_text(render_vtt(segments), encoding="utf-8-sig")
-    (output_dir / "subtitles.md").write_text(render_subtitle_markdown(segments), encoding="utf-8-sig")
+    atomic_write_text(output_dir / "subtitles.srt", render_srt(segments), encoding="utf-8-sig")
+    atomic_write_text(output_dir / "subtitles.vtt", render_vtt(segments), encoding="utf-8-sig")
+    atomic_write_text(
+        output_dir / "subtitles.md",
+        render_subtitle_markdown(segments),
+        encoding="utf-8-sig",
+    )

@@ -7,6 +7,7 @@ import signal
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ import imageio_ffmpeg
 from .time_utils import clamp_seconds
 from .transcription_checkpoints import ChunkSpec
 from .resource_scheduler import ProcessingResource, ResourceWaitCancelled, processing_resources
+from .operation_leases import assert_current_operation_lease
 
 
 class FFmpegError(RuntimeError):
@@ -66,6 +68,7 @@ def run_ffmpeg(
     *,
     is_cancelled: Callable[[], bool] | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    assert_current_operation_lease()
     ffmpeg_path = require_ffmpeg()
     try:
         with processing_resources.acquire(
@@ -81,6 +84,7 @@ def run_ffmpeg(
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "FFmpeg command failed."
         raise FFmpegError(message[-2000:])
+    assert_current_operation_lease()
     return completed
 
 
@@ -400,6 +404,69 @@ def extract_frames(
             is_cancelled=is_cancelled,
         )
     return results
+
+
+def extract_grayscale_frames(
+    video_path: Path,
+    timestamps: list[float],
+    duration: float | None,
+    *,
+    width: int = 64,
+    height: int = 36,
+    batch_size: int = 24,
+    is_cancelled: Callable[[], bool] | None = None,
+) -> dict[float, bytes]:
+    """Read low-resolution grayscale samples for scene-stability analysis."""
+
+    if width < 3 or height < 3:
+        raise ValueError("Grayscale frame dimensions must be at least 3x3.")
+    safe_times: list[float] = []
+    for timestamp in timestamps:
+        safe_time = max(0.0, float(timestamp))
+        if duration and duration > 1:
+            safe_time = clamp_seconds(safe_time, 0.25, max(0.25, duration - 0.25))
+        safe_time = round(safe_time, 3)
+        if safe_time not in safe_times:
+            safe_times.append(safe_time)
+    if not safe_times:
+        return {}
+
+    samples: dict[float, bytes] = {}
+    with tempfile.TemporaryDirectory(prefix="video-note-scene-") as temporary:
+        temporary_root = Path(temporary)
+        for batch_start in range(0, len(safe_times), max(1, batch_size)):
+            batch = safe_times[batch_start : batch_start + max(1, batch_size)]
+            args = ["-y", "-hide_banner"]
+            outputs: list[tuple[float, Path]] = []
+            for timestamp in batch:
+                args.extend(["-ss", f"{timestamp:.3f}", "-i", str(video_path)])
+            for input_index, timestamp in enumerate(batch):
+                output_path = temporary_root / f"sample_{batch_start + input_index:04d}.gray"
+                outputs.append((timestamp, output_path))
+                args.extend(
+                    [
+                        "-map",
+                        f"{input_index}:v:0",
+                        "-frames:v",
+                        "1",
+                        "-vf",
+                        f"scale={width}:{height},format=gray",
+                        "-f",
+                        "rawvideo",
+                        str(output_path),
+                    ]
+                )
+            _run_ffmpeg_with_optional_cancellation(args, is_cancelled)
+            expected_size = width * height
+            for timestamp, output_path in outputs:
+                payload = output_path.read_bytes()
+                if len(payload) < expected_size:
+                    raise FFmpegError(
+                        f"Scene sample at {timestamp:.3f}s produced {len(payload)} bytes; "
+                        f"expected {expected_size}."
+                    )
+                samples[timestamp] = payload[:expected_size]
+    return samples
 
 
 def _frame_seek_candidates(safe_time: float) -> list[float]:

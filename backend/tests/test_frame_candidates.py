@@ -14,9 +14,21 @@ from backend.app.frame_candidates import (
     select_frame_candidate,
     write_frame_candidate_index,
 )
+from backend.app.frame_quality import FrameVisualQuality
+from backend.app.frame_stability import FrameStabilitySelection
 from backend.app.job_store import JobStore
 from backend.app.main import app
-from backend.app.models import FrameCandidate, FrameCandidateIndex
+from backend.app.models import (
+    Chapter,
+    FrameCandidate,
+    FrameCandidateIndex,
+    KeyMoment,
+    NoteDraft,
+    NoteStyle,
+    NoteVersion,
+    NoteVersionIndex,
+)
+from backend.app.note_versions import write_note_version_index
 
 
 def test_frame_candidate_models_serialize_expected_shape() -> None:
@@ -44,10 +56,62 @@ def test_frame_candidate_models_serialize_expected_shape() -> None:
     assert payload["candidates"][0]["id"] == "chapter_001_candidate_001"
     assert payload["candidates"][0]["selected"] is True
     assert payload["candidates"][0]["risk_flags"] == []
+    assert payload["candidates"][0]["stability_score"] == 0.5
+
+
+def test_frame_candidate_uses_stable_time_near_semantic_anchor(tmp_path, monkeypatch) -> None:
+    video_path = write_candidate_job(tmp_path)
+    extracted: list[float] = []
+
+    def fake_stability(_video_path, requests, _duration, *, is_cancelled=None):
+        return {
+            request.key: FrameStabilitySelection(
+                anchor_time=request.anchor_time,
+                selected_time=request.anchor_time + 0.5,
+                stability_score=0.9,
+                transition_score=0.1,
+                sample_count=5,
+                available=True,
+            )
+            for request in requests
+        }
+
+    def fake_extract_frame(_video_path: Path, output_path: Path, timestamp: float, _duration: float | None) -> float:
+        extracted.append(timestamp)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(f"jpg-{timestamp}".encode())
+        return timestamp
+
+    monkeypatch.setattr("backend.app.frame_candidates.select_stable_frame_times", fake_stability)
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+
+    index = build_frame_candidate_index(tmp_path, video_path, duration=120, candidates_per_chapter=1)
+
+    first = index.candidates[0]
+    assert extracted[0] == 20.5
+    assert first.anchor_time == 20
+    assert first.time == 20.5
+    assert first.time_offset == 0.5
+    assert first.stability_score == 0.9
+    assert first.transition_score == 0.1
+    assert first.scene_sample_count == 5
 
 
 def write_candidate_job(job_dir: Path) -> Path:
     (job_dir / "metadata.json").write_text(json.dumps({"duration_seconds": 120}), encoding="utf-8")
+    (job_dir / "transcript.json").write_text(
+        json.dumps(
+            {
+                "text": "Intro transcript. Advanced transcript.",
+                "segments": [
+                    {"start": 0, "end": 60, "text": "Intro transcript."},
+                    {"start": 60, "end": 120, "text": "Advanced transcript."},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
     (job_dir / "note.md").write_text(
         "\n".join(
             [
@@ -76,6 +140,77 @@ def write_candidate_job(job_dir: Path) -> Path:
     return video_path
 
 
+def write_structured_note_draft(job_dir: Path, draft: NoteDraft) -> None:
+    version_id = "note_001"
+    version_dir = job_dir / "note_versions" / version_id
+    (version_dir / "frames").mkdir(parents=True, exist_ok=True)
+    (version_dir / "draft.json").write_text(draft.model_dump_json(indent=2), encoding="utf-8")
+    write_note_version_index(
+        job_dir,
+        NoteVersionIndex(
+            active_version_id=version_id,
+            selected_version_ids=[version_id],
+            versions=[
+                NoteVersion(
+                    id=version_id,
+                    label="Structured",
+                    note_style=NoteStyle.detailed,
+                    note_language="zh",
+                    note_model="test",
+                    note_base_url="https://example.test/v1",
+                    frame_limit=3,
+                    note_path=f"note_versions/{version_id}/note.md",
+                    frame_dir=f"note_versions/{version_id}/frames",
+                    draft_path=f"note_versions/{version_id}/draft.json",
+                )
+            ],
+        ),
+    )
+
+
+def test_frame_candidates_prefer_structured_draft_over_markdown_shape(tmp_path, monkeypatch) -> None:
+    video_path = write_candidate_job(tmp_path)
+    write_structured_note_draft(
+        tmp_path,
+        NoteDraft(
+            title="Structured note",
+            chapters=[
+                Chapter(
+                    title="Structured chapter",
+                    start_time=10,
+                    end_time=50,
+                    bullets=["Structured body"],
+                )
+            ],
+            key_moments=[
+                KeyMoment(
+                    time=22.25,
+                    reason="Structured key moment",
+                    chapter_index=0,
+                )
+            ],
+        ),
+    )
+
+    def fake_extract_frame(_video_path: Path, output_path: Path, timestamp: float, _duration: float | None) -> float:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(f"jpg-{timestamp}".encode())
+        return timestamp
+
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+
+    index = build_frame_candidate_index(tmp_path, video_path, duration=120, candidates_per_chapter=1)
+
+    assert len(index.candidates) == 1
+    assert index.candidates[0].anchor_time == 22.25
+    assert index.candidates[0].reason == "Structured key moment"
+    assert index.chapter_contexts[0].title == "Structured chapter"
+    assert index.chapter_contexts[0].start_time == 10
+    assert index.chapter_contexts[0].end_time == 50
+    assert index.chapter_contexts[0].note_excerpt == "Structured body"
+
+
 def test_build_frame_candidate_index_selects_non_duplicate_defaults(tmp_path, monkeypatch) -> None:
     video_path = write_candidate_job(tmp_path)
     extracted: list[float] = []
@@ -97,17 +232,61 @@ def test_build_frame_candidate_index_selects_non_duplicate_defaults(tmp_path, mo
 
     monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
     monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda _path: hashes.pop(0))
+    qualities = iter([0.3, 0.9, 0.8, 0.2, 0.95, 0.7])
+    monkeypatch.setattr(
+        "backend.app.frame_candidates.analyze_frame_visual_quality",
+        lambda _path: FrameVisualQuality(
+            available=True,
+            score=next(qualities),
+            brightness=0.5,
+            contrast=0.2,
+            sharpness=0.2,
+            dark_ratio=0,
+            bright_ratio=0,
+            risk_flags=(),
+        ),
+    )
 
     index = build_frame_candidate_index(tmp_path, video_path, duration=120, candidates_per_chapter=3)
 
     assert len(index.candidates) == 6
     assert extracted
-    assert index.candidates[0].selected is True
+    assert index.candidates[0].selected is False
     assert index.candidates[1].selected is False
     assert index.candidates[1].duplicate_of == index.candidates[0].id
     assert "duplicate_frame" in index.candidates[1].risk_flags
+    assert index.candidates[2].selected is True
+    assert index.candidates[5].selected is True
     assert [candidate.selected for candidate in index.candidates if candidate.chapter_index == 0].count(True) == 1
     assert [candidate.selected for candidate in index.candidates if candidate.chapter_index == 1].count(True) == 1
+
+
+def test_frame_candidate_default_selection_avoids_severe_visual_risk(tmp_path, monkeypatch) -> None:
+    video_path = write_candidate_job(tmp_path)
+
+    def fake_extract_frame(_video_path: Path, output_path: Path, timestamp: float, _duration: float | None) -> float:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(f"jpg-{timestamp}".encode())
+        return timestamp
+
+    qualities = iter(
+        [
+            FrameVisualQuality(True, 0.95, 0.01, 0.01, 0.01, 0.99, 0, ("black_frame",)),
+            FrameVisualQuality(True, 0.65, 0.5, 0.2, 0.2, 0, 0, ()),
+            FrameVisualQuality(True, 0.45, 0.5, 0.2, 0.2, 0, 0, ()),
+            FrameVisualQuality(True, 0.55, 0.5, 0.2, 0.2, 0, 0, ()),
+        ]
+    )
+    monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
+    monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
+    monkeypatch.setattr("backend.app.frame_candidates.analyze_frame_visual_quality", lambda _path: next(qualities))
+
+    index = build_frame_candidate_index(tmp_path, video_path, duration=120, candidates_per_chapter=2)
+
+    first_chapter = [candidate for candidate in index.candidates if candidate.chapter_index == 0]
+    assert "black_frame" in first_chapter[0].risk_flags
+    assert first_chapter[0].selected is False
+    assert first_chapter[1].selected is True
 
 
 def test_frame_candidates_reuse_existing_note_frame_at_same_time(tmp_path, monkeypatch) -> None:
@@ -378,6 +557,10 @@ def test_load_legacy_frame_candidate_index_backfills_chapter_context(tmp_path) -
     assert loaded.chapter_contexts[0].title == "Intro"
     assert "Intro details" in loaded.chapter_contexts[0].note_excerpt
     assert "Intro transcript" in loaded.chapter_contexts[0].subtitle_excerpt
+    assert loaded.candidates[0].anchor_time is None
+    assert loaded.candidates[0].time_offset == 0
+    assert loaded.candidates[0].stability_score == 0.5
+    assert loaded.candidates[0].scene_sample_count == 0
 
 
 def test_select_frame_candidate_rejects_missing_candidate(tmp_path) -> None:
@@ -387,7 +570,7 @@ def test_select_frame_candidate_rejects_missing_candidate(tmp_path) -> None:
         select_frame_candidate(tmp_path, "missing")
 
 
-def test_frame_candidate_endpoint_generates_and_returns_candidates(tmp_path, monkeypatch) -> None:
+def test_review_assets_prepare_generates_candidates_and_get_is_read_only(tmp_path, monkeypatch) -> None:
     outputs_root = tmp_path / "outputs"
     job_id = "frame-candidates-job"
     job_dir = outputs_root / job_id
@@ -405,12 +588,18 @@ def test_frame_candidate_endpoint_generates_and_returns_candidates(tmp_path, mon
     monkeypatch.setattr("backend.app.frame_candidates.extract_frame", fake_extract_frame)
     monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
 
-    response = TestClient(app).get(f"/api/jobs/{job_id}/frame-candidates")
+    client = TestClient(app)
+    missing = client.get(f"/api/jobs/{job_id}/frame-candidates")
+    response = client.post(f"/api/jobs/{job_id}/review-assets/prepare")
 
+    assert missing.status_code == 404
     assert response.status_code == 200
-    payload = response.json()
+    payload = response.json()["frame_candidates"]
     assert len(payload["candidates"]) > 0
     assert (job_dir / "review" / "frame_candidates.json").exists()
+    loaded = client.get(f"/api/jobs/{job_id}/frame-candidates")
+    assert loaded.status_code == 200
+    assert loaded.json() == payload
 
 
 def test_frame_candidate_select_and_reject_endpoints_persist_choice(tmp_path, monkeypatch) -> None:
@@ -431,7 +620,7 @@ def test_frame_candidate_select_and_reject_endpoints_persist_choice(tmp_path, mo
     monkeypatch.setattr("backend.app.frame_candidates.average_hash", lambda path: path.name)
 
     client = TestClient(app)
-    first_payload = client.get(f"/api/jobs/{job_id}/frame-candidates").json()
+    first_payload = client.post(f"/api/jobs/{job_id}/review-assets/prepare").json()["frame_candidates"]
     candidate_id = first_payload["candidates"][1]["id"]
 
     selected = client.post(f"/api/jobs/{job_id}/frame-candidates/{candidate_id}/select")
