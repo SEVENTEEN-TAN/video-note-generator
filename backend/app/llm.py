@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from urllib.parse import urlparse
 
 from openai import BadRequestError, OpenAI, OpenAIError
 
@@ -75,6 +76,10 @@ MAX_COMPACT_MARKDOWN_LINES = 8
 MAX_COMPACT_MARKDOWN_LINE_CHARS = 90
 MAX_PRIOR_CONTEXT_CHARS = 4_000
 MAX_PRIOR_CONTEXT_TITLE_CHARS = 120
+NOTE_MODEL_TIMEOUT_SECONDS = 180.0
+NOTE_CHUNK_MAX_TOKENS = 8_192
+NOTE_REDUCE_MAX_TOKENS = 8_192
+MAX_TRUNCATION_RETRY_TOKENS = 32_768
 JSON_WRAPPER_KEYS = ("note", "draft", "data", "result", "output")
 
 
@@ -482,8 +487,39 @@ def _validate_note_draft(payload: dict) -> NoteDraft:
 def make_client(api_key: str, base_url: str) -> OpenAI:
     base_url = base_url.strip()
     if base_url:
-        return OpenAI(api_key=api_key, base_url=base_url, timeout=60.0, max_retries=0)
-    return OpenAI(api_key=api_key, timeout=60.0, max_retries=0)
+        return OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=NOTE_MODEL_TIMEOUT_SECONDS,
+            max_retries=0,
+        )
+    return OpenAI(api_key=api_key, timeout=NOTE_MODEL_TIMEOUT_SECONDS, max_retries=0)
+
+
+def _should_disable_bigmodel_thinking(config: NoteGenerationConfig) -> bool:
+    try:
+        hostname = (urlparse(config.note_base_url.strip()).hostname or "").casefold()
+    except ValueError:
+        return False
+    return (
+        (hostname == "bigmodel.cn" or hostname.endswith(".bigmodel.cn"))
+        and config.note_model.strip().casefold().startswith("glm-")
+    )
+
+
+def _response_usage_value(response: object, field: str) -> int | None:
+    usage = getattr(response, "usage", None)
+    value = usage.get(field) if isinstance(usage, dict) else getattr(usage, field, None)
+    return value if isinstance(value, int) else None
+
+
+def _reasoning_tokens(response: object) -> int | None:
+    usage = getattr(response, "usage", None)
+    details = usage.get("completion_tokens_details") if isinstance(usage, dict) else getattr(
+        usage, "completion_tokens_details", None
+    )
+    value = details.get("reasoning_tokens") if isinstance(details, dict) else getattr(details, "reasoning_tokens", None)
+    return value if isinstance(value, int) else None
 
 
 def _safe_debug_context(value: str) -> str:
@@ -547,6 +583,7 @@ def call_note_model(
     last_error: Exception | None = None
     working_messages = list(messages)
     use_response_format = True
+    attempt_max_tokens = max_tokens
     for attempt in range(1, 3):
         if debug_log:
             debug_log.event(
@@ -558,17 +595,20 @@ def call_note_model(
                 note_model=config.note_model,
                 message_count=len(working_messages),
                 message_chars=sum(len(str(message.get("content") or "")) for message in working_messages),
-                max_tokens=max_tokens,
+                max_tokens=attempt_max_tokens,
+                thinking_disabled=_should_disable_bigmodel_thinking(config),
             )
         while True:
             request_kwargs = {
                 "model": config.note_model,
                 "messages": working_messages,
                 "temperature": 0.2,
-                "max_tokens": max_tokens,
+                "max_tokens": attempt_max_tokens,
             }
             if use_response_format:
                 request_kwargs["response_format"] = {"type": "json_object"}
+            if _should_disable_bigmodel_thinking(config):
+                request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
             try:
                 response = client.chat.completions.create(**request_kwargs)
                 break
@@ -594,7 +634,9 @@ def call_note_model(
                     _log_note_api_error(debug_log, debug_context, attempt, exc)
                 raise
         choice = response.choices[0]
-        text = choice.message.content or ""
+        message = choice.message
+        text = message.content or ""
+        reasoning_content = getattr(message, "reasoning_content", None) or ""
         finish_reason = getattr(choice, "finish_reason", None)
         response_file = ""
         if debug_log:
@@ -607,7 +649,11 @@ def call_note_model(
                 attempt=attempt,
                 response_file=f"debug/{response_file}",
                 response_length=len(text),
+                reasoning_content_length=len(str(reasoning_content)),
                 finish_reason=finish_reason,
+                prompt_tokens=_response_usage_value(response, "prompt_tokens"),
+                completion_tokens=_response_usage_value(response, "completion_tokens"),
+                reasoning_tokens=_reasoning_tokens(response),
             )
         if isinstance(finish_reason, str) and finish_reason.casefold() == "content_filter":
             raise LLMError("Model response was filtered by content policy (finish_reason=content_filter).")
@@ -633,6 +679,22 @@ def call_note_model(
                     "content": _json_retry_instruction(text, exc),
                 }
             )
+            if isinstance(finish_reason, str) and finish_reason.casefold() == "length" and attempt < 2:
+                next_max_tokens = max(
+                    attempt_max_tokens,
+                    min(attempt_max_tokens * 2, MAX_TRUNCATION_RETRY_TOKENS),
+                )
+                if next_max_tokens > attempt_max_tokens:
+                    if debug_log:
+                        debug_log.event(
+                            "note_model_call",
+                            "truncation_retry",
+                            context=debug_context,
+                            attempt=attempt,
+                            previous_max_tokens=attempt_max_tokens,
+                            next_max_tokens=next_max_tokens,
+                        )
+                    attempt_max_tokens = next_max_tokens
     if debug_log:
         debug_log.event("note_model_call", "failed", context=debug_context, error=str(last_error or "unknown"))
     raise LLMError(str(last_error) if last_error else "The model did not return a valid note draft.")
@@ -888,7 +950,7 @@ def _transcribe_note_chunk_with_retry(
     keeping the offending half isolated.
     """
     debug_context = f"note-chunk-{chunk_index}-of-{chunk_count}{debug_suffix}"
-    kwargs: dict[str, object] = {"max_tokens": 2200}
+    kwargs: dict[str, object] = {"max_tokens": NOTE_CHUNK_MAX_TOKENS}
     if debug_log:
         kwargs["debug_log"] = debug_log
         kwargs["debug_context"] = debug_context
@@ -1048,7 +1110,7 @@ def reduce_note_drafts(
     reduce_prompt = build_reduce_prompt(config, duration, partials)
     if len(reduce_prompt) > MAX_REDUCE_PROMPT_CHARS or estimate_prompt_tokens(reduce_prompt) > MAX_REDUCE_PROMPT_CHARS // 4:
         reduce_prompt = build_reduce_prompt(config, duration, partials, compact=True)
-    kwargs = {"max_tokens": 3600}
+    kwargs = {"max_tokens": NOTE_REDUCE_MAX_TOKENS}
     if debug_log:
         kwargs["debug_log"] = debug_log
         kwargs["debug_context"] = "note-reduce"

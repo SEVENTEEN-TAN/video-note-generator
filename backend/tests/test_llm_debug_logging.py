@@ -29,12 +29,12 @@ def test_note_model_client_uses_timeout_and_no_sdk_retries(monkeypatch) -> None:
         {
             "api_key": "note-key",
             "base_url": "https://example.test/v1",
-            "timeout": 60.0,
+            "timeout": 180.0,
             "max_retries": 0,
         },
         {
             "api_key": "note-key",
-            "timeout": 60.0,
+            "timeout": 180.0,
             "max_retries": 0,
         },
     ]
@@ -151,6 +151,92 @@ def test_call_note_model_logs_response_finish_reason(tmp_path, monkeypatch) -> N
     response_event = next(record for record in records if record["message"] == "response_received")
     assert draft.title == "Demo"
     assert response_event["details"]["finish_reason"] == "length"
+
+
+def test_call_note_model_disables_bigmodel_thinking_and_expands_truncated_retry(monkeypatch) -> None:
+    calls: list[dict] = []
+    responses = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="length",
+                    message=SimpleNamespace(content="", reasoning_content="thinking"),
+                )
+            ],
+            usage=SimpleNamespace(
+                prompt_tokens=100,
+                completion_tokens=2_000,
+                completion_tokens_details=SimpleNamespace(reasoning_tokens=2_000),
+            ),
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    finish_reason="stop",
+                    message=SimpleNamespace(
+                        content='{"title":"Demo","summary":"fixed","chapters":[],"key_moments":[]}',
+                        reasoning_content="",
+                    ),
+                )
+            ]
+        ),
+    ]
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return responses.pop(0)
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    monkeypatch.setattr(llm, "make_client", lambda *_args, **_kwargs: fake_client)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        note_api_key="note-key",
+        note_base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+        note_model="glm-5.3-flash",
+        note_language=NoteLanguage.zh,
+        original_filename="demo.mp4",
+    )
+
+    draft = llm.call_note_model(config, [{"role": "user", "content": "make JSON"}], max_tokens=2_200)
+
+    assert draft.summary == "fixed"
+    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert calls[0]["max_tokens"] == 2_200
+    assert calls[1]["max_tokens"] == 4_400
+
+
+def test_call_note_model_does_not_send_bigmodel_options_to_other_providers(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs):
+            calls.append(kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        finish_reason="stop",
+                        message=SimpleNamespace(
+                            content='{"title":"Demo","summary":"ok","chapters":[],"key_moments":[]}'
+                        ),
+                    )
+                ]
+            )
+
+    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=FakeCompletions()))
+    monkeypatch.setattr(llm, "make_client", lambda *_args, **_kwargs: fake_client)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        note_api_key="note-key",
+        note_base_url="https://example.test/v1",
+        note_model="gpt-test",
+        note_language=NoteLanguage.en,
+        original_filename="demo.mp4",
+    )
+
+    llm.call_note_model(config, [{"role": "user", "content": "make JSON"}])
+
+    assert "extra_body" not in calls[0]
 
 
 def test_call_note_model_converts_content_filter_finish_reason_to_llm_error(tmp_path, monkeypatch) -> None:

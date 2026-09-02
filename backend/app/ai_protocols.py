@@ -12,6 +12,9 @@ class AIProtocolError(RuntimeError):
     pass
 
 
+AI_REQUEST_TIMEOUT_SECONDS = 180.0
+
+
 class AIModel:
     def __init__(self, model_id: str, display_name: str = "", owned_by: str = "") -> None:
         self.id = model_id
@@ -26,7 +29,12 @@ class AIModel:
 
 
 def make_client(api_key: str, base_url: str) -> OpenAI:
-    return OpenAI(api_key=api_key, base_url=base_url.strip().rstrip("/"), timeout=60.0, max_retries=0)
+    return OpenAI(
+        api_key=api_key,
+        base_url=base_url.strip().rstrip("/"),
+        timeout=AI_REQUEST_TIMEOUT_SECONDS,
+        max_retries=0,
+    )
 
 
 def request_json_text(
@@ -116,7 +124,7 @@ def _post_json(base_url: str, endpoint: str, headers: dict[str, str], payload: d
             f"{base_url.strip().rstrip('/')}/{endpoint}",
             headers={**headers, "Content-Type": "application/json"},
             json=payload,
-            timeout=60.0,
+            timeout=AI_REQUEST_TIMEOUT_SECONDS,
         )
         response.raise_for_status()
         body = response.json()
