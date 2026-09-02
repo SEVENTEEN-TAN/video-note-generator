@@ -26,6 +26,7 @@ import { SettingsModal } from "./SettingsModal";
 import { TranscriptCorrectionModal } from "./TranscriptCorrectionModal";
 import { TaskConfigPanel } from "./TaskConfigPanel";
 import { useHealthState } from "./useHealthState";
+import { useAIModels } from "./useAIModels";
 import { useJobCreation } from "./useJobCreation";
 import { useJobResources } from "./useJobResources";
 import { useJobLifecycle } from "./useJobLifecycle";
@@ -54,6 +55,7 @@ export function App() {
     local_whisper_compute_type: localWhisperComputeType,
     local_whisper_device: localWhisperDevice,
     note_api_key: noteApiKey,
+    note_api_protocol: noteApiProtocol,
     note_base_url: noteBaseUrl,
     note_language: noteLanguage,
     note_model: noteModel,
@@ -66,6 +68,12 @@ export function App() {
     transcription_mode: transcriptionMode,
     transcription_model: transcriptionModel
   } = settings;
+  const {
+    error: noteModelListError,
+    isLoading: isLoadingNoteModels,
+    models: noteModels,
+    refreshModels: refreshNoteModels
+  } = useAIModels({ apiKey: noteApiKey, baseUrl: noteBaseUrl, protocol: noteApiProtocol });
   const workspaceFormRef = useRef<HTMLFormElement>(null);
   const resetTaskContextRef = useRef<() => void>(() => undefined);
   const clearSelectedInputsRef = useRef<() => void>(() => undefined);
@@ -130,6 +138,7 @@ export function App() {
       extras,
       frame_limit: frameLimit,
       note_api_key: noteApiKey,
+      note_api_protocol: noteApiProtocol,
       note_base_url: noteBaseUrl,
       note_language: noteLanguage,
       note_model: noteModel,
@@ -167,6 +176,7 @@ export function App() {
       extras,
       frame_limit: frameLimit,
       note_api_key: noteApiKey,
+      note_api_protocol: noteApiProtocol,
       note_base_url: noteBaseUrl,
       note_language: noteLanguage,
       note_model: noteModel,
@@ -482,10 +492,16 @@ export function App() {
         note={{
           apiKey: noteApiKey,
           baseUrl: noteBaseUrl,
+          isLoadingModels: isLoadingNoteModels,
           model: noteModel,
+          modelError: noteModelListError,
+          models: noteModels,
+          protocol: noteApiProtocol,
           onApiKeyChange: (value) => updateSetting("note_api_key", value),
           onBaseUrlChange: (value) => updateSetting("note_base_url", value),
-          onModelChange: (value) => updateSetting("note_model", value)
+          onModelChange: (value) => updateSetting("note_model", value),
+          onProtocolChange: (value) => updateSetting("note_api_protocol", value),
+          onRefreshModels: () => void refreshNoteModels()
         }}
         transcription={{
           cudaInstall,

@@ -13,6 +13,7 @@ from ..job_paths import InvalidJobIdError, JobDirectoryNotFoundError, read_job_m
 from ..job_store import JobStore
 from ..llm import LLMError
 from ..models import (
+    AIProtocol,
     JobPublicState,
     JobStatus,
     NoteGenerationConfig,
@@ -74,6 +75,7 @@ def create_subtitles_router(
         note_style: Annotated[NoteStyle, Form()] = NoteStyle.detailed,
         extras: Annotated[str, Form()] = "",
         note_api_key: Annotated[str, Form()] = "",
+        note_api_protocol: Annotated[AIProtocol, Form()] = AIProtocol.openai_chat_completions,
         note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
         note_model: Annotated[str, Form()] = "gpt-5.5",
         frame_limit: Annotated[int, Form()] = 6,
@@ -91,6 +93,7 @@ def create_subtitles_router(
         metadata = read_job_metadata(job_dir)
         config = build_note_generation_config(
             note_api_key=note_api_key,
+            note_api_protocol=note_api_protocol,
             note_base_url=note_base_url,
             note_model=note_model,
             note_language=note_language,
@@ -179,6 +182,7 @@ def create_subtitles_router(
             note_style = NoteStyle.detailed
         config = build_note_generation_config(
             note_api_key=request.note_api_key,
+            note_api_protocol=request.note_api_protocol,
             note_base_url=request.note_base_url,
             note_model=request.note_model,
             note_language=note_language,
@@ -219,6 +223,7 @@ def create_subtitles_router(
             metadata = read_job_metadata(job_dir)
             config = build_note_generation_config(
                 note_api_key=request.note_api_key,
+                note_api_protocol=request.note_api_protocol,
                 note_base_url=request.note_base_url,
                 note_model=request.note_model,
                 note_language=request.note_language,

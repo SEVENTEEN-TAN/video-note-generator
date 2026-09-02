@@ -7,6 +7,10 @@ type WithRequired<T, K extends keyof T> = Omit<T, K> & Required<Pick<T, K>>;
 // and enum values come from the generated OpenAPI contract.
 export type NoteLanguage = ApiSchemas["NoteLanguage"];
 export type NoteStyle = ApiSchemas["NoteStyle"];
+export type AIProtocol = ApiSchemas["AIProtocol"];
+export type AIModelInfo = ApiSchemas["AIModelInfo"];
+export type AIModelListRequest = ApiSchemas["AIModelListRequest"];
+export type AIModelListResponse = ApiSchemas["AIModelListResponse"];
 export type TranscriptionMode = ApiSchemas["TranscriptionMode"];
 export type TranscriptionLanguage = ApiSchemas["TranscriptionLanguage"];
 export type PerformanceMode = ApiSchemas["PerformanceMode"];

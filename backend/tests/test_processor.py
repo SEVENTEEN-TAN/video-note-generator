@@ -535,6 +535,7 @@ def test_process_job_generates_artifacts_without_persisting_api_key(tmp_path, mo
     assert "secret-note-key" not in metadata_text
     assert metadata["transcription_model"] == "whisper-1"
     assert metadata["note_model"] == "qwen-plus"
+    assert metadata["note_api_protocol"] == "openai_chat_completions"
     assert (job_dir / "note.md").read_bytes().startswith(codecs.BOM_UTF8)
     assert (job_dir / "subtitles.srt").read_bytes().startswith(codecs.BOM_UTF8)
     assert (job_dir / "subtitles.md").read_bytes().startswith(codecs.BOM_UTF8)

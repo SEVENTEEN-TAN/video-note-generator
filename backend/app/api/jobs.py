@@ -16,6 +16,7 @@ from ..filenames import normalize_uploaded_filename
 from ..job_paths import InvalidJobIdError, JobDirectoryNotFoundError, read_job_metadata, resolve_job_dir
 from ..job_store import JobStore
 from ..models import (
+    AIProtocol,
     FrameSuggestion,
     JobHistory,
     JobInputConfig,
@@ -93,6 +94,7 @@ def create_jobs_router(
         performance_mode: Annotated[PerformanceMode, Form()] = PerformanceMode.balanced,
         transcription_language: Annotated[TranscriptionLanguage, Form()] = TranscriptionLanguage.auto,
         note_api_key: Annotated[str, Form()] = "",
+        note_api_protocol: Annotated[AIProtocol, Form()] = AIProtocol.openai_chat_completions,
         note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
         note_model: Annotated[str, Form()] = "gpt-5.5",
     ) -> FrameSuggestion:
@@ -111,6 +113,7 @@ def create_jobs_router(
         )
         note_config = build_note_generation_config(
             note_api_key=note_api_key,
+            note_api_protocol=note_api_protocol,
             note_base_url=note_base_url,
             note_model=note_model,
             note_language=note_language,
@@ -176,6 +179,7 @@ def create_jobs_router(
         local_whisper_compute_type: Annotated[str, Form()] = "",
         performance_mode: Annotated[PerformanceMode, Form()] = PerformanceMode.balanced,
         transcription_language: Annotated[TranscriptionLanguage, Form()] = TranscriptionLanguage.auto,
+        note_api_protocol: Annotated[AIProtocol, Form()] = AIProtocol.openai_chat_completions,
         note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
         note_model: Annotated[str, Form()] = "gpt-5.5",
         frame_limit: Annotated[int, Form()] = 6,
@@ -191,6 +195,7 @@ def create_jobs_router(
         original_filename = normalize_uploaded_filename(video.filename or f"input{suffix}")
         input_config = JobInputConfig(original_filename=original_filename)
         note_preferences = build_note_preferences(
+            note_api_protocol=note_api_protocol,
             note_base_url=note_base_url,
             note_model=note_model,
             note_language=note_language,
@@ -269,6 +274,7 @@ def create_jobs_router(
                 ),
                 transcription_model=transcription_config.transcription_model if transcription_config is not None else "",
                 note_model=note_preferences.note_model,
+                note_api_protocol=note_preferences.note_api_protocol.value,
                 note_base_url=note_preferences.note_base_url,
                 frame_limit=note_preferences.frame_limit,
             )

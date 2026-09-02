@@ -6,7 +6,9 @@ import re
 
 from openai import BadRequestError, OpenAI, OpenAIError
 
+from .ai_protocols import AIProtocolError, request_json_text
 from .models import (
+    AIProtocol,
     Chapter,
     KeyMoment,
     NoteDraft,
@@ -539,6 +541,8 @@ def call_note_model(
     debug_log: TaskDebugLog | None = None,
     debug_context: str = "note",
 ) -> NoteDraft:
+    if config.note_api_protocol != AIProtocol.openai_chat_completions:
+        return _call_non_chat_note_model(config, messages, max_tokens, debug_log, debug_context)
     client = make_client(config.note_api_key, config.note_base_url)
     last_error: Exception | None = None
     working_messages = list(messages)
@@ -634,7 +638,86 @@ def call_note_model(
     raise LLMError(str(last_error) if last_error else "The model did not return a valid note draft.")
 
 
+def _call_non_chat_note_model(
+    config: NoteGenerationConfig,
+    messages: list[dict],
+    max_tokens: int,
+    debug_log: TaskDebugLog | None,
+    debug_context: str,
+) -> NoteDraft:
+    last_error: Exception | None = None
+    working_messages = list(messages)
+    for attempt in range(1, 3):
+        if debug_log:
+            debug_log.event(
+                "note_model_call",
+                "requesting",
+                context=debug_context,
+                attempt=attempt,
+                note_api_protocol=config.note_api_protocol.value,
+                note_base_url=config.note_base_url,
+                note_model=config.note_model,
+                message_count=len(working_messages),
+                max_tokens=max_tokens,
+            )
+        try:
+            text = request_json_text(
+                protocol=config.note_api_protocol,
+                api_key=config.note_api_key,
+                base_url=config.note_base_url,
+                model=config.note_model,
+                messages=working_messages,
+                max_tokens=max_tokens,
+            )
+        except AIProtocolError as exc:
+            if debug_log:
+                debug_log.event(
+                    "note_model_call",
+                    "api_error",
+                    context=debug_context,
+                    attempt=attempt,
+                    exception_type=type(exc).__name__,
+                    exception_message=str(exc),
+                )
+            raise LLMError(str(exc)) from exc
+        response_file = ""
+        if debug_log:
+            response_file = f"{_safe_debug_context(debug_context)}-model-response-attempt-{attempt}.txt"
+            debug_log.write_debug_text(response_file, text)
+            debug_log.event(
+                "note_model_call",
+                "response_received",
+                context=debug_context,
+                attempt=attempt,
+                response_file=f"debug/{response_file}",
+                response_length=len(text),
+            )
+        try:
+            return parse_note_draft(text)
+        except LLMError as exc:
+            last_error = exc
+            working_messages.append({"role": "assistant", "content": text})
+            working_messages.append({"role": "user", "content": _json_retry_instruction(text, exc)})
+    raise LLMError(str(last_error) if last_error else "The model did not return a valid note draft.")
+
+
 def call_json_model(config: NoteGenerationConfig, messages: list[dict], max_tokens: int = 3000) -> dict:
+    if config.note_api_protocol != AIProtocol.openai_chat_completions:
+        try:
+            text = request_json_text(
+                protocol=config.note_api_protocol,
+                api_key=config.note_api_key,
+                base_url=config.note_base_url,
+                model=config.note_model,
+                messages=messages,
+                max_tokens=max_tokens,
+                temperature=0.1,
+            )
+            return extract_json(text)
+        except AIProtocolError as exc:
+            raise LLMError(str(exc)) from exc
+        except Exception as exc:
+            raise LLMError(f"Model returned invalid correction JSON: {exc}") from exc
     client = make_client(config.note_api_key, config.note_base_url)
     request_kwargs = {
         "model": config.note_model,

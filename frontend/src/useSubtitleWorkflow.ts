@@ -116,6 +116,7 @@ export function useSubtitleWorkflow({
       const preview = await createTranscriptCorrection(requestJobId, {
         instructions: noteConfig.extras,
         note_api_key: noteConfig.note_api_key,
+        note_api_protocol: noteConfig.note_api_protocol,
         note_base_url: noteConfig.note_base_url,
         note_model: noteConfig.note_model
       });

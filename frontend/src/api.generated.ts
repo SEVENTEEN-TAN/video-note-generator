@@ -1,5 +1,22 @@
-// OpenAPI-SHA256: 233f8cd6eefbff510c7e58c6b67146cc68d19581489d25f03b2e54d5a63deeef
+// OpenAPI-SHA256: 0c6440780429745006ac8c9e245291107e5cd7ff52239604c7ab42802f8a15c0
 export interface paths {
+    "/api/ai/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** List Ai Models */
+        post: operations["list_ai_models_api_ai_models_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/health": {
         parameters: {
             query?: never;
@@ -641,6 +658,34 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AIModelInfo */
+        AIModelInfo: {
+            /** Display Name */
+            display_name: string;
+            /** Id */
+            id: string;
+            /** Owned By */
+            owned_by?: string | null;
+        };
+        /** AIModelListRequest */
+        AIModelListRequest: {
+            /** Api Key */
+            api_key: string;
+            /** Base Url */
+            base_url: string;
+            /** @default openai_chat_completions */
+            protocol: components["schemas"]["AIProtocol"];
+        };
+        /** AIModelListResponse */
+        AIModelListResponse: {
+            /** Models */
+            models?: components["schemas"]["AIModelInfo"][];
+        };
+        /**
+         * AIProtocol
+         * @enum {string}
+         */
+        AIProtocol: "openai_chat_completions" | "openai_responses" | "anthropic_messages";
         /** Artifact */
         Artifact: {
             /** Asset Url */
@@ -672,6 +717,8 @@ export interface components {
              * @default
              */
             note_api_key: string;
+            /** @default openai_chat_completions */
+            note_api_protocol: components["schemas"]["AIProtocol"];
             /**
              * Note Base Url
              * @default https://api.openai.com/v1
@@ -708,6 +755,8 @@ export interface components {
              * @default
              */
             local_whisper_device: string;
+            /** @default openai_chat_completions */
+            note_api_protocol: components["schemas"]["AIProtocol"];
             /**
              * Note Base Url
              * @default https://api.openai.com/v1
@@ -764,6 +813,8 @@ export interface components {
             frame_limit: number;
             /** Note Api Key */
             note_api_key: string;
+            /** @default openai_chat_completions */
+            note_api_protocol: components["schemas"]["AIProtocol"];
             /**
              * Note Base Url
              * @default https://api.openai.com/v1
@@ -796,6 +847,8 @@ export interface components {
              * @default
              */
             note_api_key: string;
+            /** @default openai_chat_completions */
+            note_api_protocol: components["schemas"]["AIProtocol"];
             /**
              * Note Base Url
              * @default https://api.openai.com/v1
@@ -866,6 +919,8 @@ export interface components {
              * @default
              */
             note_api_key: string;
+            /** @default openai_chat_completions */
+            note_api_protocol: components["schemas"]["AIProtocol"];
             /**
              * Note Base Url
              * @default https://api.openai.com/v1
@@ -1442,6 +1497,8 @@ export interface components {
             id: string;
             /** Label */
             label: string;
+            /** @default openai_chat_completions */
+            note_api_protocol: components["schemas"]["AIProtocol"];
             /** Note Base Url */
             note_base_url: string;
             /** Note Language */
@@ -1691,6 +1748,8 @@ export interface components {
             frame_limit: number;
             /** Note Api Key */
             note_api_key: string;
+            /** @default openai_chat_completions */
+            note_api_protocol: components["schemas"]["AIProtocol"];
             /**
              * Note Base Url
              * @default https://api.openai.com/v1
@@ -1726,6 +1785,8 @@ export interface components {
             instructions: string;
             /** Note Api Key */
             note_api_key: string;
+            /** @default openai_chat_completions */
+            note_api_protocol: components["schemas"]["AIProtocol"];
             /**
              * Note Base Url
              * @default https://api.openai.com/v1
@@ -1845,6 +1906,8 @@ export interface components {
              * @default
              */
             note_api_key: string;
+            /** @default openai_chat_completions */
+            note_api_protocol: components["schemas"]["AIProtocol"];
             /**
              * Note Base Url
              * @default https://api.openai.com/v1
@@ -1901,6 +1964,7 @@ export interface components {
             local_whisper_device?: components["schemas"]["LocalWhisperDevice"] | null;
             /** Note Api Key */
             note_api_key?: string | null;
+            note_api_protocol?: components["schemas"]["AIProtocol"] | null;
             /** Note Base Url */
             note_base_url?: string | null;
             note_language?: components["schemas"]["NoteLanguage"] | null;
@@ -1937,6 +2001,39 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_ai_models_api_ai_models_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIModelListRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIModelListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     health_api_health_get: {
         parameters: {
             query?: never;

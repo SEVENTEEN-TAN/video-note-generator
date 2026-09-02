@@ -1,4 +1,6 @@
 import type {
+  AIModelListRequest,
+  AIModelListResponse,
   CudaDependencyInstallState,
   FrameCandidateIndex,
   HealthState,
@@ -23,6 +25,15 @@ import type {
 } from "./types";
 
 export type JobRevisionGuard = Pick<JobState, "artifact_revision" | "state_revision">;
+
+export async function fetchAIModels(payload: AIModelListRequest, signal?: AbortSignal): Promise<AIModelListResponse> {
+  return requestJson("/api/ai/models", "服务器模型列表获取失败。", {
+    body: JSON.stringify(payload),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+    signal
+  });
+}
 
 function mutationQuery(
   revision: JobRevisionGuard,

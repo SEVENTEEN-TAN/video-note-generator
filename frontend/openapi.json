@@ -1,6 +1,79 @@
 {
   "components": {
     "schemas": {
+      "AIModelInfo": {
+        "properties": {
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "owned_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Owned By"
+          }
+        },
+        "required": [
+          "id",
+          "display_name"
+        ],
+        "title": "AIModelInfo",
+        "type": "object"
+      },
+      "AIModelListRequest": {
+        "properties": {
+          "api_key": {
+            "title": "Api Key",
+            "type": "string"
+          },
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
+          }
+        },
+        "required": [
+          "api_key",
+          "base_url"
+        ],
+        "title": "AIModelListRequest",
+        "type": "object"
+      },
+      "AIModelListResponse": {
+        "properties": {
+          "models": {
+            "items": {
+              "$ref": "#/components/schemas/AIModelInfo"
+            },
+            "title": "Models",
+            "type": "array"
+          }
+        },
+        "title": "AIModelListResponse",
+        "type": "object"
+      },
+      "AIProtocol": {
+        "enum": [
+          "openai_chat_completions",
+          "openai_responses",
+          "anthropic_messages"
+        ],
+        "title": "AIProtocol",
+        "type": "string"
+      },
       "Artifact": {
         "properties": {
           "asset_url": {
@@ -55,6 +128,10 @@
             "title": "Note Api Key",
             "type": "string"
           },
+          "note_api_protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
+          },
           "note_base_url": {
             "default": "https://api.openai.com/v1",
             "title": "Note Base Url",
@@ -100,6 +177,10 @@
             "default": "",
             "title": "Local Whisper Device",
             "type": "string"
+          },
+          "note_api_protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
           },
           "note_base_url": {
             "default": "https://api.openai.com/v1",
@@ -186,6 +267,10 @@
             "title": "Note Api Key",
             "type": "string"
           },
+          "note_api_protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
+          },
           "note_base_url": {
             "default": "https://api.openai.com/v1",
             "title": "Note Base Url",
@@ -227,6 +312,10 @@
             "default": "",
             "title": "Note Api Key",
             "type": "string"
+          },
+          "note_api_protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
           },
           "note_base_url": {
             "default": "https://api.openai.com/v1",
@@ -316,6 +405,10 @@
             "default": "",
             "title": "Note Api Key",
             "type": "string"
+          },
+          "note_api_protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
           },
           "note_base_url": {
             "default": "https://api.openai.com/v1",
@@ -1752,6 +1845,10 @@
             "title": "Label",
             "type": "string"
           },
+          "note_api_protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
+          },
           "note_base_url": {
             "title": "Note Base Url",
             "type": "string"
@@ -2343,6 +2440,10 @@
             "title": "Note Api Key",
             "type": "string"
           },
+          "note_api_protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
+          },
           "note_base_url": {
             "default": "https://api.openai.com/v1",
             "title": "Note Base Url",
@@ -2403,6 +2504,10 @@
           "note_api_key": {
             "title": "Note Api Key",
             "type": "string"
+          },
+          "note_api_protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
           },
           "note_base_url": {
             "default": "https://api.openai.com/v1",
@@ -2601,6 +2706,10 @@
             "title": "Note Api Key",
             "type": "string"
           },
+          "note_api_protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
+          },
           "note_base_url": {
             "default": "https://api.openai.com/v1",
             "title": "Note Base Url",
@@ -2737,6 +2846,16 @@
               }
             ],
             "title": "Note Api Key"
+          },
+          "note_api_protocol": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AIProtocol"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "note_base_url": {
             "anyOf": [
@@ -2903,6 +3022,47 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/ai/models": {
+      "post": {
+        "operationId": "list_ai_models_api_ai_models_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AIModelListRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIModelListResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Ai Models",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
     "/api/health": {
       "get": {
         "operationId": "health_api_health_get",

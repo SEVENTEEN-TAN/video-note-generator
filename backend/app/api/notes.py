@@ -11,6 +11,7 @@ from ..job_executor import enqueue_serialized
 from ..job_paths import InvalidJobIdError, JobDirectoryNotFoundError, read_job_metadata, resolve_job_dir
 from ..job_store import JobStore
 from ..models import (
+    AIProtocol,
     JobPublicState,
     NoteGenerationConfig,
     NoteLanguage,
@@ -60,6 +61,7 @@ def create_notes_router(
         chunk_id: str,
         background_tasks: BackgroundTasks,
         note_api_key: Annotated[str, Form()],
+        note_api_protocol: Annotated[AIProtocol, Form()] = AIProtocol.openai_chat_completions,
         note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
         note_model: Annotated[str, Form()] = "gpt-5.5",
         note_language: Annotated[NoteLanguage, Form()] = NoteLanguage.zh,
@@ -77,6 +79,7 @@ def create_notes_router(
         metadata = read_job_metadata(job_dir)
         config = build_note_generation_config(
             note_api_key=note_api_key,
+            note_api_protocol=note_api_protocol,
             note_base_url=note_base_url,
             note_model=note_model,
             note_language=note_language,
@@ -143,6 +146,7 @@ def create_notes_router(
         note_style: Annotated[NoteStyle, Form()] = NoteStyle.detailed,
         extras: Annotated[str, Form()] = "",
         note_api_key: Annotated[str, Form()] = "",
+        note_api_protocol: Annotated[AIProtocol, Form()] = AIProtocol.openai_chat_completions,
         note_base_url: Annotated[str, Form()] = "https://api.openai.com/v1",
         note_model: Annotated[str, Form()] = "gpt-5.5",
         frame_limit: Annotated[int, Form()] = 6,
@@ -156,6 +160,7 @@ def create_notes_router(
         metadata = read_job_metadata(job_dir)
         config = build_note_generation_config(
             note_api_key=note_api_key,
+            note_api_protocol=note_api_protocol,
             note_base_url=note_base_url,
             note_model=note_model,
             note_language=note_language,

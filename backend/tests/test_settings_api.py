@@ -44,6 +44,7 @@ def test_settings_api_roundtrip_preserves_language_without_plaintext_keys(tmp_pa
             "transcription_language": "zh",
             "transcription_api_key": "transcription-api-secret",
             "note_api_key": "note-api-secret",
+            "note_api_protocol": "openai_responses",
             "note_model": "api-model",
         },
     )
@@ -54,9 +55,11 @@ def test_settings_api_roundtrip_preserves_language_without_plaintext_keys(tmp_pa
     assert update.status_code == 200
     assert update.json()["transcription_language"] == "zh"
     assert update.json()["note_api_key"] == "note-api-secret"
+    assert update.json()["note_api_protocol"] == "openai_responses"
     assert loaded.status_code == 200
     assert loaded.json()["transcription_language"] == "zh"
     assert loaded.json()["transcription_api_key"] == "transcription-api-secret"
+    assert loaded.json()["note_api_protocol"] == "openai_responses"
     assert payload["schema_version"] == 2
     assert payload["settings"]["transcription_language"] == "zh"
     assert payload["secrets"]["provider"] == "api_test_provider"

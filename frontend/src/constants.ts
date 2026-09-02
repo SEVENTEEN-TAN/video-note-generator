@@ -2,6 +2,15 @@
 
 export const OPENAI_BASE_URL = "https://api.openai.com/v1";
 export const QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1";
+export const BIGMODEL_ANTHROPIC_BASE_URL = "https://open.bigmodel.cn/api/anthropic";
+export const BIGMODEL_CHAT_BASE_URL = "https://open.bigmodel.cn/api/coding/paas/v4";
+export const BIGMODEL_RESPONSES_BASE_URL = "https://open.bigmodel.cn/api/v1";
+
+export const aiProtocolOptions: Array<{ value: import("./types").AIProtocol; label: string }> = [
+  { value: "openai_chat_completions", label: "OpenAI Chat Completions" },
+  { value: "openai_responses", label: "OpenAI Responses" },
+  { value: "anthropic_messages", label: "Anthropic Messages" }
+];
 
 export const statusText: Record<JobStatus, string> = {
   pending: "等待",

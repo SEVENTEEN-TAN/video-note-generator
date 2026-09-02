@@ -12,6 +12,7 @@ const DEFAULT_SETTINGS: UserSettings = {
   local_whisper_compute_type: "default",
   local_whisper_device: "auto",
   note_api_key: "",
+  note_api_protocol: "openai_chat_completions",
   note_base_url: OPENAI_BASE_URL,
   note_language: "zh",
   note_model: "gpt-5.5",

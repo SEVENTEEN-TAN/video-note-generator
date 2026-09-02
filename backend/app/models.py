@@ -51,6 +51,36 @@ class NoteStyle(str, Enum):
     meeting_minutes = "meeting_minutes"
 
 
+class AIProtocol(str, Enum):
+    openai_chat_completions = "openai_chat_completions"
+    openai_responses = "openai_responses"
+    anthropic_messages = "anthropic_messages"
+
+
+class AIModelListRequest(BaseModel):
+    protocol: AIProtocol = AIProtocol.openai_chat_completions
+    api_key: str
+    base_url: str
+
+    @field_validator("api_key", "base_url")
+    @classmethod
+    def require_model_list_fields(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("This field is required.")
+        return value
+
+
+class AIModelInfo(BaseModel):
+    id: str
+    display_name: str
+    owned_by: str | None = None
+
+
+class AIModelListResponse(BaseModel):
+    models: list[AIModelInfo] = Field(default_factory=list)
+
+
 class TranscriptionMode(str, Enum):
     audio_transcriptions = "audio_transcriptions"
     chat_audio = "chat_audio"
@@ -151,6 +181,7 @@ class TranscriptionConfig(JobInputConfig):
 
 
 class NotePreferences(JobInputConfig, FrameGenerationConfig):
+    note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
     note_base_url: str = "https://api.openai.com/v1"
     note_model: str = "gpt-5.5"
     note_language: NoteLanguage
@@ -187,6 +218,7 @@ class JobConfig(TranscriptionConfig, FrameGenerationConfig):
     """Legacy composite config retained for compatibility with older callers and fixtures."""
 
     note_api_key: str
+    note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
     note_base_url: str = "https://api.openai.com/v1"
     note_model: str = "gpt-5.5"
     note_language: NoteLanguage
@@ -225,6 +257,7 @@ class JobConfig(TranscriptionConfig, FrameGenerationConfig):
     def for_note_generation(self) -> NoteGenerationConfig:
         return NoteGenerationConfig(
             note_api_key=self.note_api_key,
+            note_api_protocol=self.note_api_protocol,
             note_base_url=self.note_base_url,
             note_model=self.note_model,
             note_language=self.note_language,
@@ -369,6 +402,7 @@ class ReviewDraftParagraphUpdate(BaseModel):
 
 class TranscriptCorrectionRequest(BaseModel):
     note_api_key: str
+    note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
     note_base_url: str = "https://api.openai.com/v1"
     note_model: str = "gpt-5.5"
     instructions: str = ""
@@ -394,6 +428,7 @@ class TranscriptCorrectionApplyRequest(BaseModel):
     note_style: NoteStyle = NoteStyle.detailed
     extras: str = ""
     note_api_key: str
+    note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
     note_base_url: str = "https://api.openai.com/v1"
     note_model: str = "gpt-5.5"
     frame_limit: int = Field(default=6, ge=1, le=24)
@@ -536,6 +571,7 @@ class NoteVersion(BaseModel):
     note_style: NoteStyle
     note_language: str
     note_model: str
+    note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
     note_base_url: str
     frame_limit: int
     note_path: str

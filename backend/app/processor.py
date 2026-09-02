@@ -80,6 +80,7 @@ def _transcription_config_debug_summary(config: TranscriptionConfig) -> dict:
 def _note_config_debug_summary(config: NotePreferences) -> dict:
     return {
         "original_filename": config.original_filename,
+        "note_api_protocol": config.note_api_protocol.value,
         "note_base_url": config.note_base_url,
         "note_model": config.note_model,
         "note_language": config.note_language.value,
@@ -167,6 +168,11 @@ def write_job_metadata(
             note_config.note_base_url
             if note_config is not None
             else str(existing.get("note_base_url") or "")
+        ),
+        "note_api_protocol": (
+            note_config.note_api_protocol.value
+            if note_config is not None
+            else str(existing.get("note_api_protocol") or "openai_chat_completions")
         ),
         "note_model": (
             note_config.note_model

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
+from .api.ai import router as ai_router
 from .api.downloads import create_downloads_router
 from .api.jobs import create_jobs_router
 from .api.notes import create_notes_router
@@ -30,6 +31,7 @@ from .ffmpeg_tools import extract_mp3, probe_duration
 from .filenames import normalize_uploaded_filename
 from .llm import generate_note_draft
 from .models import (
+    AIProtocol,
     JobPublicState,
     JobStage,
     JobStatus,
@@ -115,6 +117,7 @@ async def enforce_upload_request_size(request: Request, call_next):
     return await call_next(request)
 app.include_router(runtime_router)
 app.include_router(settings_router)
+app.include_router(ai_router)
 store = JobStore(OUTPUTS_ROOT)
 
 
@@ -269,6 +272,7 @@ def build_transcription_config_or_400(
 
 def build_note_preferences_or_400(
     *,
+    note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions,
     note_base_url: str,
     note_model: str,
     note_language: NoteLanguage,
@@ -279,6 +283,7 @@ def build_note_preferences_or_400(
 ) -> NotePreferences:
     try:
         return NotePreferences(
+            note_api_protocol=note_api_protocol,
             note_base_url=note_base_url,
             note_model=note_model,
             note_language=note_language,
@@ -294,6 +299,7 @@ def build_note_preferences_or_400(
 def build_note_generation_config_or_400(
     *,
     note_api_key: str,
+    note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions,
     note_base_url: str,
     note_model: str,
     note_language: NoteLanguage,
@@ -311,6 +317,7 @@ def build_note_generation_config_or_400(
     try:
         return NoteGenerationConfig(
             note_api_key=note_api_key,
+            note_api_protocol=note_api_protocol,
             note_base_url=note_base_url,
             note_model=note_model,
             note_language=note_language,

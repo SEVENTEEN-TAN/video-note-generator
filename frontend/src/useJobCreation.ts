@@ -217,6 +217,7 @@ export function useJobCreation({
       isLocalTranscription ? currentSettings.local_whisper_compute_type : ""
     );
     formData.append("performance_mode", currentSettings.performance_mode);
+    formData.append("note_api_protocol", currentSettings.note_api_protocol);
     formData.append("note_base_url", currentSettings.note_base_url);
     formData.append("note_model", currentSettings.note_model);
     formData.append("note_language", currentSettings.note_language);

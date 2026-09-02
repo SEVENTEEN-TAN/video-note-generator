@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from .atomic_io import atomic_write_json
 from .models import (
+    AIProtocol,
     LocalWhisperComputeType,
     LocalWhisperDevice,
     NoteLanguage,
@@ -65,6 +66,7 @@ class UserSettings(BaseModel):
     faster_whisper_model_dir: str = ""
     python_package_install_mode: PythonPackageInstallMode = "default"
     note_api_key: str = ""
+    note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
     note_base_url: str = OPENAI_BASE_URL
     note_model: str = "gpt-5.5"
     note_language: NoteLanguage = NoteLanguage.zh
@@ -109,6 +111,7 @@ class UserSettingsUpdate(BaseModel):
     faster_whisper_model_dir: str | None = None
     python_package_install_mode: PythonPackageInstallMode | None = None
     note_api_key: str | None = None
+    note_api_protocol: AIProtocol | None = None
     note_base_url: str | None = None
     note_model: str | None = None
     note_language: NoteLanguage | None = None
