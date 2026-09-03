@@ -9,16 +9,18 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Query, UploadFile
 from pydantic import ValidationError
 
 from ..filenames import normalize_uploaded_filename
 from ..job_paths import InvalidJobIdError, JobDirectoryNotFoundError, read_job_metadata, resolve_job_dir
+from ..job_activity import load_job_activity
 from ..job_store import JobStore
 from ..models import (
     AIProtocol,
     FrameSuggestion,
     JobHistory,
+    JobActivitySnapshot,
     JobInputConfig,
     JobPublicState,
     JobStatus,
@@ -329,6 +331,11 @@ def create_jobs_router(
             raise HTTPException(status_code=404, detail="Job not found.")
         store.refresh_artifacts(job_id)
         return state
+
+    @router.get("/api/jobs/{job_id}/activity", response_model=JobActivitySnapshot)
+    def get_job_activity(job_id: str, limit: int = Query(default=8, ge=1, le=20)) -> JobActivitySnapshot:
+        job_dir = _resolve_job_dir_or_http(get_outputs_root(), job_id)
+        return load_job_activity(job_dir, limit=limit)
 
     @router.post("/api/jobs/{job_id}/cancel", response_model=JobPublicState)
     def cancel_job(job_id: str) -> JobPublicState:

@@ -1,4 +1,4 @@
-// OpenAPI-SHA256: 0c6440780429745006ac8c9e245291107e5cd7ff52239604c7ab42802f8a15c0
+// OpenAPI-SHA256: c3a863ab6547336799c35592e65b3762f21804f54498086e7786e675a29906d1
 export interface paths {
     "/api/ai/models": {
         parameters: {
@@ -82,6 +82,23 @@ export interface paths {
         post?: never;
         /** Delete Job */
         delete: operations["delete_job_api_jobs__job_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/jobs/{job_id}/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job Activity */
+        get: operations["get_job_activity_api_jobs__job_id__activity_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1253,6 +1270,64 @@ export interface components {
             /** Runtime Ok */
             runtime_ok: boolean;
         };
+        /** JobActivityEvent */
+        JobActivityEvent: {
+            /**
+             * Context
+             * @default
+             */
+            context: string;
+            /**
+             * Level
+             * @default INFO
+             */
+            level: string;
+            /** Message */
+            message: string;
+            /** Stage */
+            stage: string;
+            /** Summary */
+            summary: string;
+            /** Timestamp */
+            timestamp: string;
+        };
+        /** JobActivitySnapshot */
+        JobActivitySnapshot: {
+            /**
+             * Binary Split Count
+             * @default 0
+             */
+            binary_split_count: number;
+            /**
+             * Current Context
+             * @default
+             */
+            current_context: string;
+            /** Events */
+            events?: components["schemas"]["JobActivityEvent"][];
+            /**
+             * Format Failure Count
+             * @default 0
+             */
+            format_failure_count: number;
+            /** Job Id */
+            job_id: string;
+            /**
+             * Request Count
+             * @default 0
+             */
+            request_count: number;
+            /**
+             * Response Count
+             * @default 0
+             */
+            response_count: number;
+            /**
+             * Truncation Retry Count
+             * @default 0
+             */
+            truncation_retry_count: number;
+        };
         /** JobHistory */
         JobHistory: {
             /** Jobs */
@@ -2193,6 +2268,39 @@ export interface operations {
                     "application/json": {
                         [key: string]: unknown;
                     };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_job_activity_api_jobs__job_id__activity_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobActivitySnapshot"];
                 };
             };
             /** @description Validation Error */

@@ -1282,6 +1282,99 @@
         "title": "HealthState",
         "type": "object"
       },
+      "JobActivityEvent": {
+        "properties": {
+          "context": {
+            "default": "",
+            "title": "Context",
+            "type": "string"
+          },
+          "level": {
+            "default": "INFO",
+            "title": "Level",
+            "type": "string"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "stage": {
+            "title": "Stage",
+            "type": "string"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "timestamp": {
+            "title": "Timestamp",
+            "type": "string"
+          }
+        },
+        "required": [
+          "timestamp",
+          "stage",
+          "message",
+          "summary"
+        ],
+        "title": "JobActivityEvent",
+        "type": "object"
+      },
+      "JobActivitySnapshot": {
+        "properties": {
+          "binary_split_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Binary Split Count",
+            "type": "integer"
+          },
+          "current_context": {
+            "default": "",
+            "title": "Current Context",
+            "type": "string"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/JobActivityEvent"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "format_failure_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Format Failure Count",
+            "type": "integer"
+          },
+          "job_id": {
+            "title": "Job Id",
+            "type": "string"
+          },
+          "request_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Request Count",
+            "type": "integer"
+          },
+          "response_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Response Count",
+            "type": "integer"
+          },
+          "truncation_retry_count": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Truncation Retry Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "title": "JobActivitySnapshot",
+        "type": "object"
+      },
       "JobHistory": {
         "properties": {
           "jobs": {
@@ -3266,6 +3359,60 @@
           }
         },
         "summary": "Get Job",
+        "tags": [
+          "jobs"
+        ]
+      }
+    },
+    "/api/jobs/{job_id}/activity": {
+      "get": {
+        "operationId": "get_job_activity_api_jobs__job_id__activity_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "job_id",
+            "required": true,
+            "schema": {
+              "title": "Job Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 8,
+              "maximum": 20,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JobActivitySnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Job Activity",
         "tags": [
           "jobs"
         ]

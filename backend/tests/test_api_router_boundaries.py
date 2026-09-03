@@ -51,6 +51,7 @@ EXPECTED_ROUTE_MODULES = {
     ("POST", "/api/jobs"): "backend.app.api.jobs",
     ("GET", "/api/jobs"): "backend.app.api.jobs",
     ("GET", "/api/jobs/{job_id}"): "backend.app.api.jobs",
+    ("GET", "/api/jobs/{job_id}/activity"): "backend.app.api.jobs",
     ("POST", "/api/jobs/{job_id}/cancel"): "backend.app.api.jobs",
     ("POST", "/api/jobs/{job_id}/transcription/resume"): "backend.app.api.jobs",
     ("GET", "/api/jobs/{job_id}/storage"): "backend.app.api.jobs",

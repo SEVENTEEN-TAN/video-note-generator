@@ -653,6 +653,26 @@ class JobPublicState(BaseModel):
     download_filename: str | None = None
 
 
+class JobActivityEvent(BaseModel):
+    timestamp: str
+    level: str = "INFO"
+    stage: str
+    message: str
+    summary: str
+    context: str = ""
+
+
+class JobActivitySnapshot(BaseModel):
+    job_id: str
+    current_context: str = ""
+    request_count: int = Field(default=0, ge=0)
+    response_count: int = Field(default=0, ge=0)
+    format_failure_count: int = Field(default=0, ge=0)
+    truncation_retry_count: int = Field(default=0, ge=0)
+    binary_split_count: int = Field(default=0, ge=0)
+    events: list[JobActivityEvent] = Field(default_factory=list)
+
+
 class JobSummary(BaseModel):
     job_id: str
     title: str

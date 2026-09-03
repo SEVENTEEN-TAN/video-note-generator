@@ -20,6 +20,7 @@ import {
 import { extractMarkdownImages } from "./markdown";
 import { FrameReviewModal } from "./FrameReviewModal";
 import { JobHistoryPanel } from "./JobHistoryPanel";
+import { JobActivityPopover } from "./JobActivityPopover";
 import { ResultWorkbench } from "./ResultWorkbench";
 import { HealthBadge } from "./RuntimeStatus";
 import { SettingsModal } from "./SettingsModal";
@@ -609,9 +610,12 @@ function StepProgress({ job }: { job: JobState | null }) {
   const work = job?.work_progress;
   return (
     <>
-      <span className="step-progress-label">
-        {icon}
-        {label}
+      <span className="step-progress-label-wrap">
+        <span className="step-progress-label">
+          {icon}
+          <span>{label}</span>
+        </span>
+        <JobActivityPopover job={job} />
       </span>
       <span className="step-progress-track">
         <span className="step-progress-fill" style={{ width: `${progress}%` }} />

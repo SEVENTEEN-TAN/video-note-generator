@@ -5,6 +5,7 @@ import type {
   FrameCandidateIndex,
   HealthState,
   JobState,
+  JobActivitySnapshot,
   JobSummary,
   LocalDependencyInstallState,
   ModelDownloadState,
@@ -55,6 +56,10 @@ export async function fetchJob(jobId: string, signal?: AbortSignal): Promise<Job
     throw new Error(await readResponseError(response, "任务状态读取失败。"));
   }
   return response.json();
+}
+
+export async function fetchJobActivity(jobId: string, signal?: AbortSignal): Promise<JobActivitySnapshot> {
+  return requestJson(`/api/jobs/${jobId}/activity?limit=8`, "任务执行日志读取失败。", { signal });
 }
 
 export async function createJob(formData: FormData): Promise<{ job_id: string }> {
