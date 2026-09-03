@@ -46,16 +46,20 @@ def request_json_text(
     messages: list[dict],
     max_tokens: int,
     temperature: float = 0.2,
+    thinking_enabled: bool = True,
 ) -> str:
     selected = AIProtocol(protocol)
     if selected == AIProtocol.openai_chat_completions:
-        response = make_client(api_key, base_url).chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-            max_tokens=max_tokens,
-            response_format={"type": "json_object"},
-        )
+        request_kwargs: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"},
+        }
+        if not thinking_enabled:
+            request_kwargs["reasoning_effort"] = "none"
+        response = make_client(api_key, base_url).chat.completions.create(**request_kwargs)
         return str(response.choices[0].message.content or "")
     if selected == AIProtocol.openai_responses:
         system, _user_messages = _split_system_messages(messages)
@@ -67,6 +71,8 @@ def request_json_text(
         }
         if system:
             payload["instructions"] = system
+        if not thinking_enabled:
+            payload["reasoning"] = {"effort": "none"}
         response = _post_json(base_url, "responses", {"Authorization": f"Bearer {api_key}"}, payload)
         return _extract_responses_text(response)
 
@@ -79,6 +85,8 @@ def request_json_text(
     }
     if system:
         payload["system"] = system
+    if not thinking_enabled:
+        payload["thinking"] = {"type": "disabled"}
     response = _post_json(
         base_url,
         _anthropic_endpoint(base_url, "messages"),

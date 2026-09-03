@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from urllib.parse import urlparse
 
 from openai import BadRequestError, OpenAI, OpenAIError
 
@@ -24,6 +23,10 @@ from .time_utils import seconds_to_hhmmss
 
 class LLMError(RuntimeError):
     pass
+
+
+class LLMRequestError(LLMError):
+    """A provider or transport failure that transcript splitting cannot fix."""
 
 
 def _is_content_policy_rejection(exc: BadRequestError) -> bool:
@@ -80,6 +83,8 @@ NOTE_MODEL_TIMEOUT_SECONDS = 180.0
 NOTE_CHUNK_MAX_TOKENS = 8_192
 NOTE_REDUCE_MAX_TOKENS = 8_192
 MAX_TRUNCATION_RETRY_TOKENS = 32_768
+MIN_CONTEXT_SAFETY_RESERVE_TOKENS = 2_048
+MAX_CONTEXT_SAFETY_RESERVE_TOKENS = 8_192
 JSON_WRAPPER_KEYS = ("note", "draft", "data", "result", "output")
 
 
@@ -89,6 +94,26 @@ def estimate_prompt_tokens(text: str) -> int:
     ascii_chars = sum(1 for char in text if ord(char) < 128)
     non_ascii_chars = len(text) - ascii_chars
     return max(1, (ascii_chars + 3) // 4 + non_ascii_chars)
+
+
+def note_context_safety_reserve_tokens(config: NoteGenerationConfig) -> int:
+    return max(
+        MIN_CONTEXT_SAFETY_RESERVE_TOKENS,
+        min(MAX_CONTEXT_SAFETY_RESERVE_TOKENS, config.note_context_window_tokens // 16),
+    )
+
+
+def note_input_budget_tokens(config: NoteGenerationConfig) -> int:
+    return max(
+        1_024,
+        config.note_context_window_tokens
+        - config.note_max_output_tokens
+        - note_context_safety_reserve_tokens(config),
+    )
+
+
+def note_chunk_transcript_budget_tokens(config: NoteGenerationConfig) -> int:
+    return max(1_024, int(note_input_budget_tokens(config) * 0.70))
 
 
 NOTE_SCHEMA_DESCRIPTION = """
@@ -348,20 +373,31 @@ def _clamp_timeline_time(timestamp: float, timeline_end: float) -> float:
     return max(0.0, min(timeline_end, timestamp))
 
 
-def chunk_segments(segments: list[TranscriptSegment], max_chars: int = MAX_CHUNK_TRANSCRIPT_CHARS) -> list[list[TranscriptSegment]]:
+def chunk_segments(
+    segments: list[TranscriptSegment],
+    max_chars: int = MAX_CHUNK_TRANSCRIPT_CHARS,
+    max_tokens: int | None = None,
+) -> list[list[TranscriptSegment]]:
     chunks: list[list[TranscriptSegment]] = []
     current: list[TranscriptSegment] = []
     current_chars = 0
+    current_tokens = 0
     for segment in segments:
-        line_chars = len(render_transcript_line(segment)) + 1
+        rendered_line = render_transcript_line(segment)
+        line_chars = len(rendered_line) + 1
+        line_tokens = estimate_prompt_tokens(rendered_line) + 1
         has_large_gap = bool(current and segment.start - current[-1].end >= LARGE_TRANSCRIPT_GAP_SECONDS)
-        would_exceed = bool(current and current_chars + line_chars > max_chars)
+        would_exceed_chars = current_chars + line_chars > max_chars
+        would_exceed_tokens = max_tokens is not None and current_tokens + line_tokens > max_tokens
+        would_exceed = bool(current and (would_exceed_chars or would_exceed_tokens))
         if has_large_gap or would_exceed:
             chunks.append(current)
             current = []
             current_chars = 0
+            current_tokens = 0
         current.append(segment)
         current_chars += line_chars
+        current_tokens += line_tokens
     if current:
         chunks.append(current)
     return chunks
@@ -496,17 +532,6 @@ def make_client(api_key: str, base_url: str) -> OpenAI:
     return OpenAI(api_key=api_key, timeout=NOTE_MODEL_TIMEOUT_SECONDS, max_retries=0)
 
 
-def _should_disable_bigmodel_thinking(config: NoteGenerationConfig) -> bool:
-    try:
-        hostname = (urlparse(config.note_base_url.strip()).hostname or "").casefold()
-    except ValueError:
-        return False
-    return (
-        (hostname == "bigmodel.cn" or hostname.endswith(".bigmodel.cn"))
-        and config.note_model.strip().casefold().startswith("glm-")
-    )
-
-
 def _response_usage_value(response: object, field: str) -> int | None:
     usage = getattr(response, "usage", None)
     value = usage.get(field) if isinstance(usage, dict) else getattr(usage, field, None)
@@ -573,17 +598,22 @@ def _json_retry_instruction(text: str, exc: BaseException) -> str:
 def call_note_model(
     config: NoteGenerationConfig,
     messages: list[dict],
-    max_tokens: int = 3000,
+    max_tokens: int | None = None,
     debug_log: TaskDebugLog | None = None,
     debug_context: str = "note",
 ) -> NoteDraft:
+    resolved_max_tokens = (
+        min(max_tokens, config.note_max_output_tokens)
+        if max_tokens is not None
+        else config.note_max_output_tokens
+    )
     if config.note_api_protocol != AIProtocol.openai_chat_completions:
-        return _call_non_chat_note_model(config, messages, max_tokens, debug_log, debug_context)
+        return _call_non_chat_note_model(config, messages, resolved_max_tokens, debug_log, debug_context)
     client = make_client(config.note_api_key, config.note_base_url)
     last_error: Exception | None = None
     working_messages = list(messages)
     use_response_format = True
-    attempt_max_tokens = max_tokens
+    attempt_max_tokens = resolved_max_tokens
     for attempt in range(1, 3):
         if debug_log:
             debug_log.event(
@@ -596,7 +626,9 @@ def call_note_model(
                 message_count=len(working_messages),
                 message_chars=sum(len(str(message.get("content") or "")) for message in working_messages),
                 max_tokens=attempt_max_tokens,
-                thinking_disabled=_should_disable_bigmodel_thinking(config),
+                context_window_tokens=config.note_context_window_tokens,
+                input_budget_tokens=note_input_budget_tokens(config),
+                thinking_disabled=not config.note_thinking_enabled,
             )
         while True:
             request_kwargs = {
@@ -607,8 +639,8 @@ def call_note_model(
             }
             if use_response_format:
                 request_kwargs["response_format"] = {"type": "json_object"}
-            if _should_disable_bigmodel_thinking(config):
-                request_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            if not config.note_thinking_enabled:
+                request_kwargs["reasoning_effort"] = "none"
             try:
                 response = client.chat.completions.create(**request_kwargs)
                 break
@@ -682,7 +714,11 @@ def call_note_model(
             if isinstance(finish_reason, str) and finish_reason.casefold() == "length" and attempt < 2:
                 next_max_tokens = max(
                     attempt_max_tokens,
-                    min(attempt_max_tokens * 2, MAX_TRUNCATION_RETRY_TOKENS),
+                    min(
+                        attempt_max_tokens * 2,
+                        MAX_TRUNCATION_RETRY_TOKENS,
+                        config.note_max_output_tokens,
+                    ),
                 )
                 if next_max_tokens > attempt_max_tokens:
                     if debug_log:
@@ -730,6 +766,7 @@ def _call_non_chat_note_model(
                 model=config.note_model,
                 messages=working_messages,
                 max_tokens=max_tokens,
+                thinking_enabled=config.note_thinking_enabled,
             )
         except AIProtocolError as exc:
             if debug_log:
@@ -741,7 +778,7 @@ def _call_non_chat_note_model(
                     exception_type=type(exc).__name__,
                     exception_message=str(exc),
                 )
-            raise LLMError(str(exc)) from exc
+            raise LLMRequestError(str(exc)) from exc
         response_file = ""
         if debug_log:
             response_file = f"{_safe_debug_context(debug_context)}-model-response-attempt-{attempt}.txt"
@@ -763,7 +800,8 @@ def _call_non_chat_note_model(
     raise LLMError(str(last_error) if last_error else "The model did not return a valid note draft.")
 
 
-def call_json_model(config: NoteGenerationConfig, messages: list[dict], max_tokens: int = 3000) -> dict:
+def call_json_model(config: NoteGenerationConfig, messages: list[dict], max_tokens: int | None = None) -> dict:
+    max_tokens = min(max_tokens, config.note_max_output_tokens) if max_tokens is not None else config.note_max_output_tokens
     if config.note_api_protocol != AIProtocol.openai_chat_completions:
         try:
             text = request_json_text(
@@ -774,6 +812,7 @@ def call_json_model(config: NoteGenerationConfig, messages: list[dict], max_toke
                 messages=messages,
                 max_tokens=max_tokens,
                 temperature=0.1,
+                thinking_enabled=config.note_thinking_enabled,
             )
             return extract_json(text)
         except AIProtocolError as exc:
@@ -788,6 +827,8 @@ def call_json_model(config: NoteGenerationConfig, messages: list[dict], max_toke
         "temperature": 0.1,
         "max_tokens": max_tokens,
     }
+    if not config.note_thinking_enabled:
+        request_kwargs["reasoning_effort"] = "none"
     try:
         response = client.chat.completions.create(**request_kwargs)
     except BadRequestError as exc:
@@ -822,7 +863,8 @@ def generate_note_draft(
         note_style=config.note_style.value,
         extras=config.extras,
     )
-    if len(user_prompt) > MAX_SINGLE_PROMPT_CHARS or estimate_prompt_tokens(user_prompt) > MAX_SINGLE_PROMPT_CHARS // 4:
+    prompt_tokens = estimate_prompt_tokens(system_prompt) + estimate_prompt_tokens(user_prompt)
+    if prompt_tokens > note_input_budget_tokens(config):
         if debug_log:
             return generate_chunked_note_draft(config, duration, segments, system_prompt, debug_log=debug_log)
         return generate_chunked_note_draft(config, duration, segments, system_prompt)
@@ -832,9 +874,15 @@ def generate_note_draft(
         {"role": "user", "content": user_prompt},
     ]
     if debug_log:
-        draft = call_note_model(config, messages, debug_log=debug_log, debug_context="note")
+        draft = call_note_model(
+            config,
+            messages,
+            max_tokens=config.note_max_output_tokens,
+            debug_log=debug_log,
+            debug_context="note",
+        )
     else:
-        draft = call_note_model(config, messages)
+        draft = call_note_model(config, messages, max_tokens=config.note_max_output_tokens)
     return anchor_note_draft_to_segments(draft, segments, duration)
 
 
@@ -845,7 +893,8 @@ def generate_chunked_note_draft(
     system_prompt: str,
     debug_log: TaskDebugLog | None = None,
 ) -> NoteDraft:
-    chunks = chunk_segments(segments, MAX_CHUNK_TRANSCRIPT_CHARS)
+    chunk_token_budget = note_chunk_transcript_budget_tokens(config)
+    chunks = chunk_segments(segments, max_chars=chunk_token_budget * 4, max_tokens=chunk_token_budget)
     chunk_drafts: list[NoteDraft] = []
     for index, chunk in enumerate(chunks, start=1):
         prior_context = _build_prior_context(chunk_drafts)
@@ -877,7 +926,8 @@ def generate_chunked_note_draft_with_chunks(
     debug_log: TaskDebugLog | None = None,
 ) -> tuple[NoteDraft, list[list[TranscriptSegment]], list[NoteDraft]]:
     """Like generate_chunked_note_draft but also returns chunk segments and drafts."""
-    chunks = chunk_segments(segments, MAX_CHUNK_TRANSCRIPT_CHARS)
+    chunk_token_budget = note_chunk_transcript_budget_tokens(config)
+    chunks = chunk_segments(segments, max_chars=chunk_token_budget * 4, max_tokens=chunk_token_budget)
     chunk_drafts: list[NoteDraft] = []
     for index, chunk in enumerate(chunks, start=1):
         prior_context = _build_prior_context(chunk_drafts)
@@ -950,7 +1000,7 @@ def _transcribe_note_chunk_with_retry(
     keeping the offending half isolated.
     """
     debug_context = f"note-chunk-{chunk_index}-of-{chunk_count}{debug_suffix}"
-    kwargs: dict[str, object] = {"max_tokens": NOTE_CHUNK_MAX_TOKENS}
+    kwargs: dict[str, object] = {"max_tokens": config.note_max_output_tokens}
     if debug_log:
         kwargs["debug_log"] = debug_log
         kwargs["debug_context"] = debug_context
@@ -977,6 +1027,8 @@ def _transcribe_note_chunk_with_retry(
                 **kwargs,
             )
         ]
+    except LLMRequestError:
+        raise
     except LLMError as exc:
         if len(chunk) >= MIN_CHUNK_SEGMENTS_FOR_BINARY_RETRY * 2:
             if debug_log:
@@ -1108,9 +1160,19 @@ def reduce_note_drafts(
     debug_log: TaskDebugLog | None = None,
 ) -> NoteDraft:
     reduce_prompt = build_reduce_prompt(config, duration, partials)
-    if len(reduce_prompt) > MAX_REDUCE_PROMPT_CHARS or estimate_prompt_tokens(reduce_prompt) > MAX_REDUCE_PROMPT_CHARS // 4:
+    input_budget = note_input_budget_tokens(config)
+    if estimate_prompt_tokens(system_prompt) + estimate_prompt_tokens(reduce_prompt) > input_budget:
         reduce_prompt = build_reduce_prompt(config, duration, partials, compact=True)
-    kwargs = {"max_tokens": NOTE_REDUCE_MAX_TOKENS}
+    if estimate_prompt_tokens(system_prompt) + estimate_prompt_tokens(reduce_prompt) > input_budget:
+        if debug_log:
+            debug_log.event(
+                "reduce_note_drafts",
+                "fallback_to_deterministic_merge",
+                partial_count=len(partials),
+                error="Compact reduce prompt exceeds configured model context window.",
+            )
+        return merge_partial_note_drafts(config, partials)
+    kwargs = {"max_tokens": config.note_max_output_tokens}
     if debug_log:
         kwargs["debug_log"] = debug_log
         kwargs["debug_context"] = "note-reduce"

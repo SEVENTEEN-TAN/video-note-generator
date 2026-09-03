@@ -166,7 +166,6 @@ def regenerate_chunk_and_reduce(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": chunk_prompt},
             ],
-            max_tokens=2200,
         )
         new_status = "succeeded"
     except LLMError:

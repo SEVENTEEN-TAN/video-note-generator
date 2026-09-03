@@ -85,6 +85,9 @@ def test_user_settings_roundtrip_persists_keys_and_models(tmp_path, monkeypatch)
             "note_api_key": "note-secret",
             "note_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "note_model": "qwen-plus",
+            "note_thinking_enabled": True,
+            "note_context_window_tokens": 256000,
+            "note_max_output_tokens": 32768,
             "note_language": "follow",
             "note_style": "tutorial",
             "extras": "Keep formulas intact.",
@@ -104,6 +107,9 @@ def test_user_settings_roundtrip_persists_keys_and_models(tmp_path, monkeypatch)
     assert loaded.performance_mode == PerformanceMode.accurate
     assert loaded.note_api_key == "note-secret"
     assert loaded.note_model == "qwen-plus"
+    assert loaded.note_thinking_enabled is True
+    assert loaded.note_context_window_tokens == 256000
+    assert loaded.note_max_output_tokens == 32768
     assert loaded.note_language == NoteLanguage.follow
     assert loaded.note_style == NoteStyle.tutorial
     assert loaded.frame_limit == 8
@@ -111,6 +117,9 @@ def test_user_settings_roundtrip_persists_keys_and_models(tmp_path, monkeypatch)
     serialized = settings_path.read_text(encoding="utf-8")
     assert payload["schema_version"] == CURRENT_SETTINGS_SCHEMA_VERSION
     assert payload["settings"]["transcription_language"] == "zh"
+    assert payload["settings"]["note_thinking_enabled"] is True
+    assert payload["settings"]["note_context_window_tokens"] == 256000
+    assert payload["settings"]["note_max_output_tokens"] == 32768
     assert payload["secrets"]["provider"] == "test_secret_provider"
     assert payload["secrets"]["note_api_key"]
     assert "note-secret" not in serialized
@@ -133,6 +142,14 @@ def test_clear_user_settings_removes_file_and_returns_defaults(tmp_path, monkeyp
     assert cleared.local_whisper_device == "auto"
     assert cleared.local_whisper_compute_type == "default"
     assert cleared.performance_mode == PerformanceMode.balanced
+
+
+def test_user_settings_reject_output_budget_that_consumes_context() -> None:
+    with pytest.raises(ValueError, match="leave at least 2048 tokens"):
+        settings_module.UserSettings(
+            note_context_window_tokens=8192,
+            note_max_output_tokens=7000,
+        )
 
 
 def test_old_settings_without_performance_mode_default_to_balanced(tmp_path, monkeypatch) -> None:

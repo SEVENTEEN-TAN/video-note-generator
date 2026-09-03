@@ -1,6 +1,84 @@
 {
   "components": {
     "schemas": {
+      "AIConnectionTestRequest": {
+        "properties": {
+          "api_key": {
+            "title": "Api Key",
+            "type": "string"
+          },
+          "base_url": {
+            "title": "Base Url",
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "default": 8192,
+            "maximum": 262144.0,
+            "minimum": 256.0,
+            "title": "Max Output Tokens",
+            "type": "integer"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/AIProtocol",
+            "default": "openai_chat_completions"
+          },
+          "thinking_enabled": {
+            "default": false,
+            "title": "Thinking Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "api_key",
+          "base_url",
+          "model"
+        ],
+        "title": "AIConnectionTestRequest",
+        "type": "object"
+      },
+      "AIConnectionTestResponse": {
+        "properties": {
+          "elapsed_ms": {
+            "minimum": 0.0,
+            "title": "Elapsed Ms",
+            "type": "integer"
+          },
+          "json_valid": {
+            "default": false,
+            "title": "Json Valid",
+            "type": "boolean"
+          },
+          "model": {
+            "title": "Model",
+            "type": "string"
+          },
+          "ok": {
+            "default": true,
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/AIProtocol"
+          },
+          "response_length": {
+            "minimum": 0.0,
+            "title": "Response Length",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "protocol",
+          "model",
+          "elapsed_ms",
+          "response_length"
+        ],
+        "title": "AIConnectionTestResponse",
+        "type": "object"
+      },
       "AIModelInfo": {
         "properties": {
           "display_name": {
@@ -137,8 +215,18 @@
             "title": "Note Base Url",
             "type": "string"
           },
+          "note_context_window_tokens": {
+            "default": 32768,
+            "title": "Note Context Window Tokens",
+            "type": "integer"
+          },
           "note_language": {
             "$ref": "#/components/schemas/NoteLanguage"
+          },
+          "note_max_output_tokens": {
+            "default": 8192,
+            "title": "Note Max Output Tokens",
+            "type": "integer"
           },
           "note_model": {
             "default": "gpt-5.5",
@@ -148,6 +236,11 @@
           "note_style": {
             "$ref": "#/components/schemas/NoteStyle",
             "default": "detailed"
+          },
+          "note_thinking_enabled": {
+            "default": false,
+            "title": "Note Thinking Enabled",
+            "type": "boolean"
           }
         },
         "required": [
@@ -187,8 +280,18 @@
             "title": "Note Base Url",
             "type": "string"
           },
+          "note_context_window_tokens": {
+            "default": 32768,
+            "title": "Note Context Window Tokens",
+            "type": "integer"
+          },
           "note_language": {
             "$ref": "#/components/schemas/NoteLanguage"
+          },
+          "note_max_output_tokens": {
+            "default": 8192,
+            "title": "Note Max Output Tokens",
+            "type": "integer"
           },
           "note_model": {
             "default": "gpt-5.5",
@@ -198,6 +301,11 @@
           "note_style": {
             "$ref": "#/components/schemas/NoteStyle",
             "default": "detailed"
+          },
+          "note_thinking_enabled": {
+            "default": false,
+            "title": "Note Thinking Enabled",
+            "type": "boolean"
           },
           "performance_mode": {
             "$ref": "#/components/schemas/PerformanceMode",
@@ -276,9 +384,19 @@
             "title": "Note Base Url",
             "type": "string"
           },
+          "note_context_window_tokens": {
+            "default": 32768,
+            "title": "Note Context Window Tokens",
+            "type": "integer"
+          },
           "note_language": {
             "$ref": "#/components/schemas/NoteLanguage",
             "default": "zh"
+          },
+          "note_max_output_tokens": {
+            "default": 8192,
+            "title": "Note Max Output Tokens",
+            "type": "integer"
           },
           "note_model": {
             "default": "gpt-5.5",
@@ -288,6 +406,11 @@
           "note_style": {
             "$ref": "#/components/schemas/NoteStyle",
             "default": "detailed"
+          },
+          "note_thinking_enabled": {
+            "default": false,
+            "title": "Note Thinking Enabled",
+            "type": "boolean"
           }
         },
         "required": [
@@ -322,8 +445,18 @@
             "title": "Note Base Url",
             "type": "string"
           },
+          "note_context_window_tokens": {
+            "default": 32768,
+            "title": "Note Context Window Tokens",
+            "type": "integer"
+          },
           "note_language": {
             "$ref": "#/components/schemas/NoteLanguage"
+          },
+          "note_max_output_tokens": {
+            "default": 8192,
+            "title": "Note Max Output Tokens",
+            "type": "integer"
           },
           "note_model": {
             "default": "gpt-5.5",
@@ -333,6 +466,11 @@
           "note_style": {
             "$ref": "#/components/schemas/NoteStyle",
             "default": "detailed"
+          },
+          "note_thinking_enabled": {
+            "default": false,
+            "title": "Note Thinking Enabled",
+            "type": "boolean"
           }
         },
         "required": [
@@ -415,8 +553,18 @@
             "title": "Note Base Url",
             "type": "string"
           },
+          "note_context_window_tokens": {
+            "default": 32768,
+            "title": "Note Context Window Tokens",
+            "type": "integer"
+          },
           "note_language": {
             "$ref": "#/components/schemas/NoteLanguage"
+          },
+          "note_max_output_tokens": {
+            "default": 8192,
+            "title": "Note Max Output Tokens",
+            "type": "integer"
           },
           "note_model": {
             "default": "gpt-5.5",
@@ -426,6 +574,11 @@
           "note_style": {
             "$ref": "#/components/schemas/NoteStyle",
             "default": "detailed"
+          },
+          "note_thinking_enabled": {
+            "default": false,
+            "title": "Note Thinking Enabled",
+            "type": "boolean"
           },
           "performance_mode": {
             "$ref": "#/components/schemas/PerformanceMode",
@@ -1946,9 +2099,19 @@
             "title": "Note Base Url",
             "type": "string"
           },
+          "note_context_window_tokens": {
+            "default": 32768,
+            "title": "Note Context Window Tokens",
+            "type": "integer"
+          },
           "note_language": {
             "title": "Note Language",
             "type": "string"
+          },
+          "note_max_output_tokens": {
+            "default": 8192,
+            "title": "Note Max Output Tokens",
+            "type": "integer"
           },
           "note_model": {
             "title": "Note Model",
@@ -1960,6 +2123,11 @@
           },
           "note_style": {
             "$ref": "#/components/schemas/NoteStyle"
+          },
+          "note_thinking_enabled": {
+            "default": false,
+            "title": "Note Thinking Enabled",
+            "type": "boolean"
           },
           "selected": {
             "default": true,
@@ -2542,8 +2710,22 @@
             "title": "Note Base Url",
             "type": "string"
           },
+          "note_context_window_tokens": {
+            "default": 32768,
+            "maximum": 2000000.0,
+            "minimum": 8192.0,
+            "title": "Note Context Window Tokens",
+            "type": "integer"
+          },
           "note_language": {
             "$ref": "#/components/schemas/NoteLanguage"
+          },
+          "note_max_output_tokens": {
+            "default": 8192,
+            "maximum": 262144.0,
+            "minimum": 256.0,
+            "title": "Note Max Output Tokens",
+            "type": "integer"
           },
           "note_model": {
             "default": "gpt-5.5",
@@ -2553,6 +2735,11 @@
           "note_style": {
             "$ref": "#/components/schemas/NoteStyle",
             "default": "detailed"
+          },
+          "note_thinking_enabled": {
+            "default": false,
+            "title": "Note Thinking Enabled",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2607,10 +2794,29 @@
             "title": "Note Base Url",
             "type": "string"
           },
+          "note_context_window_tokens": {
+            "default": 32768,
+            "maximum": 2000000.0,
+            "minimum": 8192.0,
+            "title": "Note Context Window Tokens",
+            "type": "integer"
+          },
+          "note_max_output_tokens": {
+            "default": 8192,
+            "maximum": 262144.0,
+            "minimum": 256.0,
+            "title": "Note Max Output Tokens",
+            "type": "integer"
+          },
           "note_model": {
             "default": "gpt-5.5",
             "title": "Note Model",
             "type": "string"
+          },
+          "note_thinking_enabled": {
+            "default": false,
+            "title": "Note Thinking Enabled",
+            "type": "boolean"
           }
         },
         "required": [
@@ -2808,9 +3014,23 @@
             "title": "Note Base Url",
             "type": "string"
           },
+          "note_context_window_tokens": {
+            "default": 32768,
+            "maximum": 2000000.0,
+            "minimum": 8192.0,
+            "title": "Note Context Window Tokens",
+            "type": "integer"
+          },
           "note_language": {
             "$ref": "#/components/schemas/NoteLanguage",
             "default": "zh"
+          },
+          "note_max_output_tokens": {
+            "default": 8192,
+            "maximum": 262144.0,
+            "minimum": 256.0,
+            "title": "Note Max Output Tokens",
+            "type": "integer"
           },
           "note_model": {
             "default": "gpt-5.5",
@@ -2820,6 +3040,11 @@
           "note_style": {
             "$ref": "#/components/schemas/NoteStyle",
             "default": "detailed"
+          },
+          "note_thinking_enabled": {
+            "default": false,
+            "title": "Note Thinking Enabled",
+            "type": "boolean"
           },
           "performance_mode": {
             "$ref": "#/components/schemas/PerformanceMode",
@@ -2961,6 +3186,19 @@
             ],
             "title": "Note Base Url"
           },
+          "note_context_window_tokens": {
+            "anyOf": [
+              {
+                "maximum": 2000000.0,
+                "minimum": 8192.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Context Window Tokens"
+          },
           "note_language": {
             "anyOf": [
               {
@@ -2970,6 +3208,19 @@
                 "type": "null"
               }
             ]
+          },
+          "note_max_output_tokens": {
+            "anyOf": [
+              {
+                "maximum": 262144.0,
+                "minimum": 256.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Max Output Tokens"
           },
           "note_model": {
             "anyOf": [
@@ -2991,6 +3242,17 @@
                 "type": "null"
               }
             ]
+          },
+          "note_thinking_enabled": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Note Thinking Enabled"
           },
           "performance_mode": {
             "anyOf": [
@@ -3151,6 +3413,47 @@
           }
         },
         "summary": "List Ai Models",
+        "tags": [
+          "ai"
+        ]
+      }
+    },
+    "/api/ai/test": {
+      "post": {
+        "operationId": "test_ai_connection_api_ai_test_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AIConnectionTestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AIConnectionTestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Ai Connection",
         "tags": [
           "ai"
         ]

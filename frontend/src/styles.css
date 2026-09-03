@@ -572,6 +572,54 @@ textarea:focus {
   border-color: var(--teal);
 }
 
+.thinking-toggle {
+  align-items: flex-start;
+  background: #f4f8f7;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 11px 12px;
+}
+
+.thinking-toggle input {
+  margin-top: 2px;
+  width: auto;
+}
+
+.thinking-toggle span {
+  display: grid;
+  gap: 3px;
+}
+
+.thinking-toggle strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.thinking-toggle small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.connection-test-success {
+  color: #237047;
+  font-size: 12px;
+  font-weight: 750;
+  margin: 8px 0 0;
+}
+
+.token-budget-fields {
+  margin-top: 12px;
+}
+
+.token-budget-help {
+  margin-top: 6px;
+}
+
 .two-col {
   display: grid;
   gap: 10px;

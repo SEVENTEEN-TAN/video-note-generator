@@ -27,6 +27,7 @@ import { SettingsModal } from "./SettingsModal";
 import { TranscriptCorrectionModal } from "./TranscriptCorrectionModal";
 import { TaskConfigPanel } from "./TaskConfigPanel";
 import { useHealthState } from "./useHealthState";
+import { useAIConnectionTest } from "./useAIConnectionTest";
 import { useAIModels } from "./useAIModels";
 import { useJobCreation } from "./useJobCreation";
 import { useJobResources } from "./useJobResources";
@@ -57,6 +58,9 @@ export function App() {
     local_whisper_device: localWhisperDevice,
     note_api_key: noteApiKey,
     note_api_protocol: noteApiProtocol,
+    note_thinking_enabled: noteThinkingEnabled,
+    note_context_window_tokens: noteContextWindowTokens,
+    note_max_output_tokens: noteMaxOutputTokens,
     note_base_url: noteBaseUrl,
     note_language: noteLanguage,
     note_model: noteModel,
@@ -75,6 +79,19 @@ export function App() {
     models: noteModels,
     refreshModels: refreshNoteModels
   } = useAIModels({ apiKey: noteApiKey, baseUrl: noteBaseUrl, protocol: noteApiProtocol });
+  const {
+    isTesting: isTestingNoteConnection,
+    message: noteConnectionTestMessage,
+    runTest: testNoteConnection,
+    succeeded: noteConnectionTestSucceeded
+  } = useAIConnectionTest({
+    apiKey: noteApiKey,
+    baseUrl: noteBaseUrl,
+    maxOutputTokens: noteMaxOutputTokens,
+    model: noteModel,
+    protocol: noteApiProtocol,
+    thinkingEnabled: noteThinkingEnabled
+  });
   const workspaceFormRef = useRef<HTMLFormElement>(null);
   const resetTaskContextRef = useRef<() => void>(() => undefined);
   const clearSelectedInputsRef = useRef<() => void>(() => undefined);
@@ -140,6 +157,9 @@ export function App() {
       frame_limit: frameLimit,
       note_api_key: noteApiKey,
       note_api_protocol: noteApiProtocol,
+      note_thinking_enabled: noteThinkingEnabled,
+      note_context_window_tokens: noteContextWindowTokens,
+      note_max_output_tokens: noteMaxOutputTokens,
       note_base_url: noteBaseUrl,
       note_language: noteLanguage,
       note_model: noteModel,
@@ -178,6 +198,9 @@ export function App() {
       frame_limit: frameLimit,
       note_api_key: noteApiKey,
       note_api_protocol: noteApiProtocol,
+      note_thinking_enabled: noteThinkingEnabled,
+      note_context_window_tokens: noteContextWindowTokens,
+      note_max_output_tokens: noteMaxOutputTokens,
       note_base_url: noteBaseUrl,
       note_language: noteLanguage,
       note_model: noteModel,
@@ -494,15 +517,25 @@ export function App() {
           apiKey: noteApiKey,
           baseUrl: noteBaseUrl,
           isLoadingModels: isLoadingNoteModels,
+          isTestingConnection: isTestingNoteConnection,
           model: noteModel,
           modelError: noteModelListError,
           models: noteModels,
           protocol: noteApiProtocol,
+          contextWindowTokens: noteContextWindowTokens,
+          maxOutputTokens: noteMaxOutputTokens,
+          testMessage: noteConnectionTestMessage,
+          testSucceeded: noteConnectionTestSucceeded,
+          thinkingEnabled: noteThinkingEnabled,
           onApiKeyChange: (value) => updateSetting("note_api_key", value),
           onBaseUrlChange: (value) => updateSetting("note_base_url", value),
           onModelChange: (value) => updateSetting("note_model", value),
           onProtocolChange: (value) => updateSetting("note_api_protocol", value),
-          onRefreshModels: () => void refreshNoteModels()
+          onContextWindowTokensChange: (value) => updateSetting("note_context_window_tokens", value),
+          onMaxOutputTokensChange: (value) => updateSetting("note_max_output_tokens", value),
+          onRefreshModels: () => void refreshNoteModels(),
+          onTestConnection: () => void testNoteConnection(),
+          onThinkingEnabledChange: (value) => updateSetting("note_thinking_enabled", value)
         }}
         transcription={{
           cudaInstall,

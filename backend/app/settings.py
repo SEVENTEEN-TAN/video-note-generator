@@ -9,7 +9,7 @@ from pathlib import Path
 from threading import Lock, RLock
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .atomic_io import atomic_write_json
 from .models import (
@@ -67,6 +67,9 @@ class UserSettings(BaseModel):
     python_package_install_mode: PythonPackageInstallMode = "default"
     note_api_key: str = ""
     note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
+    note_thinking_enabled: bool = False
+    note_context_window_tokens: int = Field(default=32_768, ge=8_192, le=2_000_000)
+    note_max_output_tokens: int = Field(default=8_192, ge=256, le=262_144)
     note_base_url: str = OPENAI_BASE_URL
     note_model: str = "gpt-5.5"
     note_language: NoteLanguage = NoteLanguage.zh
@@ -96,6 +99,12 @@ class UserSettings(BaseModel):
             raise ValueError("extras must be 2000 characters or fewer.")
         return value
 
+    @model_validator(mode="after")
+    def validate_note_token_budgets(self) -> "UserSettings":
+        if self.note_max_output_tokens + 2_048 > self.note_context_window_tokens:
+            raise ValueError("note_max_output_tokens must leave at least 2048 tokens for model input.")
+        return self
+
 class UserSettingsUpdate(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -112,6 +121,9 @@ class UserSettingsUpdate(BaseModel):
     python_package_install_mode: PythonPackageInstallMode | None = None
     note_api_key: str | None = None
     note_api_protocol: AIProtocol | None = None
+    note_thinking_enabled: bool | None = None
+    note_context_window_tokens: int | None = Field(default=None, ge=8_192, le=2_000_000)
+    note_max_output_tokens: int | None = Field(default=None, ge=256, le=262_144)
     note_base_url: str | None = None
     note_model: str | None = None
     note_language: NoteLanguage | None = None

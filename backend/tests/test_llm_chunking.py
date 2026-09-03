@@ -1,4 +1,6 @@
 ﻿from backend.app import llm
+import pytest
+
 from backend.app.llm import (
     build_chunk_prompt,
     build_reduce_prompt,
@@ -39,6 +41,82 @@ def test_estimate_prompt_tokens_is_monotonic() -> None:
 
     assert short >= 1
     assert long > short
+
+
+def test_note_token_budgets_follow_configured_context_window() -> None:
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        note_api_key="note-key",
+        note_context_window_tokens=256000,
+        note_max_output_tokens=32768,
+        note_language=NoteLanguage.zh,
+        original_filename="long.mp4",
+    )
+
+    assert llm.note_context_safety_reserve_tokens(config) == 8192
+    assert llm.note_input_budget_tokens(config) == 215040
+    assert llm.note_chunk_transcript_budget_tokens(config) == 150528
+
+
+def test_generate_note_draft_uses_configured_output_limit(monkeypatch) -> None:
+    calls: list[dict] = []
+
+    def fake_call_note_model(_config, _messages, **kwargs):
+        calls.append(kwargs)
+        return NoteDraft(title="Demo", summary="ok")
+
+    monkeypatch.setattr(llm, "call_note_model", fake_call_note_model)
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        note_api_key="note-key",
+        note_context_window_tokens=256000,
+        note_max_output_tokens=32768,
+        note_language=NoteLanguage.zh,
+        original_filename="demo.mp4",
+    )
+
+    llm.generate_note_draft(
+        config,
+        duration=1,
+        segments=[TranscriptSegment(start=0, end=1, text="简短字幕")],
+    )
+
+    assert calls[0]["max_tokens"] == 32768
+
+
+def test_generate_note_draft_uses_context_window_to_choose_chunking(monkeypatch) -> None:
+    modes: list[str] = []
+
+    def fake_chunked(*_args, **_kwargs):
+        modes.append("chunked")
+        return NoteDraft(title="Chunked")
+
+    def fake_direct(*_args, **_kwargs):
+        modes.append("direct")
+        return NoteDraft(title="Direct")
+
+    monkeypatch.setattr(llm, "generate_chunked_note_draft", fake_chunked)
+    monkeypatch.setattr(llm, "call_note_model", fake_direct)
+    segments = [TranscriptSegment(start=0, end=1, text="中" * 10000)]
+    common = {
+        "transcription_mode": TranscriptionMode.local_faster_whisper,
+        "note_api_key": "note-key",
+        "note_language": NoteLanguage.zh,
+        "original_filename": "long.mp4",
+    }
+
+    llm.generate_note_draft(
+        JobConfig(**common, note_context_window_tokens=8192, note_max_output_tokens=2048),
+        duration=1,
+        segments=segments,
+    )
+    llm.generate_note_draft(
+        JobConfig(**common, note_context_window_tokens=256000, note_max_output_tokens=32768),
+        duration=1,
+        segments=segments,
+    )
+
+    assert modes == ["chunked", "direct"]
 
 
 def test_note_style_and_extras_are_injected_into_prompts() -> None:
@@ -533,7 +611,7 @@ def test_generate_chunked_note_draft_falls_back_when_one_chunk_model_call_fails(
         )
 
     monkeypatch.setattr(llm, "call_note_model", fake_call_note_model)
-    monkeypatch.setattr(llm, "MAX_CHUNK_TRANSCRIPT_CHARS", 80)
+    monkeypatch.setattr(llm, "note_chunk_transcript_budget_tokens", lambda _config: 20)
 
     segments = [
         TranscriptSegment(start=0, end=1, text="first chunk content"),
@@ -579,7 +657,7 @@ def test_chunked_note_generation_carries_prior_takeaways_and_actions(tmp_path, m
         raise AssertionError(f"unexpected context {context}")
 
     monkeypatch.setattr(llm, "call_note_model", fake_call_note_model)
-    monkeypatch.setattr(llm, "MAX_CHUNK_TRANSCRIPT_CHARS", 80)
+    monkeypatch.setattr(llm, "note_chunk_transcript_budget_tokens", lambda _config: 20)
 
     segments = [
         TranscriptSegment(start=0, end=1, text="first chunk content"),
@@ -978,6 +1056,40 @@ def test_generate_chunked_note_draft_binary_splits_on_moderation_failure(tmp_pat
     assert len(call_log) >= 2
     log_text = (tmp_path / "debug.log").read_text(encoding="utf-8")
     assert "binary_split_retry" in log_text
+
+
+def test_generate_chunked_note_draft_does_not_split_provider_request_errors(tmp_path, monkeypatch) -> None:
+    contexts: list[str] = []
+
+    def fake_call_note_model(config, messages, **kwargs):
+        contexts.append(kwargs.get("debug_context", ""))
+        raise llm.LLMRequestError("AI request failed: 404 Not Found")
+
+    monkeypatch.setattr(llm, "call_note_model", fake_call_note_model)
+    monkeypatch.setattr(llm, "MAX_CHUNK_TRANSCRIPT_CHARS", 2000)
+    monkeypatch.setattr(llm, "MIN_CHUNK_SEGMENTS_FOR_BINARY_RETRY", 3)
+
+    segments = [TranscriptSegment(start=i, end=i + 1, text=f"line {i}") for i in range(12)]
+    config = JobConfig(
+        transcription_mode=TranscriptionMode.local_faster_whisper,
+        note_api_key="note-key",
+        note_language=NoteLanguage.en,
+        original_filename="long.mp4",
+    )
+    debug_log = TaskDebugLog(tmp_path)
+
+    with pytest.raises(llm.LLMRequestError, match="404 Not Found"):
+        llm.generate_chunked_note_draft(
+            config,
+            duration=12,
+            segments=segments,
+            system_prompt="system",
+            debug_log=debug_log,
+        )
+
+    assert contexts == ["note-chunk-1-of-1"]
+    log_path = tmp_path / "debug.log"
+    assert not log_path.exists() or "binary_split_retry" not in log_path.read_text(encoding="utf-8")
 
 
 def test_generate_chunked_note_draft_uses_distinct_debug_contexts_for_split_retries(tmp_path, monkeypatch) -> None:

@@ -153,7 +153,7 @@ def test_call_note_model_logs_response_finish_reason(tmp_path, monkeypatch) -> N
     assert response_event["details"]["finish_reason"] == "length"
 
 
-def test_call_note_model_disables_bigmodel_thinking_and_expands_truncated_retry(monkeypatch) -> None:
+def test_call_note_model_disables_thinking_and_expands_truncated_retry(monkeypatch) -> None:
     calls: list[dict] = []
     responses = [
         SimpleNamespace(
@@ -201,12 +201,12 @@ def test_call_note_model_disables_bigmodel_thinking_and_expands_truncated_retry(
     draft = llm.call_note_model(config, [{"role": "user", "content": "make JSON"}], max_tokens=2_200)
 
     assert draft.summary == "fixed"
-    assert calls[0]["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert calls[0]["reasoning_effort"] == "none"
     assert calls[0]["max_tokens"] == 2_200
     assert calls[1]["max_tokens"] == 4_400
 
 
-def test_call_note_model_does_not_send_bigmodel_options_to_other_providers(monkeypatch) -> None:
+def test_call_note_model_omits_thinking_control_when_enabled(monkeypatch) -> None:
     calls: list[dict] = []
 
     class FakeCompletions:
@@ -230,13 +230,14 @@ def test_call_note_model_does_not_send_bigmodel_options_to_other_providers(monke
         note_api_key="note-key",
         note_base_url="https://example.test/v1",
         note_model="gpt-test",
+        note_thinking_enabled=True,
         note_language=NoteLanguage.en,
         original_filename="demo.mp4",
     )
 
     llm.call_note_model(config, [{"role": "user", "content": "make JSON"}])
 
-    assert "extra_body" not in calls[0]
+    assert "reasoning_effort" not in calls[0]
 
 
 def test_call_note_model_converts_content_filter_finish_reason_to_llm_error(tmp_path, monkeypatch) -> None:

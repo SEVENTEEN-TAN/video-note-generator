@@ -117,6 +117,9 @@ export function useSubtitleWorkflow({
         instructions: noteConfig.extras,
         note_api_key: noteConfig.note_api_key,
         note_api_protocol: noteConfig.note_api_protocol,
+        note_thinking_enabled: noteConfig.note_thinking_enabled,
+        note_context_window_tokens: noteConfig.note_context_window_tokens,
+        note_max_output_tokens: noteConfig.note_max_output_tokens,
         note_base_url: noteConfig.note_base_url,
         note_model: noteConfig.note_model
       });

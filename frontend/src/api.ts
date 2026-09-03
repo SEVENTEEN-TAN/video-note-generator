@@ -1,4 +1,6 @@
 import type {
+  AIConnectionTestRequest,
+  AIConnectionTestResponse,
   AIModelListRequest,
   AIModelListResponse,
   CudaDependencyInstallState,
@@ -29,6 +31,18 @@ export type JobRevisionGuard = Pick<JobState, "artifact_revision" | "state_revis
 
 export async function fetchAIModels(payload: AIModelListRequest, signal?: AbortSignal): Promise<AIModelListResponse> {
   return requestJson("/api/ai/models", "服务器模型列表获取失败。", {
+    body: JSON.stringify(payload),
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+    signal
+  });
+}
+
+export async function testAIConnection(
+  payload: AIConnectionTestRequest,
+  signal?: AbortSignal
+): Promise<AIConnectionTestResponse> {
+  return requestJson("/api/ai/test", "AI 接口测试失败。", {
     body: JSON.stringify(payload),
     headers: { "Content-Type": "application/json" },
     method: "POST",
@@ -230,7 +244,7 @@ export async function regenerateNoteChunk(
   );
 }
 
-async function postForm<T extends Record<string, string | number>>(
+async function postForm<T extends Record<string, string | number | boolean>>(
   url: string,
   payload: T,
   fallback: string

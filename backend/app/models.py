@@ -57,6 +57,11 @@ class AIProtocol(str, Enum):
     anthropic_messages = "anthropic_messages"
 
 
+DEFAULT_NOTE_CONTEXT_WINDOW_TOKENS = 32_768
+DEFAULT_NOTE_MAX_OUTPUT_TOKENS = 8_192
+MIN_NOTE_INPUT_BUDGET_TOKENS = 2_048
+
+
 class AIModelListRequest(BaseModel):
     protocol: AIProtocol = AIProtocol.openai_chat_completions
     api_key: str
@@ -79,6 +84,29 @@ class AIModelInfo(BaseModel):
 
 class AIModelListResponse(BaseModel):
     models: list[AIModelInfo] = Field(default_factory=list)
+
+
+class AIConnectionTestRequest(AIModelListRequest):
+    model: str
+    thinking_enabled: bool = False
+    max_output_tokens: int = Field(default=DEFAULT_NOTE_MAX_OUTPUT_TOKENS, ge=256, le=262_144)
+
+    @field_validator("model")
+    @classmethod
+    def require_test_model(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("This field is required.")
+        return value
+
+
+class AIConnectionTestResponse(BaseModel):
+    ok: bool = True
+    protocol: AIProtocol
+    model: str
+    elapsed_ms: int = Field(ge=0)
+    response_length: int = Field(ge=0)
+    json_valid: bool = False
 
 
 class TranscriptionMode(str, Enum):
@@ -182,6 +210,9 @@ class TranscriptionConfig(JobInputConfig):
 
 class NotePreferences(JobInputConfig, FrameGenerationConfig):
     note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
+    note_thinking_enabled: bool = False
+    note_context_window_tokens: int = Field(default=DEFAULT_NOTE_CONTEXT_WINDOW_TOKENS, ge=8_192, le=2_000_000)
+    note_max_output_tokens: int = Field(default=DEFAULT_NOTE_MAX_OUTPUT_TOKENS, ge=256, le=262_144)
     note_base_url: str = "https://api.openai.com/v1"
     note_model: str = "gpt-5.5"
     note_language: NoteLanguage
@@ -201,6 +232,12 @@ class NotePreferences(JobInputConfig, FrameGenerationConfig):
             raise ValueError("extras must be 2000 characters or fewer.")
         return value
 
+    @model_validator(mode="after")
+    def validate_note_token_budgets(self) -> "NotePreferences":
+        if self.note_max_output_tokens + MIN_NOTE_INPUT_BUDGET_TOKENS > self.note_context_window_tokens:
+            raise ValueError("note_max_output_tokens must leave at least 2048 tokens for model input.")
+        return self
+
 
 class NoteGenerationConfig(NotePreferences):
     note_api_key: str
@@ -219,6 +256,9 @@ class JobConfig(TranscriptionConfig, FrameGenerationConfig):
 
     note_api_key: str
     note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
+    note_thinking_enabled: bool = False
+    note_context_window_tokens: int = Field(default=DEFAULT_NOTE_CONTEXT_WINDOW_TOKENS, ge=8_192, le=2_000_000)
+    note_max_output_tokens: int = Field(default=DEFAULT_NOTE_MAX_OUTPUT_TOKENS, ge=256, le=262_144)
     note_base_url: str = "https://api.openai.com/v1"
     note_model: str = "gpt-5.5"
     note_language: NoteLanguage
@@ -241,6 +281,12 @@ class JobConfig(TranscriptionConfig, FrameGenerationConfig):
             raise ValueError("extras must be 2000 characters or fewer.")
         return value
 
+    @model_validator(mode="after")
+    def validate_note_token_budgets(self) -> "JobConfig":
+        if self.note_max_output_tokens + MIN_NOTE_INPUT_BUDGET_TOKENS > self.note_context_window_tokens:
+            raise ValueError("note_max_output_tokens must leave at least 2048 tokens for model input.")
+        return self
+
     def for_transcription(self) -> TranscriptionConfig:
         return TranscriptionConfig(
             transcription_mode=self.transcription_mode,
@@ -258,6 +304,9 @@ class JobConfig(TranscriptionConfig, FrameGenerationConfig):
         return NoteGenerationConfig(
             note_api_key=self.note_api_key,
             note_api_protocol=self.note_api_protocol,
+            note_thinking_enabled=self.note_thinking_enabled,
+            note_context_window_tokens=self.note_context_window_tokens,
+            note_max_output_tokens=self.note_max_output_tokens,
             note_base_url=self.note_base_url,
             note_model=self.note_model,
             note_language=self.note_language,
@@ -403,6 +452,9 @@ class ReviewDraftParagraphUpdate(BaseModel):
 class TranscriptCorrectionRequest(BaseModel):
     note_api_key: str
     note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
+    note_thinking_enabled: bool = False
+    note_context_window_tokens: int = Field(default=DEFAULT_NOTE_CONTEXT_WINDOW_TOKENS, ge=8_192, le=2_000_000)
+    note_max_output_tokens: int = Field(default=DEFAULT_NOTE_MAX_OUTPUT_TOKENS, ge=256, le=262_144)
     note_base_url: str = "https://api.openai.com/v1"
     note_model: str = "gpt-5.5"
     instructions: str = ""
@@ -429,6 +481,9 @@ class TranscriptCorrectionApplyRequest(BaseModel):
     extras: str = ""
     note_api_key: str
     note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
+    note_thinking_enabled: bool = False
+    note_context_window_tokens: int = Field(default=DEFAULT_NOTE_CONTEXT_WINDOW_TOKENS, ge=8_192, le=2_000_000)
+    note_max_output_tokens: int = Field(default=DEFAULT_NOTE_MAX_OUTPUT_TOKENS, ge=256, le=262_144)
     note_base_url: str = "https://api.openai.com/v1"
     note_model: str = "gpt-5.5"
     frame_limit: int = Field(default=6, ge=1, le=24)
@@ -572,6 +627,9 @@ class NoteVersion(BaseModel):
     note_language: str
     note_model: str
     note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions
+    note_thinking_enabled: bool = False
+    note_context_window_tokens: int = DEFAULT_NOTE_CONTEXT_WINDOW_TOKENS
+    note_max_output_tokens: int = DEFAULT_NOTE_MAX_OUTPUT_TOKENS
     note_base_url: str
     frame_limit: int
     note_path: str

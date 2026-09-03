@@ -81,6 +81,9 @@ def _note_config_debug_summary(config: NotePreferences) -> dict:
     return {
         "original_filename": config.original_filename,
         "note_api_protocol": config.note_api_protocol.value,
+        "note_thinking_enabled": config.note_thinking_enabled,
+        "note_context_window_tokens": config.note_context_window_tokens,
+        "note_max_output_tokens": config.note_max_output_tokens,
         "note_base_url": config.note_base_url,
         "note_model": config.note_model,
         "note_language": config.note_language.value,
@@ -173,6 +176,21 @@ def write_job_metadata(
             note_config.note_api_protocol.value
             if note_config is not None
             else str(existing.get("note_api_protocol") or "openai_chat_completions")
+        ),
+        "note_thinking_enabled": (
+            note_config.note_thinking_enabled
+            if note_config is not None
+            else bool(existing.get("note_thinking_enabled") or False)
+        ),
+        "note_context_window_tokens": (
+            note_config.note_context_window_tokens
+            if note_config is not None
+            else int(existing.get("note_context_window_tokens") or 32_768)
+        ),
+        "note_max_output_tokens": (
+            note_config.note_max_output_tokens
+            if note_config is not None
+            else int(existing.get("note_max_output_tokens") or 8_192)
         ),
         "note_model": (
             note_config.note_model

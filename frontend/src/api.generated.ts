@@ -1,4 +1,4 @@
-// OpenAPI-SHA256: c3a863ab6547336799c35592e65b3762f21804f54498086e7786e675a29906d1
+// OpenAPI-SHA256: 512498d3d23e02b67d22fccf62411596c2c6a9f7061c69d7561c59916eeebd86
 export interface paths {
     "/api/ai/models": {
         parameters: {
@@ -11,6 +11,23 @@ export interface paths {
         put?: never;
         /** List Ai Models */
         post: operations["list_ai_models_api_ai_models_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/ai/test": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Ai Connection */
+        post: operations["test_ai_connection_api_ai_test_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -675,6 +692,47 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AIConnectionTestRequest */
+        AIConnectionTestRequest: {
+            /** Api Key */
+            api_key: string;
+            /** Base Url */
+            base_url: string;
+            /**
+             * Max Output Tokens
+             * @default 8192
+             */
+            max_output_tokens: number;
+            /** Model */
+            model: string;
+            /** @default openai_chat_completions */
+            protocol: components["schemas"]["AIProtocol"];
+            /**
+             * Thinking Enabled
+             * @default false
+             */
+            thinking_enabled: boolean;
+        };
+        /** AIConnectionTestResponse */
+        AIConnectionTestResponse: {
+            /** Elapsed Ms */
+            elapsed_ms: number;
+            /**
+             * Json Valid
+             * @default false
+             */
+            json_valid: boolean;
+            /** Model */
+            model: string;
+            /**
+             * Ok
+             * @default true
+             */
+            ok: boolean;
+            protocol: components["schemas"]["AIProtocol"];
+            /** Response Length */
+            response_length: number;
+        };
         /** AIModelInfo */
         AIModelInfo: {
             /** Display Name */
@@ -741,7 +799,17 @@ export interface components {
              * @default https://api.openai.com/v1
              */
             note_base_url: string;
+            /**
+             * Note Context Window Tokens
+             * @default 32768
+             */
+            note_context_window_tokens: number;
             note_language: components["schemas"]["NoteLanguage"];
+            /**
+             * Note Max Output Tokens
+             * @default 8192
+             */
+            note_max_output_tokens: number;
             /**
              * Note Model
              * @default gpt-5.5
@@ -749,6 +817,11 @@ export interface components {
             note_model: string;
             /** @default detailed */
             note_style: components["schemas"]["NoteStyle"];
+            /**
+             * Note Thinking Enabled
+             * @default false
+             */
+            note_thinking_enabled: boolean;
         };
         /** Body_create_job_api_jobs_post */
         Body_create_job_api_jobs_post: {
@@ -779,7 +852,17 @@ export interface components {
              * @default https://api.openai.com/v1
              */
             note_base_url: string;
+            /**
+             * Note Context Window Tokens
+             * @default 32768
+             */
+            note_context_window_tokens: number;
             note_language: components["schemas"]["NoteLanguage"];
+            /**
+             * Note Max Output Tokens
+             * @default 8192
+             */
+            note_max_output_tokens: number;
             /**
              * Note Model
              * @default gpt-5.5
@@ -787,6 +870,11 @@ export interface components {
             note_model: string;
             /** @default detailed */
             note_style: components["schemas"]["NoteStyle"];
+            /**
+             * Note Thinking Enabled
+             * @default false
+             */
+            note_thinking_enabled: boolean;
             /** @default balanced */
             performance_mode: components["schemas"]["PerformanceMode"];
             /** Subtitle */
@@ -837,8 +925,18 @@ export interface components {
              * @default https://api.openai.com/v1
              */
             note_base_url: string;
+            /**
+             * Note Context Window Tokens
+             * @default 32768
+             */
+            note_context_window_tokens: number;
             /** @default zh */
             note_language: components["schemas"]["NoteLanguage"];
+            /**
+             * Note Max Output Tokens
+             * @default 8192
+             */
+            note_max_output_tokens: number;
             /**
              * Note Model
              * @default gpt-5.5
@@ -846,6 +944,11 @@ export interface components {
             note_model: string;
             /** @default detailed */
             note_style: components["schemas"]["NoteStyle"];
+            /**
+             * Note Thinking Enabled
+             * @default false
+             */
+            note_thinking_enabled: boolean;
         };
         /** Body_regenerate_note_version_endpoint_api_jobs__job_id__note_versions_post */
         Body_regenerate_note_version_endpoint_api_jobs__job_id__note_versions_post: {
@@ -871,7 +974,17 @@ export interface components {
              * @default https://api.openai.com/v1
              */
             note_base_url: string;
+            /**
+             * Note Context Window Tokens
+             * @default 32768
+             */
+            note_context_window_tokens: number;
             note_language: components["schemas"]["NoteLanguage"];
+            /**
+             * Note Max Output Tokens
+             * @default 8192
+             */
+            note_max_output_tokens: number;
             /**
              * Note Model
              * @default gpt-5.5
@@ -879,6 +992,11 @@ export interface components {
             note_model: string;
             /** @default detailed */
             note_style: components["schemas"]["NoteStyle"];
+            /**
+             * Note Thinking Enabled
+             * @default false
+             */
+            note_thinking_enabled: boolean;
         };
         /** Body_regenerate_subtitles_api_jobs__job_id__subtitles_regenerate_post */
         Body_regenerate_subtitles_api_jobs__job_id__subtitles_regenerate_post: {
@@ -943,7 +1061,17 @@ export interface components {
              * @default https://api.openai.com/v1
              */
             note_base_url: string;
+            /**
+             * Note Context Window Tokens
+             * @default 32768
+             */
+            note_context_window_tokens: number;
             note_language: components["schemas"]["NoteLanguage"];
+            /**
+             * Note Max Output Tokens
+             * @default 8192
+             */
+            note_max_output_tokens: number;
             /**
              * Note Model
              * @default gpt-5.5
@@ -951,6 +1079,11 @@ export interface components {
             note_model: string;
             /** @default detailed */
             note_style: components["schemas"]["NoteStyle"];
+            /**
+             * Note Thinking Enabled
+             * @default false
+             */
+            note_thinking_enabled: boolean;
             /** @default balanced */
             performance_mode: components["schemas"]["PerformanceMode"];
             /**
@@ -1576,13 +1709,28 @@ export interface components {
             note_api_protocol: components["schemas"]["AIProtocol"];
             /** Note Base Url */
             note_base_url: string;
+            /**
+             * Note Context Window Tokens
+             * @default 32768
+             */
+            note_context_window_tokens: number;
             /** Note Language */
             note_language: string;
+            /**
+             * Note Max Output Tokens
+             * @default 8192
+             */
+            note_max_output_tokens: number;
             /** Note Model */
             note_model: string;
             /** Note Path */
             note_path: string;
             note_style: components["schemas"]["NoteStyle"];
+            /**
+             * Note Thinking Enabled
+             * @default false
+             */
+            note_thinking_enabled: boolean;
             /**
              * Selected
              * @default true
@@ -1830,7 +1978,17 @@ export interface components {
              * @default https://api.openai.com/v1
              */
             note_base_url: string;
+            /**
+             * Note Context Window Tokens
+             * @default 32768
+             */
+            note_context_window_tokens: number;
             note_language: components["schemas"]["NoteLanguage"];
+            /**
+             * Note Max Output Tokens
+             * @default 8192
+             */
+            note_max_output_tokens: number;
             /**
              * Note Model
              * @default gpt-5.5
@@ -1838,6 +1996,11 @@ export interface components {
             note_model: string;
             /** @default detailed */
             note_style: components["schemas"]["NoteStyle"];
+            /**
+             * Note Thinking Enabled
+             * @default false
+             */
+            note_thinking_enabled: boolean;
         };
         /** TranscriptCorrectionPreview */
         TranscriptCorrectionPreview: {
@@ -1868,10 +2031,25 @@ export interface components {
              */
             note_base_url: string;
             /**
+             * Note Context Window Tokens
+             * @default 32768
+             */
+            note_context_window_tokens: number;
+            /**
+             * Note Max Output Tokens
+             * @default 8192
+             */
+            note_max_output_tokens: number;
+            /**
              * Note Model
              * @default gpt-5.5
              */
             note_model: string;
+            /**
+             * Note Thinking Enabled
+             * @default false
+             */
+            note_thinking_enabled: boolean;
         };
         /** TranscriptCorrectionSegment */
         TranscriptCorrectionSegment: {
@@ -1988,8 +2166,18 @@ export interface components {
              * @default https://api.openai.com/v1
              */
             note_base_url: string;
+            /**
+             * Note Context Window Tokens
+             * @default 32768
+             */
+            note_context_window_tokens: number;
             /** @default zh */
             note_language: components["schemas"]["NoteLanguage"];
+            /**
+             * Note Max Output Tokens
+             * @default 8192
+             */
+            note_max_output_tokens: number;
             /**
              * Note Model
              * @default gpt-5.5
@@ -1997,6 +2185,11 @@ export interface components {
             note_model: string;
             /** @default detailed */
             note_style: components["schemas"]["NoteStyle"];
+            /**
+             * Note Thinking Enabled
+             * @default false
+             */
+            note_thinking_enabled: boolean;
             /** @default balanced */
             performance_mode: components["schemas"]["PerformanceMode"];
             /**
@@ -2042,10 +2235,16 @@ export interface components {
             note_api_protocol?: components["schemas"]["AIProtocol"] | null;
             /** Note Base Url */
             note_base_url?: string | null;
+            /** Note Context Window Tokens */
+            note_context_window_tokens?: number | null;
             note_language?: components["schemas"]["NoteLanguage"] | null;
+            /** Note Max Output Tokens */
+            note_max_output_tokens?: number | null;
             /** Note Model */
             note_model?: string | null;
             note_style?: components["schemas"]["NoteStyle"] | null;
+            /** Note Thinking Enabled */
+            note_thinking_enabled?: boolean | null;
             performance_mode?: components["schemas"]["PerformanceMode"] | null;
             /** Python Package Install Mode */
             python_package_install_mode?: ("default" | "user") | null;
@@ -2096,6 +2295,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AIModelListResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    test_ai_connection_api_ai_test_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AIConnectionTestRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AIConnectionTestResponse"];
                 };
             };
             /** @description Validation Error */

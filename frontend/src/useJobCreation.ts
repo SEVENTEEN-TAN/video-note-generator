@@ -218,6 +218,9 @@ export function useJobCreation({
     );
     formData.append("performance_mode", currentSettings.performance_mode);
     formData.append("note_api_protocol", currentSettings.note_api_protocol);
+    formData.append("note_thinking_enabled", String(currentSettings.note_thinking_enabled));
+    formData.append("note_context_window_tokens", String(currentSettings.note_context_window_tokens));
+    formData.append("note_max_output_tokens", String(currentSettings.note_max_output_tokens));
     formData.append("note_base_url", currentSettings.note_base_url);
     formData.append("note_model", currentSettings.note_model);
     formData.append("note_language", currentSettings.note_language);

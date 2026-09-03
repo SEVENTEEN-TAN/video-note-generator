@@ -273,6 +273,9 @@ def build_transcription_config_or_400(
 def build_note_preferences_or_400(
     *,
     note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions,
+    note_thinking_enabled: bool = False,
+    note_context_window_tokens: int = 32_768,
+    note_max_output_tokens: int = 8_192,
     note_base_url: str,
     note_model: str,
     note_language: NoteLanguage,
@@ -284,6 +287,9 @@ def build_note_preferences_or_400(
     try:
         return NotePreferences(
             note_api_protocol=note_api_protocol,
+            note_thinking_enabled=note_thinking_enabled,
+            note_context_window_tokens=note_context_window_tokens,
+            note_max_output_tokens=note_max_output_tokens,
             note_base_url=note_base_url,
             note_model=note_model,
             note_language=note_language,
@@ -300,6 +306,9 @@ def build_note_generation_config_or_400(
     *,
     note_api_key: str,
     note_api_protocol: AIProtocol = AIProtocol.openai_chat_completions,
+    note_thinking_enabled: bool = False,
+    note_context_window_tokens: int = 32_768,
+    note_max_output_tokens: int = 8_192,
     note_base_url: str,
     note_model: str,
     note_language: NoteLanguage,
@@ -318,6 +327,9 @@ def build_note_generation_config_or_400(
         return NoteGenerationConfig(
             note_api_key=note_api_key,
             note_api_protocol=note_api_protocol,
+            note_thinking_enabled=note_thinking_enabled,
+            note_context_window_tokens=note_context_window_tokens,
+            note_max_output_tokens=note_max_output_tokens,
             note_base_url=note_base_url,
             note_model=note_model,
             note_language=note_language,
